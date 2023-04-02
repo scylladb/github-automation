@@ -1,0 +1,12 @@
+name: 'Run GitHub Automation'
+description: 'Performs some GraphQL queries & mutations in order to automatically update Issues & PRs'
+inputs:
+  pat-var:
+    description: 'Personal Access Token (PAT) to use when running Github Automation'
+    required: true
+    default: 'invalid'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    PAT: ${{ inputs.pat-var }}

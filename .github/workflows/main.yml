@@ -1,0 +1,12 @@
+on: [push]
+
+jobs:
+  github_automation_job:
+    runs-on: ubuntu-latest
+    name: Runs GitHub Automation
+    steps:
+      - name: Runs GitHub Automation script
+        id: gh_auto
+        uses: scylladb/github-automation@v1
+        with:
+          pat-var: ${{ secrets.PAT }}

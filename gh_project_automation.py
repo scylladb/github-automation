@@ -42,6 +42,7 @@ class GithubAPI:
         if 'errors' in response.json():
             logging.error(response.json())
             sys.exit("Error when processing request, most probably due to malformed GraphQL, exiting...")
+        logging.debug(response.json())
         return response
 
     def get_project_views_filters(self, organization, project_number, page_size=100):
