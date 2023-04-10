@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+from datetime import datetime, timedelta
 import json
 import logging
 from operator import itemgetter
@@ -11,6 +12,52 @@ import sys
 
 from apscheduler.schedulers.background import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+
+class Event:
+    def __init__(self, issue_type, repo, issue_id, title, event, by, assignees):
+        self.issue_type = issue_type
+        self.repo = repo
+        self.issue_id = issue_id
+        self.title = title
+        self.events = [(event, by)]
+        self.assignees = []
+        self.assignees.append(assignees)
+        self.assignees.sort()
+
+    def append_event(self, event, by):
+        self.events.append((event, by))
+
+    def __lt__(self, other):
+        return self.assignees[0] < other.assignees[0]
+
+    def __hash__(self):
+        return hash((self.issue_type, self.repo, self.issue_id, hash(str(self.events)), hash(str(self.assignees))))
+
+    def __eq__(self, other):
+        return self.issue_type == other.issue_type and self.repo == other.repo and self.issue_id == other.issue_id and \
+            self.title == other.title and self.events == other.events and self.assignees == other.assignees
+
+
+class CollapsedEvents:
+    events = dict()
+
+    def insert(self, issue_id, event):
+        if event.issue_id in self.events:
+            self.events[issue_id].append_event(event.events[0][0], event.events[0][1])
+        else:
+            self.events[issue_id] = event
+
+    def __str__(self):
+        ret = ""
+        list_of_events = list(self.events.values())
+        list_of_events.sort()
+        for value in list_of_events:
+            issue_url_path = "issues" if value.issue_type == "issue" else "pull"
+            ret += f"Assignees: {value.assignees}, \"{value.title}\", URL: https://github.com/scylladb/{value.repo}/{issue_url_path}/{value.issue_id}, "
+            ret += "events:" + str([f"event: {pair[0]} by: {pair[1]}" for pair in value.events])
+            ret += "\n"
+        return ret
 
 
 class GithubAPI:
@@ -38,7 +85,9 @@ class GithubAPI:
             logging.warning("Reaching GitHub API's rate limit!")
 
     def do_query(self, query):
+        # logging.debug(query)
         response = self.session.post(self.API_ENDPOINT, data=json.dumps({"query": query}))
+        # logging.debug(response.json())
         if 'errors' in response.json():
             logging.error(response.json())
             sys.exit("Error when processing request, most probably due to malformed GraphQL, exiting...")
@@ -121,13 +170,220 @@ class GithubAPI:
         while True:
             q = query.format(issues_filter, cursor_filter.format(last_cursor))
             ret = self.do_query(q).json()
-            ids += [[issue.get('id'), issue.get('number'), issue.get('repository')["name"]] for issue in ret["data"]["search"]["nodes"]]
+            ids += [[issue.get('id'), issue.get('number'), issue.get('repository')["name"]] for issue in
+                    ret["data"]["search"]["nodes"]]
             if ret["data"]["search"]["pageInfo"]["hasNextPage"]:
                 last_cursor = f'"{ret["data"]["search"]["pageInfo"]["endCursor"]}"'
             else:
                 break
         logging.debug(f"Found {len(ids)} issues for given filter \"{issues_filter}\": {ids}")
         return ids
+
+    def get_issues_last_events(self, issues_filter, author, author_name, since):
+        # TODO: New Projects (non-classic) DO NOT capture MOVED_COLUMNS_IN_PROJECT_EVENT
+        #       https://github.com/orgs/community/discussions/30979
+        query = """
+        query {{
+            search(type: ISSUE, first: 100, query:"is:{} {} {}", {}) {{
+                issueCount
+                pageInfo {{
+                    hasNextPage
+                    endCursor
+                }}
+                nodes {{
+                    ... on PullRequest {{
+                        id
+                        number
+                        title
+                        author {{
+                            login
+                        }}
+                        repository {{
+                            name
+                        }}
+                        timelineItems(first:100, since:"{}") {{
+                            edges {{
+                                node {{
+                                    ... on AssignedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ClosedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ConvertedToDiscussionEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on MarkedAsDuplicateEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on MentionedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on IssueComment {{
+                                        __typename
+                                        author {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on MergedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on PullRequestCommit {{
+                                        __typename
+                                        pullRequest {{
+                                            author {{
+                                                login
+                                            }}
+                                        }}
+                                    }}
+                                    ... on PullRequestReview {{
+                                        __typename
+                                        author {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ReadyForReviewEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ReopenedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ReviewRequestedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on UserBlockedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                    ... on Issue {{
+                        id
+                        number
+                        title
+                        assignees(first:10) {{
+                            edges {{
+                                node {{
+                                    name
+                                }}
+                            }}
+                        }}
+                        repository {{
+                            name
+                        }}
+                        timelineItems(first:100, since:"{}") {{
+                            edges {{
+                                node {{
+                                    ... on ClosedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on AssignedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ReopenedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on UserBlockedEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on MarkedAsDuplicateEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                    ... on ConvertedNoteToIssueEvent {{
+                                        __typename
+                                        actor {{
+                                            login
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        """
+
+        cursor_filter = "after:{}"
+        last_cursor = "null"
+        all_events = []
+        issue_owner_tag = {"issue": "assignee", "pr": "author"}
+        for issue_type, owner in issue_owner_tag.items():
+            while True:
+                q = query.format(issue_type, f"{owner}:{author}", issues_filter, cursor_filter.format(last_cursor),
+                                 since, since)
+                ret = self.do_query(q).json()
+                for issue in ret["data"]["search"]["nodes"]:
+                    for event in issue["timelineItems"]["edges"]:
+                        if "__typename" in event["node"]:
+                            assignees = []
+                            if owner == "assignee":
+                                assignees = [assignee['node']['name'] for assignee in issue.get('assignees')['edges']]
+                            else:
+                                assignees.append(author_name)
+                            repo_name = issue.get('repository')["name"]
+                            issue_id = issue.get('number')
+                            title = issue.get('title')
+                            event_type = event["node"]["__typename"]
+                            by = None
+                            if "actor" in event["node"]:
+                                by = event["node"]["actor"]["login"]
+                            elif "author" in event["node"]:
+                                by = event["node"]["author"]["login"]
+                            elif "pullRequest" in event["node"]:
+                                by = event["node"]["pullRequest"]["author"]["login"]
+                            all_events.append(Event(issue_type, repo_name, issue_id, title, event_type, by, assignees))
+                if ret["data"]["search"]["pageInfo"]["hasNextPage"]:
+                    last_cursor = f'"{ret["data"]["search"]["pageInfo"]["endCursor"]}"'
+                else:
+                    break
+        return all_events
 
     def get_project_id(self, project_filter):
         # Note that we want to find exactly 1 project, but are asking for more projects matching the criteria
@@ -245,17 +501,16 @@ def run_update():
     for team_member in team_members:
         if team_member[1] is None:
             team_member[1] = team_member[0]
+
     if team_members is not None:
         team_members.sort(key=itemgetter(1))
         logging.debug("Team size: " + str(len(team_members)) + ", members: " + str(team_members))
-
         for nick, name in team_members:
             found_ids = gh_api.get_issues_ids(
                 f"is:open org:scylladb is:issue -project:scylladb/{project_number} assignee:{nick}")
             if len(found_ids) > 0:
                 logging.info(f"{name}'s not added issues count: " + str(len(found_ids)))
                 issues_ids += found_ids
-
     logging.info(f"Total number of found issues: {len(issues_ids)}")
 
     if args.update_project:
@@ -263,6 +518,22 @@ def run_update():
             gh_api.add_issue_to_project(project_id, issue_id)
             logging.info(f"Added issue with ID: {issue_id} and number: {issue_number} from: {issue_repo} repository to "
                          f"the project with ID: {project_name}")
+
+    if args.weekly_reports:
+        events = []
+        previous_week_date = (datetime.now() - timedelta(days=7)).isoformat()
+        if team_members is not None:
+            team_members.sort(key=itemgetter(1))
+            for nick, name in team_members:
+                events += gh_api.get_issues_last_events(issues_filter=f"is:open org:scylladb", author=nick, author_name=name,
+                                                        since=previous_week_date)
+
+        events = list(set(events))  # remove duplicates
+        collapsed_events = CollapsedEvents()
+        for event in events:
+            collapsed_events.insert(event.issue_id, event)
+        logging.info("Found events: ")
+        logging.info("\n" + str(collapsed_events))
 
 
 if __name__ == "__main__":
@@ -279,6 +550,8 @@ if __name__ == "__main__":
     parser.add_argument('--query', metavar="'query'", type=str, help="execute a raw GraphQL query")
     parser.add_argument('--update-project', action='store_true',
                         help='Use to update projects.Default will run without actually updating projects')
+    parser.add_argument('--weekly-reports', action='store_true',
+                        help="Generate a report of what events occurred in team's Issues and PRs")
     args = parser.parse_args()
 
     gh_api = GithubAPI(args.gh_token)
