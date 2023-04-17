@@ -158,7 +158,8 @@ class GithubAPI:
             return None
 
     def add_issue_to_project(self, project_id, issue_id):
-        return  # added for safety - remove if you really want to do it
+        if not args.update_project:
+            return
         query = """
         mutation {{
             addProjectV2ItemById( input: {{ projectId: "{}" contentId: "{}" }} ) {{
@@ -253,11 +254,11 @@ def run_update():
 
     logging.info(f"Total number of found issues: {len(issues_ids)}")
 
-    # ! danger zone !
-    # for issue_id, issue_number, issue_repo in issues_ids:
-    #     gh_api.add_issue_to_project(project_id, issue_id)
-    #     logging.info(f"Added issue with ID: {issue_id} and number: {issue_number} from: {issue_repo} repository to "
-    #                  f"the project with ID: {project_name}")
+    if args.update_project:
+        for issue_id, issue_number, issue_repo in issues_ids:
+            gh_api.add_issue_to_project(project_id, issue_id)
+            logging.info(f"Added issue with ID: {issue_id} and number: {issue_number} from: {issue_repo} repository to "
+                         f"the project with ID: {project_name}")
 
 
 if __name__ == "__main__":
@@ -272,6 +273,8 @@ if __name__ == "__main__":
     parser.add_argument('--team', type=str,
                         help='Name of the team members to search for un-assigned issues to project')
     parser.add_argument('--query', metavar="'query'", type=str, help="execute a raw GraphQL query")
+    parser.add_argument('--update-project', action='store_true',
+                        help='Use to update projects.Default will run without actually updating projects')
     args = parser.parse_args()
 
     gh_api = GithubAPI(args.gh_token)
