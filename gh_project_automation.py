@@ -241,6 +241,10 @@ def run_update():
             issues_ids += found_ids
 
     team_members = gh_api.get_team_members(args.team)
+    # if a team member doesn't have a name, copy nick into name, so it's not None
+    for team_member in team_members:
+        if team_member[1] is None:
+            team_member[1] = team_member[0]
     if team_members is not None:
         team_members.sort(key=itemgetter(1))
         logging.debug("Team size: " + str(len(team_members)) + ", members: " + str(team_members))

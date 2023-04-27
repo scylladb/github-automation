@@ -1,0 +1,43 @@
+name: run gh_project_automation.py
+
+on:
+  push:
+  schedule:
+  - cron: '0 0 * * *'
+
+jobs:
+  update_projects:
+    name: Update project ${{ matrix.project-name }} for ${{ matrix.team }} members
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        team:
+         - releng
+         - storage
+         - Eliran-team
+        include:
+          - team: releng
+            project-name: Release
+          - team: storage
+            project-name: Storage
+          - team: Eliran-team
+            project-name: Eliran
+    steps:
+      - name: checkout repo content
+        uses: actions/checkout@v3 # checkout the repository content
+
+      - name: setup python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11' # install the python version needed
+
+      - name: install python packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: execute gh_project_automation.py
+        env:
+          GITHUB_SECRET: ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
+        run: python gh_project_automation.py $GITHUB_SECRET --team ${{ matrix.team }} --project-name ${{ matrix.project-name }} --update-project
