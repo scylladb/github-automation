@@ -40,4 +40,4 @@ jobs:
       - name: execute gh_project_automation.py
         env:
           GITHUB_SECRET: ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
-        run: python gh_project_automation.py $GITHUB_SECRET --team ${{ matrix.team }} --project-name ${{ matrix.project-name }} --update-project
+        run: python gh_project_automation.py $GITHUB_SECRET --team ${{ matrix.team }} --project-name ${{ matrix.project-name }} --update-project --weekly-reports
