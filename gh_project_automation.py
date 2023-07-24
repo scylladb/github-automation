@@ -79,6 +79,9 @@ class GithubAPI:
         x-ratelimit-reset	    The time at which the current rate limit window resets in UTC epoch seconds.
         """
         response = self.session.get(self.API_ENDPOINT)
+        if response.status_code == 502:
+            sys.exit("! GitHub is overloaded and will drop queries, aborting !")
+
         rate_limits = {key: value for (key, value) in response.headers.items() if 'x-ratelimit' in key.lower()}
         logging.info(f"GitHub API's rate limits: {rate_limits}")
         if float(rate_limits['X-RateLimit-Remaining']) / float(rate_limits['X-RateLimit-Limit']) < 0.20:
@@ -88,6 +91,8 @@ class GithubAPI:
         # logging.debug(query)
         response = self.session.post(self.API_ENDPOINT, data=json.dumps({"query": query}))
         # logging.debug(response.json())
+        if response.status_code == 502:
+            sys.exit("! GitHub is overloaded and will drop queries, aborting !")
         if 'errors' in response.json():
             logging.error(response.json())
             sys.exit("Error when processing request, most probably due to malformed GraphQL, exiting...")
@@ -455,7 +460,7 @@ class GithubAPI:
                 members["members"]["nodes"]]
 
 
-def run_update():
+def run():
     gh_api.check_rate_limits()
 
     views = gh_api.get_project_views_filters("scylladb", project_number)
@@ -584,13 +589,13 @@ if __name__ == "__main__":
     else:
         sys.exit("Couldn't find project ID, exiting...")
 
-    run_update()
+    run()
 
     if args.cron_job:
         scheduler = BlockingScheduler(logger=logging.getLogger())
         our_timezone = pytz.timezone("CET")
         trigger = CronTrigger(year="*", month="*", day="*", hour="0", minute="*", second="*", timezone=our_timezone)
-        scheduler.add_job(func=run_update, trigger=trigger)
+        scheduler.add_job(func=run, trigger=trigger)
         try:
             scheduler.start()
         except Exception as e:
