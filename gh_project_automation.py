@@ -473,6 +473,8 @@ def run():
         pos = 0
         broken_filter = {}
         prev_filter = None
+        if f is None:
+            continue
         while m := filter_cats.search(f):
             if prev_filter is not None:
                 broken_filter[prev_filter] = f[:m.span(0)[0]]
