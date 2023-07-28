@@ -484,6 +484,15 @@ def run_update():
         broken_labels = map(lambda x: x.replace('"', '').strip(), broken_labels)
         labels = labels.union(set(broken_labels))
 
+    def matches_blacklisted_labels(label):
+        blacklisted_labels_regexp = ["^P[0-9]$", "^customer*", "^top10$"]
+        for regexp in blacklisted_labels_regexp:
+            if re.search(regexp, label):
+                return True
+        return False
+
+    labels = [x for x in labels if not matches_blacklisted_labels(x)]
+
     logging.info(f"Found {len(labels)} labels in the project: {labels}")
     labels_query = "label:" + ",".join(['"' + x + '"' for x in labels])
     logging.debug(labels_query)
