@@ -16,6 +16,7 @@ jobs:
          - releng
          - storage
          - Eliran-team
+         - CoreFront
         include:
           - team: releng
             project-name: Release
@@ -23,6 +24,8 @@ jobs:
             project-name: Storage
           - team: Eliran-team
             project-name: Eliran
+          - team: CoreFront
+            project-name: CoreFront
     steps:
       - name: checkout repo content
         uses: actions/checkout@v3 # checkout the repository content
