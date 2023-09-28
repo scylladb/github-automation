@@ -494,7 +494,7 @@ def run():
     def matches_blacklisted_labels(label):
         blacklisted_labels_regexp = ["^P[0-9]$", "^customer*", "^top10$"]
         for regexp in blacklisted_labels_regexp:
-            if re.search(regexp, label):
+            if re.search(regexp, label, re.IGNORECASE):
                 return True
         return False
 
