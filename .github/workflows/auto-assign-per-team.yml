@@ -15,7 +15,7 @@ jobs:
         team:
          - releng
          - storage
-         - Eliran-team
+         - core-backend
          - CoreFront
          - Drivers-Team
         include:
@@ -23,8 +23,8 @@ jobs:
             project-name: Release
           - team: storage
             project-name: Storage
-          - team: Eliran-team
-            project-name: Eliran
+          - team: core-backend
+            project-name: 'Core - Backend'
           - team: CoreFront
             project-name: CoreFront
           - team: drivers-team
