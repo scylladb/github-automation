@@ -24,9 +24,9 @@ jobs:
           - team: storage
             project-name: Storage
           - team: core-backend
-            project-name: 'Core - Backend'
+            project-name: Core_-_Backend
           - team: CoreFront
-            project-name: CoreFront
+            project-name: Core_-_Frontend
           - team: drivers-team
             project-name: Drivers-Team
     steps:
