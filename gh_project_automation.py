@@ -406,7 +406,10 @@ class GithubAPI:
                 }}
             }}
         """
-        q = query.format(project_filter)
+        # The query field ignores everything starting from the first space
+        # For example: query:"Core - XXX" will return all items prefixed with 'Core'
+        # The workaround is to replace spaces with underscores (_)
+        q = query.format(project_filter.replace(" ","_"))
         ret = self.do_query(q).json()
         matching_project_ids = ret["data"]["organization"]["projectsV2"]["nodes"]
         if len(matching_project_ids) == 1:
