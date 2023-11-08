@@ -510,7 +510,7 @@ def run():
     issues_ids = []
     for label in labels:
         found_ids = gh_api.get_issues_ids(
-            f"is:open org:scylladb is:issue -project:scylladb/{project_number} label:{label}")
+            f"is:open org:scylladb is:issue -project:scylladb/{project_number} label:\\\"{label}\\\"")
         if len(found_ids) > 0:
             logging.info(f"'{label}' label's not added issues count: " + str(len(found_ids)))
             issues_ids += found_ids
