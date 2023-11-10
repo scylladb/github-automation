@@ -16,19 +16,24 @@ jobs:
          - releng
          - storage
          - core-backend
-         - CoreFront
+         - core-frontend
          - Drivers-Team
         include:
           - team: releng
             project-name: Release
+            labels: "[]"
           - team: storage
             project-name: Storage
+            labels: "[]"
           - team: core-backend
             project-name: Core_-_Backend
-          - team: CoreFront
+            labels: "['counters', 'materialized-views', 'UDF', 'workload-prioritization', 'LDAP', 'wasm', 'security/EncryptionAtRest', 'Security', 'AlternatorStreams', 'security', 'CQL', 'workload-prio', 'materialized views', 'AlternatorQueryLanguage', 'Alternator', 'commit-log-hard-limit', 'commit-log', 'sec-index']"
+          - team: core-frontend
             project-name: Core_-_Frontend
+            labels: "['guardrails', 'Security', 'security/Audit']"
           - team: drivers-team
             project-name: Drivers-Team
+            labels: "[]"
     steps:
       - name: checkout repo content
         uses: actions/checkout@v3 # checkout the repository content
@@ -46,4 +51,4 @@ jobs:
       - name: execute gh_project_automation.py
         env:
           GITHUB_SECRET: ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
-        run: python gh_project_automation.py $GITHUB_SECRET --team ${{ matrix.team }} --project-name ${{ matrix.project-name }} --update-project --weekly-reports
+        run: python gh_project_automation.py $GITHUB_SECRET --team ${{ matrix.team }} --project-name ${{ matrix.project-name }} --labels "${{ matrix.labels }}" --update-project --weekly-reports

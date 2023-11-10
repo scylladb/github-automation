@@ -463,36 +463,10 @@ class GithubAPI:
                 members["members"]["nodes"]]
 
 
-def run():
+def run(args):
     gh_api.check_rate_limits()
 
-    views = gh_api.get_project_views_filters("scylladb", project_number)
-    filters = [x["filter"] for x in views]
-
-    filter_cats = re.compile(r"\S+:")
-
-    accumulated_label_filters = []
-    for f in filters:
-        pos = 0
-        broken_filter = {}
-        prev_filter = None
-        if f is None:
-            continue
-        while m := filter_cats.search(f):
-            if prev_filter is not None:
-                broken_filter[prev_filter] = f[:m.span(0)[0]]
-            prev_filter = m.group(0)[:-1]
-            f = f[m.span(0)[1]:]
-        if prev_filter is not None:
-            broken_filter[prev_filter] = f
-        if "label" in broken_filter:
-            accumulated_label_filters.append(broken_filter["label"])
-
-    labels = set()
-    for label in accumulated_label_filters:
-        broken_labels = [x.strip() for x in label.split(",")]
-        broken_labels = map(lambda x: x.replace('"', '').strip(), broken_labels)
-        labels = labels.union(set(broken_labels))
+    labels = args.labels.strip("][''").split(', ')
 
     def matches_blacklisted_labels(label):
         blacklisted_labels_regexp = ["^P[0-9]$", "^customer*", "^top10$"]
@@ -566,6 +540,8 @@ if __name__ == "__main__":
                         help='Name of project for assigning issues, can be substring')
     parser.add_argument('--team', type=str,
                         help='Name of the team members to search for un-assigned issues to project')
+    parser.add_argument('--labels', type=str,
+                        help='Name of the team members to search for un-assigned issues to project')
     parser.add_argument('--query', metavar="'query'", type=str, help="execute a raw GraphQL query")
     parser.add_argument('--update-project', action='store_true',
                         help='Use to update projects.Default will run without actually updating projects')
@@ -603,7 +579,7 @@ if __name__ == "__main__":
     else:
         sys.exit("Couldn't find project ID, exiting...")
 
-    run()
+    run(args)
 
     if args.cron_job:
         scheduler = BlockingScheduler(logger=logging.getLogger())
