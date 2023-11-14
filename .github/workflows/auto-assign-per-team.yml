@@ -27,7 +27,7 @@ jobs:
             labels: "[]"
           - team: core-backend
             project-name: Core_-_Backend
-            labels: "['counters', 'materialized-views', 'UDF', 'workload-prioritization', 'LDAP', 'wasm', 'security/EncryptionAtRest', 'Security', 'AlternatorStreams', 'security', 'CQL', 'workload-prio', 'materialized views', 'AlternatorQueryLanguage', 'Alternator', 'commit-log-hard-limit', 'commit-log', 'sec-index']"
+            labels: "['counters', 'materialized-views', 'UDF', 'workload-prioritization', 'LDAP', 'wasm', 'security/EncryptionAtRest', 'AlternatorStreams', 'workload-prio', 'materialized views', 'AlternatorQueryLanguage', 'Alternator', 'commit-log-hard-limit', 'commit-log', 'sec-index']"
           - team: core-frontend
             project-name: Core_-_Frontend
             labels: "['guardrails', 'Security', 'security/Audit']"
