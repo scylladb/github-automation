@@ -20,7 +20,7 @@ jobs:
          - Drivers-Team
         include:
           - team: releng
-            project-name: Release
+            project-name: Release_Engineering
             labels: "[]"
           - team: storage
             project-name: Storage
