@@ -25,12 +25,12 @@ jobs:
           - team: storage
             project-name: Storage
             labels: "[]"
-          - team: core-backend
-            project-name: Core_-_Backend
-            labels: "['area/materialized views', 'area/udf', 'area/workload prioritization', 'area/ldap', 'area/wasm', 'area/encryption at rest', 'area/workload prioritization', 'area/materialized views', 'area/commitlog hard limit', 'area/commitlog', 'area/sec index']"
-          - team: core-frontend
-            project-name: Core_-_Frontend
-            labels: "['area/guardrails', 'area/security', 'security/audit', 'area/alternator', 'area/alternator-streams']"
+#          - team: core-backend
+#            project-name: Core_-_Backend
+#            labels: "['area/materialized views', 'area/udf', 'area/workload prioritization', 'area/ldap', 'area/wasm', 'area/encryption at rest', 'area/workload prioritization', 'area/materialized views', 'area/commitlog hard limit', 'area/commitlog', 'area/sec index']"
+#          - team: core-frontend
+#            project-name: Core_-_Frontend
+#            labels: "['area/guardrails', 'area/security', 'security/audit', 'area/alternator', 'area/alternator-streams']"
           - team: drivers-team
             project-name: Drivers-Team
             labels: "[]"
