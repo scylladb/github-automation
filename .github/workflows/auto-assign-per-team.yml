@@ -15,8 +15,8 @@ jobs:
         team:
          - releng
          - storage
-         - core-backend
-         - core-frontend
+#         - core-backend
+#         - core-frontend
          - Drivers-Team
         include:
           - team: releng
