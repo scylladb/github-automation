@@ -1,5 +1,5 @@
 APScheduler==3.8.1
-requests==2.31.0
+requests==2.32.0
 configparser~=3.8.1
 distro==1.8.0
 cryptography==42.0.6
