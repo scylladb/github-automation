@@ -1,0 +1,104 @@
+name: Weekly metrics report
+on:
+  workflow_dispatch:
+  schedule:
+    # sent every Sunday
+    - cron: '0 0 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: issue metrics
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+    - name: Get Issues dates for last week
+      shell: bash
+      run: |
+        # Calculate the first day of the previous week
+        first_day=$(date -d "last week -1 day" +%Y-%m-%d)
+
+        # Calculate the last day of the previous week
+        last_day=$(date -d "$first_day +1 week" +%Y-%m-%d)
+
+        #Set an environment variable with the date range
+        echo "$first_day..$last_day"
+        echo "last_week=$first_day..$last_day" >> "$GITHUB_ENV"
+
+    - name: Run issue-metrics tool
+      uses: github/issue-metrics@v3.4.0
+      env:
+        GH_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        SEARCH_QUERY: 'repo:dani-tweig/scylla-enterprise is:issue closed:${{ env.last_week }}'
+        HIDE_TIME_TO_ANSWER: true
+        HIDE_TIME_TO_FIRST_RESPONSE: true
+        ENABLE_MENTOR_COUNT: true
+        LABELS_TO_MEASURE: "status/pending field info"
+
+    - name: Converts Markdown to HTML
+      uses: jaywcjlove/markdown-to-html-cli@main
+      with:
+        source:  ./issue_metrics.md
+        output:  ./issue_metrics.html
+        
+      
+
+    - name: Run issue-metrics tool
+      uses: github/issue-metrics@v3.4.0
+      env:
+        GH_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        SEARCH_QUERY: 'repo:dani-tweig/scylla-enterprise is:pr closed:${{ env.last_week }}'
+        HIDE_TIME_TO_ANSWER: true
+        HIDE_TIME_TO_FIRST_RESPONSE: true
+        ENABLE_MENTOR_COUNT: true
+        LABELS_TO_MEASURE: "status/pending field info"
+
+    - name: Converts Markdown to HTML
+      uses: jaywcjlove/markdown-to-html-cli@main
+      with:
+        source:  ./issue_metrics.md
+        output:  ./pr_metrics.html
+        markdown-style-theme: dark
+
+    - name: Run issue-metrics tool
+      uses: github/issue-metrics@v3.4.0
+      env:
+        GH_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+        SEARCH_QUERY: 'repo:dani-tweig/scylla-enterprise closed:${{ env.last_week }}'
+        HIDE_TIME_TO_ANSWER: true
+        HIDE_TIME_TO_FIRST_RESPONSE: true
+        ENABLE_MENTOR_COUNT: true
+        LABELS_TO_MEASURE: "status/pending field info"
+
+    - name: Converts Markdown to HTML
+      uses: jaywcjlove/markdown-to-html-cli@main
+      with:
+        source:  ./issue_metrics.md
+        output:  ./all_metrics.html
+
+        
+    - name: Send mail
+      if: always()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # mail server settings
+        server_address: smtp.gmail.com
+        server_port: 465
+        username: ${{ secrets.DANI_EMAIL }}
+        password: ${{ secrets.APP_PASS }}
+        secure: true
+        # email subject
+        subject: Weekly GitHub Metrics ${{ env.last_week }}
+        # email body as text
+        body: Weekly report of closed items measurements
+        html_body: file://all_metrics.html 
+        # comma-separated string, send email to
+        to: github-metrics-report@scylladb.com , ${{ secrets.DANI_EMAIL }}
+        # from email name
+        from: GitHub Metrics 
+        attachments: |
+            ./issue_metrics.html , ./pr_metrics.html
