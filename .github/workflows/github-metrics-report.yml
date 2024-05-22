@@ -88,8 +88,8 @@ jobs:
         # mail server settings
         server_address: smtp.gmail.com
         server_port: 465
-        username: ${{ secrets.DANI_EMAIL }}
-        password: ${{ secrets.APP_PASS }}
+        username: ${{ secrets.REPORT_USER_EMAIL }}
+        password: ${{ secrets.REPORT_USER_APP_PASSWORD }}
         secure: true
         # email subject
         subject: Weekly GitHub Metrics ${{ env.last_week }}
@@ -97,7 +97,7 @@ jobs:
         body: Weekly report of closed items measurements
         html_body: file://all_metrics.html 
         # comma-separated string, send email to
-        to: github-metrics-report@scylladb.com , ${{ secrets.DANI_EMAIL }}
+        to: github-metrics-report@scylladb.com , dani.tweig@scylladb.com
         # from email name
         from: GitHub Metrics 
         attachments: |
