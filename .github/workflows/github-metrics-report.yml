@@ -33,7 +33,7 @@ jobs:
       uses: github/issue-metrics@v3.4.0
       env:
         GH_TOKEN:  ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
-        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise is:issue closed:${{ env.last_week }}'
+        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise is:issue closed:${{ env.last_week }} reason:completed'
         HIDE_TIME_TO_ANSWER: true
         HIDE_TIME_TO_FIRST_RESPONSE: true
         ENABLE_MENTOR_COUNT: true
@@ -51,7 +51,7 @@ jobs:
       uses: github/issue-metrics@v3.4.0
       env:
         GH_TOKEN:  ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
-        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise is:pr closed:${{ env.last_week }}'
+        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise is:pr closed:${{ env.last_week }} reason:completed'
         HIDE_TIME_TO_ANSWER: true
         HIDE_TIME_TO_FIRST_RESPONSE: true
         ENABLE_MENTOR_COUNT: true
@@ -68,7 +68,7 @@ jobs:
       uses: github/issue-metrics@v3.4.0
       env:
         GH_TOKEN:  ${{ secrets.ISSUE_ASSIGNMENT_TO_PROJECT_TOKEN }}
-        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise closed:${{ env.last_week }}'
+        SEARCH_QUERY: 'repo:scylladb/scylla-enterprise closed:${{ env.last_week }} reason:completed'
         HIDE_TIME_TO_ANSWER: true
         HIDE_TIME_TO_FIRST_RESPONSE: true
         ENABLE_MENTOR_COUNT: true
