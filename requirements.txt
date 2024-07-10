@@ -8,5 +8,5 @@ keyring~=23.13.1
 setuptools==67.6.0
 packaging==23.0
 pyparsing~=3.0.9
-zipp~=3.15.0
+zipp~=3.19.1
 pytz~=2022.7.1
