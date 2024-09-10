@@ -2,7 +2,7 @@ APScheduler==3.8.1
 requests==2.32.0
 configparser~=3.8.1
 distro==1.8.0
-cryptography==42.0.8
+cryptography==43.0.1
 Pillow==10.2.0
 keyring~=23.13.1
 setuptools==67.6.0
