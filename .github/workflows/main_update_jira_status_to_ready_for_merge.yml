@@ -6,9 +6,9 @@ on:
       label_name:
         required: true
         type: string
+    secrets:
       jira_auth:
         required: true
-        type: string
 
 jobs:
   action-jira-status-update-ready-for-merge:
@@ -45,7 +45,7 @@ jobs:
       - name: Transition Jira Tickets to 'Ready for Merge'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
-          JIRA_AUTH: ${{ inputs.jira_auth }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
           for ticket_id in "${tickets[@]}"; do
