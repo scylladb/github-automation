@@ -2,17 +2,12 @@ name: Update Jira Status - In Progress
 
 on:
   workflow_call:
-    inputs:
-      label_name:
-        required: true
-        type: string
     secrets:
       jira_auth:
         required: true
 
 jobs:
   action-jira-status-update:
-    if: ${{ github.event.label.name == inputs.label_name }}
     runs-on: ubuntu-latest
 
     steps:
