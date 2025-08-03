@@ -45,12 +45,12 @@ jobs:
       - name: Transition Jira Tickets to 'Ready for Merge'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
-          JIRA_AUTH: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
           echo "JIRA_AUTH value: $JIRA_AUTH"
           if [ -z "$JIRA_AUTH" ]; then
-            echo "ERROR: JIRA_AUTH secret is empty. Please set USER_AND_KEY_FOR_JIRA_AUTOMATION in repository or organization secrets."
+            echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
             exit 1
           fi
           for ticket_id in "${tickets[@]}"; do
