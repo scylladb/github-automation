@@ -49,6 +49,10 @@ jobs:
         run: |
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
           echo "JIRA_AUTH value: $JIRA_AUTH"
+          if [ -z "$JIRA_AUTH" ]; then
+            echo "ERROR: JIRA_AUTH secret is empty. Please set USER_AND_KEY_FOR_JIRA_AUTOMATION in repository or organization secrets."
+            exit 1
+          fi
           for ticket_id in "${tickets[@]}"; do
             echo "Transitioning Jira ticket to 'Ready for Merge': $ticket_id"
             curl -v --fail -X POST \
