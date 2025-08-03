@@ -1,14 +1,18 @@
-name: Update Jira Status
+name: Update Jira Status - In Progress
 
 on:
   workflow_call:
     inputs:
-      jira_auth:
+      label_name:
         required: true
         type: string
+    secrets:
+      jira_auth:
+        required: true
 
 jobs:
   action-jira-status-update:
+    if: ${{ github.event.label.name == inputs.label_name }}
     runs-on: ubuntu-latest
 
     steps:
@@ -31,13 +35,20 @@ jobs:
       - name: Transition Jira Tickets to 'In Progress'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
-          JIRA_AUTH: ${{ inputs.jira_auth }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
+          echo "JIRA_AUTH value: $JIRA_AUTH"
+          if [ -z "$JIRA_AUTH" ]; then
+            echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
+            exit 1
+          fi
           for ticket_id in "${tickets[@]}"; do
-            curl --fail -X POST \
+            echo "Transitioning Jira ticket to 'In Progress': $ticket_id"
+            curl -v --fail -X POST \
               --url "https://scylladb.atlassian.net/rest/api/3/issue/${ticket_id}/transitions" \
               --user "$JIRA_AUTH" \
               --header "Accept: application/json" \
               --header "Content-Type: application/json" \
               -d '{"transition": {"id": "111"}}'
+          done
