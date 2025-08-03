@@ -56,3 +56,4 @@ jobs:
               --header "Accept: application/json" \
               --header "Content-Type: application/json" \
               -d '{"transition": {"id": "131"}}'
+          done
