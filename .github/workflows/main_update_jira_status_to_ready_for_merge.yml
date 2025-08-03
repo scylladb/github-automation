@@ -48,9 +48,10 @@ jobs:
           JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
+          echo "JIRA_AUTH value: $JIRA_AUTH"
           for ticket_id in "${tickets[@]}"; do
             echo "Transitioning Jira ticket to 'Ready for Merge': $ticket_id"
-            curl --fail -X POST \
+            curl -v --fail -X POST \
               --url "https://scylladb.atlassian.net/rest/api/3/issue/${ticket_id}/transitions" \
               --user "$JIRA_AUTH" \
               --header "Accept: application/json" \
