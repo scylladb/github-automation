@@ -18,8 +18,8 @@ jobs:
           body="${{ github.event.pull_request.body }}"
           > tickets.txt
           echo "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          echo "$body" | grep -iE '^Fixes[[:space:]]*:[[:space:]]*[A-Z]+-[0-9]+' | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          sort -u tickets.txt > unique_tickets.txt
+          echo "$body" | grep -iE '^Fixes[[:space:]]*[: ][[:space:]]*[A-Z]+-[0-9]+' | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+          sort -u tickets.txt > unique_tickets.txt 
           if [[ ! -s unique_tickets.txt ]]; then
             echo "ticket-ids=" >> $GITHUB_OUTPUT
             exit 0
