@@ -14,20 +14,15 @@ jobs:
       - name: Extract Jira Ticket IDs
         id: get-jira
         shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY:  ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
 
-          # Read title/body literally (no expansion) and replace backticks with spaces
-          title="$(
-            tr '`' ' ' <<'__TITLE__'
-            ${{ github.event.pull_request.title }}
-            __TITLE__
-            )"
-          body="$(
-            tr '`' ' ' <<'__BODY__'
-            ${{ github.event.pull_request.body }}
-            __BODY__
-            )"
+          # Single-line: replace backticks with spaces, no evaluation
+          title="$(printf '%s' "$PR_TITLE" | tr '`' ' ')"
+          body="$(printf '%s' "$PR_BODY"  | tr '`' ' ')"
 
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
