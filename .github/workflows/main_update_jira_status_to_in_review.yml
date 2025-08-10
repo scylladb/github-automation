@@ -13,31 +13,49 @@ jobs:
     steps:
       - name: Extract Jira Ticket IDs
         id: get-jira
+        shell: bash
         run: |
-          title="${{ github.event.pull_request.title }}"
-          body="${{ github.event.pull_request.body }}"
+          set -euo pipefail
+
+          # Read title/body literally (no expansion) and replace backticks with spaces
+          title="$(
+            tr '`' ' ' <<'__TITLE__'
+            ${{ github.event.pull_request.title }}
+            __TITLE__
+            )"
+          body="$(
+            tr '`' ' ' <<'__BODY__'
+            ${{ github.event.pull_request.body }}
+            __BODY__
+            )"
+
           > tickets.txt
-          echo "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          echo '$body' | grep -iE '^Fixes[[:space:]]*[: ][[:space:]]*[A-Z]+-[0-9]+' | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          sort -u tickets.txt > unique_tickets.txt 
+          printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+          printf '%s\n' "$body"  | grep -iE '^Fixes[[:space:]]*[: ][[:space:]]*[A-Z]+-[0-9]+' \
+                                | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+
+          sort -u tickets.txt > unique_tickets.txt
           if [[ ! -s unique_tickets.txt ]]; then
-            echo "ticket-ids=" >> $GITHUB_OUTPUT
+            echo "ticket-ids=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           tickets_csv=$(paste -sd, unique_tickets.txt)
-          echo "ticket-ids=$tickets_csv" >> $GITHUB_OUTPUT
+          echo "ticket-ids=$tickets_csv" >> "$GITHUB_OUTPUT"
 
       - name: Transition Jira Tickets to 'In Review'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
           JIRA_AUTH: ${{ secrets.jira_auth }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
-          echo "JIRA_AUTH value: $JIRA_AUTH"
-          if [ -z "$JIRA_AUTH" ]; then
+          if [ -z "${JIRA_AUTH:-}" ]; then
             echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
             exit 1
           fi
+
           for ticket_id in "${tickets[@]}"; do
             echo "Transitioning Jira ticket to 'In Review': $ticket_id"
             curl -v --fail -X POST \
