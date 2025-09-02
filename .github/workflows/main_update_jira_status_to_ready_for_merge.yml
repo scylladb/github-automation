@@ -2,9 +2,6 @@ name: Update Status - Ready For Merge
 
 on:
   workflow_call:
-    secrets:
-      jira_auth:
-        required: true
 
 jobs:
   action-jira-status-update-ready-for-merge:
@@ -46,7 +43,7 @@ jobs:
       - name: Transition Jira Tickets to 'Ready for Merge'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
-          JIRA_AUTH: ${{ secrets.jira_auth }}
+          JIRA_AUTH: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
         shell: bash
         run: |
           set -euo pipefail
