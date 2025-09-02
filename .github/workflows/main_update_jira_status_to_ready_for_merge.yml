@@ -2,17 +2,14 @@ name: Update Status - Ready For Merge
 
 on:
   workflow_call:
-    inputs:
-      label_name:
-        required: true
-        type: string
     secrets:
       jira_auth:
         required: true
 
 jobs:
   action-jira-status-update-ready-for-merge:
-    if: ${{ github.event.label.name == inputs.label_name }}
+    # gate the job by the label from the PR event
+    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -24,7 +21,7 @@ jobs:
           PR_BODY:  ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
-          echo "Label '${{ inputs.label_name }}' detected. Looking for Jira ticket IDs..."
+          echo "Label 'status/merge_candidate' detected. Looking for Jira ticket IDs..."
 
           # Replace backticks with spaces (no evaluation)
           title="$(printf '%s' "${PR_TITLE:-}" | tr '`' ' ')"
@@ -32,11 +29,10 @@ jobs:
 
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          printf '%s\n' "$body"  | grep -iE '^Fixes[[:space:]]*[: ][[:space:]]*[A-Z]+-[0-9]+' \
+          printf '%s\n' "$body"  | grep -iE 'Fixes[[:space:]]*[: ][[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
           sort -u tickets.txt > unique_tickets.txt
-
           if [[ ! -s unique_tickets.txt ]]; then
             echo "No Jira tickets found in PR title or body. Skipping Jira update."
             echo "ticket-ids=" >> "$GITHUB_OUTPUT"
@@ -46,6 +42,7 @@ jobs:
           tickets_csv=$(paste -sd, unique_tickets.txt)
           echo "ticket-ids=$tickets_csv" >> "$GITHUB_OUTPUT"
 
+
       - name: Transition Jira Tickets to 'Ready for Merge'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
@@ -53,7 +50,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           if [ -z "${JIRA_AUTH:-}" ]; then
             echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
             exit 1
