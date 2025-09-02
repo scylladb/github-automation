@@ -48,7 +48,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${JIRA_AUTH:-}" ]; then
-            echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
+            echo "ERROR: JIRA_AUTH secret is not found."
             exit 1
           fi
 
