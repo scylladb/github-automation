@@ -6,14 +6,10 @@ on:
       jira_auth:
         required: true
 
-# Static label lives here
-env:
-  MERGE_LABEL: status/merge_candidate
-
 jobs:
   action-jira-status-update-ready-for-merge:
     # gate the job by the label from the PR event
-    if: ${{ github.event.label.name == env.MERGE_LABEL }}
+    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -25,7 +21,7 @@ jobs:
           PR_BODY:  ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
-          echo "Label '${MERGE_LABEL}' detected. Looking for Jira ticket IDs..."
+          echo "Label 'status/merge_candidate' detected. Looking for Jira ticket IDs..."
 
           # Replace backticks with spaces (no evaluation)
           title="$(printf '%s' "${PR_TITLE:-}" | tr '`' ' ')"
