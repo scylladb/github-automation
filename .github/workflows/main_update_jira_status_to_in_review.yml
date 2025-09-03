@@ -22,7 +22,7 @@ jobs:
       transition_name: "In Review"
       transition_id: "121"
     secrets:
-      jira_auth: ${{ secrets.jira_auth }}
+      jira_auth: ${{ secrets.caller_jira_auth }}
     strategy:
       matrix:
         jira_key: ${{ fromJSON(needs.extract.outputs.jira-keys-json) }}
