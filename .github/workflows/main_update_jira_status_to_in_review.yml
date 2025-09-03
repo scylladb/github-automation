@@ -3,7 +3,7 @@ name: Update Jira Status - In Review
 on:
   workflow_call:
     secrets:
-      jira_auth:
+      caller_jira_auth:
         required: true
 
 jobs:
