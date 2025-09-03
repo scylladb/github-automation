@@ -10,15 +10,19 @@ on:
         required: true
         type: string
     outputs:
-      jira-keys:
+      jira-keys-csv:
         description: "Comma-separated Jira keys"
-        value: ${{ jobs.extract.outputs.jira-keys }}
+        value: ${{ jobs.extract.outputs.jira-keys-csv }}
+      jira-keys-json:
+        description: "JSON array of Jira keys"
+        value: ${{ jobs.extract.outputs.jira-keys-json }}
 
 jobs:
   extract:
     runs-on: ubuntu-latest
     outputs:
-      jira-keys: ${{ steps.extract.outputs.jira-keys }}
+      jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
+      jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
     steps:
       - id: extract
         shell: bash
@@ -33,14 +37,19 @@ jobs:
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
           sort -u tickets.txt > unique_tickets.txt
+
           if [[ ! -s unique_tickets.txt ]]; then
-            echo "No Jira tickets found."
-            echo "jira-keys=" >> "$GITHUB_OUTPUT"
+            echo "jira-keys-csv=" >> "$GITHUB_OUTPUT"
+            echo "jira-keys-json=[]" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "Found Jira tickets:"
           cat unique_tickets.txt
 
-          tickets_csv=$(paste -sd, unique_tickets.txt)
-          echo "jira-keys=$tickets_csv" >> "$GITHUB_OUTPUT"
+          csv=$(paste -sd, unique_tickets.txt)
+          json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
+          json="[${json}]"
+
+          echo "jira-keys-csv=$csv"   >> "$GITHUB_OUTPUT"
+          echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
