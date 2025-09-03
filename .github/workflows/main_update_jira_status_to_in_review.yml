@@ -7,56 +7,22 @@ on:
         required: true
 
 jobs:
-  action-jira-status-update-in-review:
-    runs-on: ubuntu-latest
+  extract:
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
 
-    steps:
-      - name: Extract Jira Ticket IDs
-        id: get-jira
-        shell: bash
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY:  ${{ github.event.pull_request.body }}
-        run: |
-          set -euo pipefail
-
-          # Single-line: replace backticks with spaces, no evaluation
-          title="$(printf '%s' "$PR_TITLE" | tr '`' ' ')"
-          body="$(printf '%s' "$PR_BODY"  | tr '`' ' ')"
-
-          > tickets.txt
-          printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          printf '%s\n' "$body"  | grep -iE '^Fixes[[:space:]]*[: ][[:space:]]*[A-Z]+-[0-9]+' \
-                                | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-
-          sort -u tickets.txt > unique_tickets.txt
-          if [[ ! -s unique_tickets.txt ]]; then
-            echo "ticket-ids=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          tickets_csv=$(paste -sd, unique_tickets.txt)
-          echo "ticket-ids=$tickets_csv" >> "$GITHUB_OUTPUT"
-
-      - name: Transition Jira Tickets to 'In Review'
-        if: steps.get-jira.outputs.ticket-ids != ''
-        env:
-          JIRA_AUTH: ${{ secrets.jira_auth }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
-          if [ -z "${JIRA_AUTH:-}" ]; then
-            echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
-            exit 1
-          fi
-
-          for ticket_id in "${tickets[@]}"; do
-            echo "Transitioning Jira ticket to 'In Review': $ticket_id"
-            curl -v --fail -X POST \
-              --url "https://scylladb.atlassian.net/rest/api/3/issue/${ticket_id}/transitions" \
-              --user "$JIRA_AUTH" \
-              --header "Accept: application/json" \
-              --header "Content-Type: application/json" \
-              -d '{"transition": {"id": "121"}}'
-          done
+  transition:
+    needs: extract
+    if: ${{ needs.extract.outputs.jira-keys-json != '[]' }}
+    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
+    with:
+      jira_key: ${{ matrix.jira_key }}
+      transition_name: "In Review"
+      transition_id: "121"
+    secrets:
+      jira_auth: ${{ secrets.jira_auth }}
+    strategy:
+      matrix:
+        jira_key: ${{ fromJSON(needs.extract.outputs.jira-keys-json) }}
