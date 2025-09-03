@@ -11,7 +11,7 @@ jobs:
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
     runs-on: ubuntu-latest
     outputs:
-      jira-keys: ${{ steps.get-jira.outputs.jira-keys }}
+      jira-keys-json: ${{ steps.get-jira.outputs.jira-keys-json }}
     steps:
       - name: Extract Jira Ticket IDs
         id: get-jira
@@ -22,7 +22,7 @@ jobs:
 
   transition:
     needs: extract
-    if: ${{ needs.extract.outputs.jira-keys != '' }}
+    if: ${{ needs.extract.outputs.jira-keys-json != '[]' }}
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
@@ -32,4 +32,4 @@ jobs:
       jira_auth: ${{ secrets.caller_jira_auth }}
     strategy:
       matrix:
-        jira_key: ${{ fromJSON('["' + join(needs.extract.outputs.jira-keys, '","') + '"]') }}
+        jira_key: ${{ fromJSON(needs.extract.outputs.jira-keys-json) }}
