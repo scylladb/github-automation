@@ -2,6 +2,9 @@ name: Update Status - Ready For Merge
 
 on:
   workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
 
 jobs:
   action-jira-status-update-ready-for-merge:
