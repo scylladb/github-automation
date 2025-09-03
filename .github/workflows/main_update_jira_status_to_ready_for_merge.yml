@@ -20,7 +20,7 @@ jobs:
           set -euo pipefail
           echo "Label 'status/merge_candidate' detected. Looking for Jira ticket IDs..."
 
-          # Replace backticks with spaces (no evaluation)
+          # Replace backticks with spaces (no evaluation) - V1
           title="$(printf '%s' "${PR_TITLE:-}" | tr '`' ' ')"
           body="$(printf '%s' "${PR_BODY:-}"  | tr '`' ' ')"
 
