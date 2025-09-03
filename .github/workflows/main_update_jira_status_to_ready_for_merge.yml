@@ -43,7 +43,7 @@ jobs:
       - name: Transition Jira Tickets to 'Ready for Merge'
         if: steps.get-jira.outputs.ticket-ids != ''
         env:
-          JIRA_AUTH: ${{ secrets.JIRA_AUTH_CREDENTIALS }}
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         shell: bash
         run: |
           set -euo pipefail
