@@ -39,6 +39,9 @@ jobs:
             exit 0
           fi
 
+          echo "Found the following Jira tickets:"         
+          cat unique_tickets.txt
+
           tickets_csv=$(paste -sd, unique_tickets.txt)
           echo "ticket-ids=$tickets_csv" >> "$GITHUB_OUTPUT"
 
