@@ -3,65 +3,27 @@ name: Update Status - Ready For Merge
 on:
   workflow_call:
     secrets:
-      jira_auth:
+      caller_jira_auth:
         required: true
 
 jobs:
-  action-jira-status-update-ready-for-merge:
-    # gate the job by the label from the PR event
+  extract:
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
-    runs-on: ubuntu-latest
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@main
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
 
-    steps:
-      - name: Extract Jira Ticket IDs
-        id: get-jira
-        shell: bash
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY:  ${{ github.event.pull_request.body }}
-        run: |
-          set -euo pipefail
-          echo "Label 'status/merge_candidate' detected. Looking for Jira ticket IDs..."
-
-          # Replace backticks with spaces (no evaluation)
-          title="$(printf '%s' "${PR_TITLE:-}" | tr '`' ' ')"
-          body="$(printf '%s' "${PR_BODY:-}"  | tr '`' ' ')"
-
-          > tickets.txt
-          printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          printf '%s\n' "$body"  | grep -iE 'Fixes[[:space:]]*[: ][[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
-                                | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-
-          sort -u tickets.txt > unique_tickets.txt
-          if [[ ! -s unique_tickets.txt ]]; then
-            echo "No Jira tickets found in PR title or body. Skipping Jira update."
-            echo "ticket-ids=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          tickets_csv=$(paste -sd, unique_tickets.txt)
-          echo "ticket-ids=$tickets_csv" >> "$GITHUB_OUTPUT"
-
-
-      - name: Transition Jira Tickets to 'Ready for Merge'
-        if: steps.get-jira.outputs.ticket-ids != ''
-        env:
-          JIRA_AUTH: ${{ secrets.jira_auth }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${JIRA_AUTH:-}" ]; then
-            echo "ERROR: JIRA_AUTH secret is empty. Secret was not passed correctly from the calling workflow."
-            exit 1
-          fi
-
-          IFS=',' read -ra tickets <<< "${{ steps.get-jira.outputs.ticket-ids }}"
-          for ticket_id in "${tickets[@]}"; do
-            echo "Transitioning Jira ticket to 'Ready for Merge': $ticket_id"
-            curl -v --fail -X POST \
-              --url "https://scylladb.atlassian.net/rest/api/3/issue/${ticket_id}/transitions" \
-              --user "$JIRA_AUTH" \
-              --header "Accept: application/json" \
-              --header "Content-Type: application/json" \
-              -d '{"transition": {"id": "131"}}'
-          done
+  transition:
+    needs: extract
+    if: ${{ needs.extract.outputs.jira-keys-json != '[]' }}
+    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@main
+    with:
+      jira_key: ${{ matrix.jira_key }}
+      transition_name: "Ready For Merge"
+      transition_id: "131"
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+    strategy:
+      matrix:
+        jira_key: ${{ fromJSON(needs.extract.outputs.jira-keys-json) }}
