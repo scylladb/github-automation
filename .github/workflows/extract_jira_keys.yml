@@ -1,0 +1,55 @@
+name: Extract Jira Keys
+
+on:
+  workflow_call:
+    inputs:
+      pr_title:
+        required: true
+        type: string
+      pr_body:
+        required: true
+        type: string
+    outputs:
+      jira-keys-csv:
+        description: "Comma-separated Jira keys"
+        value: ${{ jobs.extract.outputs.jira-keys-csv }}
+      jira-keys-json:
+        description: "JSON array of Jira keys"
+        value: ${{ jobs.extract.outputs.jira-keys-json }}
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    outputs:
+      jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
+      jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
+    steps:
+      - id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
+          body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
+
+          > tickets.txt
+          printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+          printf '%s\n' "$body"  | grep -iE 'Fixes[[:space:]]*[: ][[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
+                                | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+
+          sort -u tickets.txt > unique_tickets.txt
+
+          if [[ ! -s unique_tickets.txt ]]; then
+            echo "jira-keys-csv=" >> "$GITHUB_OUTPUT"
+            echo "jira-keys-json=[]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found Jira tickets:"
+          cat unique_tickets.txt
+
+          csv=$(paste -sd, unique_tickets.txt)
+          json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
+          json="[${json}]"
+
+          echo "jira-keys-csv=$csv"   >> "$GITHUB_OUTPUT"
+          echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
