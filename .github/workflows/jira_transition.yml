@@ -1,0 +1,39 @@
+name: Jira Transition
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        required: true
+        type: string
+      transition_name:
+        required: true
+        type: string
+      transition_id:
+        required: true
+        type: string
+    secrets:
+      jira_auth:
+        required: true
+
+jobs:
+  transition:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Transition Jira Ticket
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          set -euo pipefail
+          if [ -z "${JIRA_AUTH:-}" ]; then
+            echo "ERROR: JIRA_AUTH secret is not set."
+            exit 1
+          fi
+
+          echo "Transitioning Jira ticket ${{ inputs.jira_key }} to transition ${{ inputs.transition_name }}"
+          curl -v --fail -X POST \
+            --url "https://scylladb.atlassian.net/rest/api/3/issue/${{ inputs.jira_key }}/transitions" \
+            --user "$JIRA_AUTH" \
+            --header "Accept: application/json" \
+            --header "Content-Type: application/json" \
+            -d "{\"transition\": {\"id\": \"${{ inputs.transition_id }}\"}}"
