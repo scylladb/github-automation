@@ -32,10 +32,10 @@ jobs:
         run: |
           set -euo pipefail
           
-          title="$RAW_TITLE"
-          body="$RAW_BODY"
+          title=$(echo "$RAW_TITLE" | tr -d '\r')
+          body=$(echo "$RAW_BODY" | tr -d '\r')
           
-          # Replace backticks with space
+          # Replace backticks with a space
           title="${title//\`/ }"
           echo "title: $title"
           body="${body//\`/ }"
