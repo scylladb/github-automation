@@ -31,7 +31,7 @@ jobs:
           PR_BODY: ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          title="$PR_TITLE"
+          
           # Read env vars safely, normalize CRLF to LF
           title="$(printf '%s' "$PR_TITLE" | tr -d '\r')"
           body="$(printf '%s' "$PR_BODY"  | tr -d '\r')"
