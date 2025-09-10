@@ -31,17 +31,22 @@ jobs:
           RAW_BODY:  ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          
+          echo "1"
           # 1) Load raw inputs from env (prevents the shell from interpreting them)
           title="$RAW_TITLE"
+          echo "2"
           body="$RAW_BODY"
-
+          echo "3"
           # 2) Normalize CRLF → LF inside the strings (strip any embedded \r)
           title="${title//$'\r'/}"
+          echo "4"
           body="${body//$'\r'/}"
+          echo "5"
           # (defense in depth: also strip via printf|tr in case of odd encodings)
           title="$(printf '%s' "$title" | tr -d '\r')"
+          echo "6"
           body="$(printf '%s' "$body"  | tr -d '\r')"
+          echo "7"
 
           # 3) Replace backticks with spaces (avoid command substitution surprises)
           title="${title//\`/ }"
