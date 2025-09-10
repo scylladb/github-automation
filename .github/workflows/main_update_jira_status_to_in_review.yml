@@ -10,8 +10,8 @@ jobs:
   extract:
     uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
     with:
-      pr_title: $(printf '%s' "${{ github.event.pull_request.title }}" | tr '`' ' ')" 
-      pr_body:  $(printf '%s' "${{ github.event.pull_request.body }}" | tr '`' ' ')" 
+      pr_title: "$(printf '%s' "${{ github.event.pull_request.title }}" | tr '`' ' ')" 
+      pr_body:  "$(printf '%s' "${{ github.event.pull_request.body }}" | tr '`' ' ')" 
 
   transition:
     needs: extract
