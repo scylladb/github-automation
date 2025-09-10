@@ -28,10 +28,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          title="${{ inputs.pr_title }}" 
-          title="${title//\`/ }"
+          # Write inputs into temp files
+          echo "${{ inputs.pr_title }}" > pr_title.txt
+          echo "${{ inputs.pr_body }}"  > pr_body.txt
 
-          body="${{ inputs.pr_body }}"
+          # Read back safely
+          title=$(<pr_title.txt)
+          body=$(<pr_body.txt)
+
+          # Replace backticks with spaces
+          title="${title//\`/ }"
           body="${body//\`/ }"
           # title="$(printf '%s' "${{ inputs.pr_title }}" | tr '\`' ' ')"
           # body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '\`' ' ')"
