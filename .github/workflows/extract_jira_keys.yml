@@ -23,34 +23,22 @@ jobs:
     outputs:
       jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
       jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
-    steps:
+        steps:
       - id: save
         shell: bash
         run: |
-          set -euo pipefail
-
-          # Store PR title safely
-          {
-            echo "PR_TITLE<<ENDPRTITLE"
-            echo "${{ inputs.pr_title }}"
-            echo "ENDPRTITLE"
-          } >> $GITHUB_ENV
-
-          # Store PR body safely
-          {
-            echo "PR_BODY<<ENDPRBODY"
-            echo "${{ inputs.pr_body }}"
-            echo "ENDPRBODY"
-          } >> $GITHUB_ENV
+          # Save PR title/body into files (no env injection)
+          printf '%s' "${{ inputs.pr_title }}" > pr_title.txt
+          printf '%s' "${{ inputs.pr_body }}"  > pr_body.txt
 
       - id: process
         shell: bash
         run: |
           set -euo pipefail
 
-          # Normalize CRLF and backticks
-          title="$(printf '%s' "$PR_TITLE" | tr -d '\r' | tr '\`' ' ')"
-          body="$(printf '%s' "$PR_BODY"  | tr -d '\r' | tr '\`' ' ')"
+          # Read back safely and sanitize
+          title=$(tr -d '\r' < pr_title.txt | tr '\`' ' ')
+          body=$(tr -d '\r' < pr_body.txt | tr '\`' ' ')
 
           echo "Sanitized title: $title"
           echo "Sanitized body: $body"
