@@ -32,13 +32,21 @@ jobs:
         run: |
           set -euo pipefail
           
-          title=$(echo "$RAW_TITLE" | tr -d '\r')
-          body=$(echo "$RAW_BODY" | tr -d '\r')
-          
-          # Replace backticks with a space
+          # 1) Load raw inputs from env (prevents the shell from interpreting them)
+          title="$RAW_TITLE"
+          body="$RAW_BODY"
+
+          # 2) Normalize CRLF → LF inside the strings (strip any embedded \r)
+          title="${title//$'\r'/}"
+          body="${body//$'\r'/}"
+          # (defense in depth: also strip via printf|tr in case of odd encodings)
+          title="$(printf '%s' "$title" | tr -d '\r')"
+          body="$(printf '%s' "$body"  | tr -d '\r')"
+
+          # 3) Replace backticks with spaces (avoid command substitution surprises)
           title="${title//\`/ }"
-          echo "title: $title"
           body="${body//\`/ }"
+          echo "title: $title"
           echo "body: $body"
           # title="$(printf '%s' "${{ inputs.pr_title }}" | tr '\`' ' ')"
           # body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '\`' ' ')"
