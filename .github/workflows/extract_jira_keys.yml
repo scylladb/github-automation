@@ -26,15 +26,14 @@ jobs:
     steps:
       - id: extract
         shell: bash
+        env:
+          RAW_TITLE: ${{ inputs.pr_title }}
+          RAW_BODY:  ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          # Write inputs into temp files
-          echo "${{ inputs.pr_title }}" > pr_title.txt
-          echo "${{ inputs.pr_body }}"  > pr_body.txt
-
-          # Read back safely
-          title=$(<pr_title.txt)
-          body=$(<pr_body.txt)
+          # Load from env vars (safe, not directly injected into script)
+          title="$RAW_TITLE"
+          body="$RAW_BODY"
 
           # Replace backticks with spaces
           title="${title//\`/ }"
