@@ -24,27 +24,31 @@ jobs:
       jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
       jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
     steps:
-      - id: extract
+      - id: save
         shell: bash
         run: |
           set -euo pipefail
 
-          # Store PR title into GITHUB_ENV safely (handles CRLF / multiline)
-          echo "PR_TITLE<<EOF" >> $GITHUB_ENV
-          echo "${{ inputs.pr_title }}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # Store PR title safely
+          {
+            echo "PR_TITLE<<ENDPRTITLE"
+            echo "${{ inputs.pr_title }}"
+            echo "ENDPRTITLE"
+          } >> $GITHUB_ENV
 
-          # Store PR body into GITHUB_ENV safely
-          echo "PR_BODY<<EOF" >> $GITHUB_ENV
-          echo "${{ inputs.pr_body }}" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # Store PR body safely
+          {
+            echo "PR_BODY<<ENDPRBODY"
+            echo "${{ inputs.pr_body }}"
+            echo "ENDPRBODY"
+          } >> $GITHUB_ENV
 
       - id: process
         shell: bash
         run: |
           set -euo pipefail
 
-          # Normalize carriage returns and backticks
+          # Normalize CRLF and backticks
           title="$(printf '%s' "$PR_TITLE" | tr -d '\r' | tr '\`' ' ')"
           body="$(printf '%s' "$PR_BODY"  | tr -d '\r' | tr '\`' ' ')"
 
