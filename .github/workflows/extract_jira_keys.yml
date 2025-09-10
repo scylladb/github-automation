@@ -41,12 +41,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Read back safely and sanitize
+          # Remove backtics and \r before locating jira keys
           title=$(tr -d '\r' < pr_title.txt | tr '\`' ' ')
           body=$(tr -d '\r' < pr_body.txt | tr '\`' ' ')
 
-          echo "Sanitized title: $title"
-          echo "Sanitized body: $body"
+          echo "title: $title"
+          echo "body: $body"
           
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
