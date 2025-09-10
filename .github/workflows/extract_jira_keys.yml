@@ -28,8 +28,13 @@ jobs:
         shell: bash
         run: |
           # Save PR title/body into files (no env injection)
-          printf '%s' "${{ inputs.pr_title }}" > pr_title.txt
-          printf '%s' "${{ inputs.pr_body }}"  > pr_body.txt
+          cat > pr_title.txt <<'EOF'
+          ${{ inputs.pr_title }}
+          EOF
+
+          cat > pr_body.txt <<'EOF'
+          ${{ inputs.pr_body }}
+          EOF
 
       - id: process
         shell: bash
