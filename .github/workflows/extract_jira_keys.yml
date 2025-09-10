@@ -30,6 +30,7 @@ jobs:
           RAW_TITLE: ${{ inputs.pr_title }}
           RAW_BODY:  ${{ inputs.pr_body }}
         run: |
+          echo "0"
           set -euo pipefail
           echo "1"
           # 1) Load raw inputs from env (prevents the shell from interpreting them)
