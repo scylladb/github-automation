@@ -31,11 +31,11 @@ jobs:
           RAW_BODY:  ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          # Load from env vars (safe, not directly injected into script)
+          
           title="$RAW_TITLE"
           body="$RAW_BODY"
-
-          # Replace backticks with spaces
+          
+          # Replace backticks with space
           title="${title//\`/ }"
           echo "title: $title"
           body="${body//\`/ }"
