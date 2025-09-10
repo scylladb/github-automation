@@ -26,26 +26,31 @@ jobs:
     steps:
       - id: extract
         shell: bash
-        env:
-          PR_TITLE: ${{ inputs.pr_title }}
-          PR_BODY: ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          
-          # Read env vars safely, normalize CRLF to LF
-          title="$(printf '%s' "$PR_TITLE" | tr -d '\r')"
-          body="$(printf '%s' "$PR_BODY"  | tr -d '\r')"
 
-          # Now remove backticks
-          title="${title//\`/ }"
-          body="${body//\`/ }"
+          # Store PR title into GITHUB_ENV safely (handles CRLF / multiline)
+          echo "PR_TITLE<<EOF" >> $GITHUB_ENV
+          echo "${{ inputs.pr_title }}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          # Store PR body into GITHUB_ENV safely
+          echo "PR_BODY<<EOF" >> $GITHUB_ENV
+          echo "${{ inputs.pr_body }}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - id: process
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Normalize carriage returns and backticks
+          title="$(printf '%s' "$PR_TITLE" | tr -d '\r' | tr '\`' ' ')"
+          body="$(printf '%s' "$PR_BODY"  | tr -d '\r' | tr '\`' ' ')"
 
           echo "Sanitized title: $title"
           echo "Sanitized body: $body"
           
-          # title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
-          # body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
-
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
           printf '%s\n' "$body"  | grep -iE 'Fixes[[:space:]]*[: ][[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
