@@ -26,10 +26,21 @@ jobs:
     steps:
       - id: extract
         shell: bash
+        env:
+          PR_TITLE: ${{ inputs.pr_title }}
+          PR_BODY: ${{ inputs.pr_body }}
         run: |
           set -euo pipefail
-          title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
-          body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
+          title="$PR_TITLE"
+          body="$PR_BODY"
+          
+          title="${title//\`/ }"
+          body="${body//\`/ }"
+          echo "title [$title]"
+          echo "body [$body]"
+          
+          # title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
+          # body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
 
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
