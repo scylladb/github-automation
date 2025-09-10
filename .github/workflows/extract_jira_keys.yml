@@ -23,7 +23,7 @@ jobs:
     outputs:
       jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
       jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
-        steps:
+    steps:
       - id: save
         shell: bash
         run: |
