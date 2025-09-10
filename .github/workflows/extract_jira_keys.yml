@@ -28,8 +28,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
-          body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
+          title="$(printf '%s' "${{ inputs.pr_title }}" | tr '\`' ' ')"
+          body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '\`' ' ')"
 
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
