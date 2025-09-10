@@ -34,6 +34,9 @@ jobs:
           title="$PR_TITLE"
           body="$PR_BODY"
           
+          title="$(printf '%s' "$title" | tr -d '\r')"
+          body="$(printf '%s' "$body"  | tr -d '\r')"
+          
           title="${title//\`/ }"
           body="${body//\`/ }"
           echo "title [$title]"
