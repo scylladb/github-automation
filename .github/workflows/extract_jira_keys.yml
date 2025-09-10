@@ -24,12 +24,30 @@ jobs:
       jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
       jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
     steps:
-      - id: extract
+      - id: save
+        shell: bash
+        run: |
+          # Save PR title/body into files (no env injection)
+          cat > pr_title.txt <<'EOF'
+          ${{ inputs.pr_title }}
+          EOF
+
+          cat > pr_body.txt <<'EOF'
+          ${{ inputs.pr_body }}
+          EOF
+
+      - id: process
         shell: bash
         run: |
           set -euo pipefail
-          title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
-          body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
+
+          # Remove backtics and \r before locating jira keys
+          title=$(tr -d '\r' < pr_title.txt | tr '\`' ' ')
+          body=$(tr -d '\r' < pr_body.txt | tr '\`' ' ')
+
+          echo "title: $title"
+          echo "body: $body"
+
 
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
