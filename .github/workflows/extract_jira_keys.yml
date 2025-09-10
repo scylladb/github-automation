@@ -32,15 +32,16 @@ jobs:
         run: |
           set -euo pipefail
           title="$PR_TITLE"
-          body="$PR_BODY"
-          
-          title="$(printf '%s' "$title" | tr -d '\r')"
-          body="$(printf '%s' "$body"  | tr -d '\r')"
-          
+          # Read env vars safely, normalize CRLF to LF
+          title="$(printf '%s' "$PR_TITLE" | tr -d '\r')"
+          body="$(printf '%s' "$PR_BODY"  | tr -d '\r')"
+
+          # Now remove backticks
           title="${title//\`/ }"
           body="${body//\`/ }"
-          echo "title [$title]"
-          echo "body [$body]"
+
+          echo "Sanitized title: $title"
+          echo "Sanitized body: $body"
           
           # title="$(printf '%s' "${{ inputs.pr_title }}" | tr '`' ' ')"
           # body="$(printf '%s' "${{ inputs.pr_body }}"  | tr '`' ' ')"
