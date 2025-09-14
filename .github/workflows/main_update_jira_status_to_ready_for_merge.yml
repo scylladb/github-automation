@@ -39,6 +39,6 @@ jobs:
            needs.extract.outputs['jira-keys-json'] != '[]' &&
            needs.extract.outputs['jira-keys-json'] != '[""]')
             && needs.extract.outputs['jira-keys-json']
-            || '["__EMPTY__"]') }}
+            || '["__NO_KEYS_FOUND__"]') }}
         exclude:
-          - jira_key: "__EMPTY__"
+          - jira_key: "__NO_KEYS_FOUND__"
