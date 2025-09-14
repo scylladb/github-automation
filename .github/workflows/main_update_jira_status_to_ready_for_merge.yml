@@ -42,4 +42,3 @@ jobs:
             || '["__EMPTY__"]') }}
         exclude:
           - jira_key: "__EMPTY__"
-          - jira_key: ""
