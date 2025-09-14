@@ -18,7 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Debug extract output
-        run: | 
+        run: |         
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
           echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
           echo "triggering-label='${{ github.event.label.name }}'"
 
