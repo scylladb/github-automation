@@ -13,6 +13,13 @@ jobs:
       pr_title: ${{ github.event.pull_request.title }}
       pr_body:  ${{ github.event.pull_request.body }}
 
+  debug:                         
+    needs: extract               
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug extract output
+        run: echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
+
   transition:
     needs: extract
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
