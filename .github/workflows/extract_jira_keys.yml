@@ -21,8 +21,8 @@ jobs:
   extract:
     runs-on: ubuntu-latest
     outputs:
-      jira-keys-csv: ${{ steps.extract.outputs.jira-keys-csv }}
-      jira-keys-json: ${{ steps.extract.outputs.jira-keys-json }}
+      jira-keys-csv: ${{ steps.process.outputs.jira-keys-csv }}
+      jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
     steps:
       - id: save
         shell: bash
