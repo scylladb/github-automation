@@ -16,7 +16,6 @@ jobs:
 
   transition:
     needs: extract
-    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
@@ -26,4 +25,4 @@ jobs:
       jira_auth: ${{ secrets.caller_jira_auth }}
     strategy:
       matrix:
-        jira_key: ${{ fromJSON(needs.extract.outputs.jira-keys-json || '[]') }}
+        jira_key: ${{ fromJSON(github.event.label.name == 'status/merge_candidate' && needs.extract.outputs.jira-keys-json || '[]') }}
