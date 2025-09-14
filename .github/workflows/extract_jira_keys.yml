@@ -56,18 +56,18 @@ jobs:
           sort -u tickets.txt > unique_tickets.txt
 
           if [[ ! -s unique_tickets.txt ]]; then
+            echo "No Jira keys found in PR title or body"
             echo "jira-keys-csv=" >> "$GITHUB_OUTPUT"
             echo "jira-keys-json=[]" >> "$GITHUB_OUTPUT"
-            echo "::notice::No Jira keys found in PR title or body"
-            exit 0
+          else
+            echo "Found Jira tickets:"
+            cat unique_tickets.txt
+
+            csv=$(paste -sd, unique_tickets.txt)
+            json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
+            json="[${json}]"
+
+            # Always emit valid outputs
+            echo "jira-keys-csv=$csv"   >> "$GITHUB_OUTPUT"
+            echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
           fi
-
-          echo "Found Jira tickets:"
-          cat unique_tickets.txt
-
-          csv=$(paste -sd, unique_tickets.txt)
-          json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
-          json="[${json}]"
-
-          echo "jira-keys-csv=$csv"   >> "$GITHUB_OUTPUT"
-          echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
