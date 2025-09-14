@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Debug extract output
         run: | 
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
           echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
 
   transition:
