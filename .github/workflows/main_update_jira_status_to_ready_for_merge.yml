@@ -26,3 +26,5 @@ jobs:
     strategy:
       matrix:
         jira_key: ${{ fromJSON( (needs.extract.outputs['jira-keys-json'] != '' && needs.extract.outputs['jira-keys-json'] != '[]') && needs.extract.outputs['jira-keys-json'] || '["__EMPTY__"]' ) }}
+        exclude:
+          - jira_key: "__EMPTY__"
