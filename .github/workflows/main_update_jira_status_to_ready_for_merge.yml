@@ -8,7 +8,6 @@ on:
 
 jobs:
   extract:
-    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
     with:
       pr_title: ${{ github.event.pull_request.title }}
@@ -16,6 +15,7 @@ jobs:
 
   transition:
     needs: extract
+    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
