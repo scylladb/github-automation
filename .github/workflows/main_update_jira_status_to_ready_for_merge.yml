@@ -25,6 +25,12 @@ jobs:
       jira_auth: ${{ secrets.caller_jira_auth }}
     strategy:
       matrix:
-        jira_key: ${{ fromJSON( (needs.extract.outputs['jira-keys-json'] != '' && needs.extract.outputs['jira-keys-json'] != '[]') && needs.extract.outputs['jira-keys-json'] || '["__EMPTY__"]' ) }}
+        jira_key: ${{ fromJSON(
+          (needs.extract.outputs['jira-keys-json'] != '' &&
+           needs.extract.outputs['jira-keys-json'] != '[]' &&
+           needs.extract.outputs['jira-keys-json'] != '[""]')
+            && needs.extract.outputs['jira-keys-json']
+            || '["__EMPTY__"]') }}
         exclude:
           - jira_key: "__EMPTY__"
+          - jira_key: ""
