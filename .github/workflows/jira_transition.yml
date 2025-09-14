@@ -18,6 +18,7 @@ on:
 
 jobs:
   transition:
+    if: ${{ inputs.jira_key != '__EMPTY__' }}
     runs-on: ubuntu-latest
     steps:
       - name: Transition Jira Ticket
