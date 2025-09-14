@@ -58,7 +58,7 @@ jobs:
           if [[ ! -s unique_tickets.txt ]]; then
             echo "No Jira keys found in PR title or body"
             echo "jira-keys-csv=" >> "$GITHUB_OUTPUT"
-            echo "jira-keys-json=[]" >> "$GITHUB_OUTPUT"
+            echo 'jira-keys-json=["__EMPTY__"]' >> "$GITHUB_OUTPUT"
           else
             echo "Found Jira tickets:"
             cat unique_tickets.txt
