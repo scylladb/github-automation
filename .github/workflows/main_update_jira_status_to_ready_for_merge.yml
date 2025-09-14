@@ -16,7 +16,6 @@ jobs:
 
   transition:
     needs: extract
-    if: ${{ needs.extract.outputs.jira-keys-json != '' && needs.extract.outputs.jira-keys-json != '[]' }}
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
