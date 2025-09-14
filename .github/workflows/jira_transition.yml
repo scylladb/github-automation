@@ -18,9 +18,15 @@ on:
 
 jobs:
   transition:
-    if: ${{ inputs.jira_key != '__EMPTY__' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Skip if no Jira key
+        run: |
+          if [ -z "${{ inputs.jira_key }}" ] || [ "${{ inputs.jira_key }}" = "__EMPTY__" ]; then
+            echo "::notice::No Jira key provided, skipping transition."
+            exit 0
+          fi
+          
       - name: Transition Jira Ticket
         env:
           JIRA_AUTH: ${{ secrets.jira_auth }}
