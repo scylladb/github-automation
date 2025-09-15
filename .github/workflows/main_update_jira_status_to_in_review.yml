@@ -17,7 +17,7 @@ jobs:
     needs: extract               
     runs-on: ubuntu-latest
     steps:       
-      - name: Debug extract output
+      - name: Debug data
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
         run: |         
