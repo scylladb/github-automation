@@ -16,17 +16,16 @@ jobs:
   debug:                         
     needs: extract               
     runs-on: ubuntu-latest
-    steps:
-      - name: Dump GitHub context
+    steps:       
+      - name: Debug extract output
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"
-        
-      - name: Debug extract output
         run: |         
           echo "event_name='${{ github.event_name }}'"
           echo "action='${{ github.event.action }}'"
           echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
+          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~~~~~~~~~~~~~~"
+          echo "$GITHUB_CONTEXT"
 
   transition:
     needs: extract
