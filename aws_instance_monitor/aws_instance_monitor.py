@@ -5,72 +5,81 @@ import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from collections import defaultdict
 
 def main():
     # Create EC2 client
     ec2 = boto3.client('ec2')
     
-    # Get all running instances
-    response = ec2.describe_instances(
-        Filters=[
-            {
-                'Name': 'instance-state-name',
-                'Values': ['running']
-            }
-        ]
-    )
+    # Get all regions
+    regions = ec2.describe_regions()['Regions']
     
     instances = []
     instances_to_terminate = []
     
-    for reservation in response['Reservations']:
-        for instance in reservation['Instances']:
-            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
-            
-            # Calculate uptime
-            launch_time = instance['LaunchTime']
-            uptime_delta = datetime.now(timezone.utc) - launch_time
-            days = uptime_delta.days
-            hours, remainder = divmod(uptime_delta.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            uptime_str = f"{days}d {hours}h {minutes}m"
-            uptime_hours = uptime_delta.total_seconds() / 3600
-            
-            # Check keep status
-            keep_value = tags.get('keep', 'N/A')
-            should_terminate = False
-            if keep_value != 'N/A':
-                try:
-                    keep_hours = float(keep_value)
-                    if uptime_hours > keep_hours:
-                        keep_status = 'Exceeding'
+    for region in regions:
+        region_name = region['RegionName']
+        ec2_reg = boto3.client('ec2', region_name=region_name)
+        
+        # Get all running instances in this region
+        response = ec2_reg.describe_instances(
+            Filters=[
+                {
+                    'Name': 'instance-state-name',
+                    'Values': ['running']
+                }
+            ]
+        )
+        
+        for reservation in response['Reservations']:
+            for instance in reservation['Instances']:
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                
+                # Calculate uptime
+                launch_time = instance['LaunchTime']
+                uptime_delta = datetime.now(timezone.utc) - launch_time
+                days = uptime_delta.days
+                hours, remainder = divmod(uptime_delta.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                uptime_str = f"{days}d {hours}h {minutes}m"
+                uptime_hours = uptime_delta.total_seconds() / 3600
+                
+                # Check keep status
+                keep_value = tags.get('keep', 'N/A')
+                should_terminate = False
+                if keep_value != 'N/A':
+                    try:
+                        keep_hours = float(keep_value)
+                        if uptime_hours > keep_hours:
+                            keep_status = 'Exceeding'
+                            should_terminate = True
+                        else:
+                            keep_status = 'Within'
+                    except ValueError:
+                        keep_status = 'Invalid Keep'
+                else:
+                    if uptime_hours > 8:
+                        keep_status = 'Exceeding (default 8h)'
                         should_terminate = True
                     else:
-                        keep_status = 'Within'
-                except ValueError:
-                    keep_status = 'Invalid Keep'
-            else:
-                if uptime_hours > 8:
-                    keep_status = 'Exceeding (default 8h)'
-                    should_terminate = True
-                else:
-                    keep_status = 'Within (default 8h)'
-            
-            if should_terminate:
-                instances_to_terminate.append(instance['InstanceId'])
-            
-            row = {
-                'Instance ID': instance['InstanceId'],
-                'Instance type': instance['InstanceType'],
-                'Public IP': instance.get('PublicIpAddress', 'N/A'),
-                'JenkinsJobTag': tags.get('JenkinsJobTag', 'N/A'),
-                'RunByUser': tags.get('RunByUser', 'N/A'),
-                'keep': keep_value,
-                'Name': tags.get('Name', 'N/A'),
-                'Uptime': uptime_str,
-                'Keep Status': keep_status
-            }
-            instances.append(row)
+                        keep_status = 'Within (default 8h)'
+                
+                if should_terminate:
+                    instances_to_terminate.append({'id': instance['InstanceId'], 'region': region_name})
+                
+                row = {
+                    'Region': region_name,
+                    'Instance ID': instance['InstanceId'],
+                    'Instance type': instance['InstanceType'],
+                    'Public IP': instance.get('PublicIpAddress', 'N/A'),
+                    'JenkinsJobTag': tags.get('JenkinsJobTag', 'N/A'),
+                    'RunByUser': tags.get('RunByUser', 'N/A'),
+                    'keep': keep_value,
+                    'Name': tags.get('Name', 'N/A'),
+                    'Uptime': uptime_str,
+                    'Keep Status': keep_status
+                }
+                instances.append(row)
     
     # Print the table
     if instances:
@@ -81,9 +90,14 @@ def main():
     
     # Terminate instances if any
     if instances_to_terminate:
-        print(f"\nTerminating {len(instances_to_terminate)} instance(s): {', '.join(instances_to_terminate)}")
-        ec2.terminate_instances(InstanceIds=instances_to_terminate)
-        print("Termination initiated.")
+        terminate_by_region = defaultdict(list)
+        for item in instances_to_terminate:
+            terminate_by_region[item['region']].append(item['id'])
+        for reg, ids in terminate_by_region.items():
+            ec2_term = boto3.client('ec2', region_name=reg)
+            print(f"\nTerminating {len(ids)} instance(s) in {reg}: {', '.join(ids)}")
+            ec2_term.terminate_instances(InstanceIds=ids)
+            print("Termination initiated.")
     else:
         print("\nNo instances to terminate.")
     
