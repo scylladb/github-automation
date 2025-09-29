@@ -33,4 +33,4 @@ jobs:
         SMTP_PASS: ${{ secrets.SMTP_PASS }}
         EMAIL_FROM: "it.admin@scylladb.com"
         EMAIL_TO: "releng-team@scylladb.com"
-      run: python aws_instance_monitor.py
+      run: python aws_instance_monitor/aws_instance_monitor.py
