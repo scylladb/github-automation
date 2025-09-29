@@ -9,7 +9,7 @@ from collections import defaultdict
 
 def main():
     # Create EC2 client
-    ec2 = boto3.client('ec2')
+    ec2 = boto3.client('ec2', region_name='us-east-1')
     
     # Get all regions
     regions = ec2.describe_regions()['Regions']
