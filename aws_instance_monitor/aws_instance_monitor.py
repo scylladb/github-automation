@@ -8,6 +8,9 @@ from email.mime.text import MIMEText
 from collections import defaultdict
 
 def main():
+    # Get report type from environment variable
+    report_type = os.getenv('REPORT_TYPE', 'exceeding')  # 'exceeding' or 'daily'
+    
     # Create EC2 client
     ec2 = boto3.client('ec2', region_name='us-east-1')
     
@@ -16,6 +19,7 @@ def main():
     
     instances = []
     instances_to_terminate = []
+    exceeding_instances = []  # For exceeding report
     
     for region in regions:
         region_name = region['RegionName']
@@ -80,13 +84,26 @@ def main():
                     'Keep Status': keep_status
                 }
                 instances.append(row)
+                
+                # Track exceeding instances separately
+                if should_terminate:
+                    exceeding_instances.append(row)
     
-    # Print the table
-    if instances:
-        table_console = tabulate(instances, headers='keys', tablefmt='simple', maxcolwidths=25)
-        print(table_console)
+    # Print the table based on report type
+    if report_type == 'daily':
+        print(f"\n=== DAILY REPORT - All Running Instances ===")
+        if instances:
+            table_console = tabulate(instances, headers='keys', tablefmt='simple', maxcolwidths=25)
+            print(table_console)
+        else:
+            print("No running instances found.")
     else:
-        print("No running instances found.")
+        print(f"\n=== EXCEEDING INSTANCES REPORT ===")
+        if exceeding_instances:
+            table_console = tabulate(exceeding_instances, headers='keys', tablefmt='simple', maxcolwidths=25)
+            print(table_console)
+        else:
+            print("No instances exceeding keep time found.")
     
     # Terminate instances if any
     if instances_to_terminate:
@@ -123,8 +140,33 @@ def main():
     if not email_from:
         print("EMAIL_FROM not set")
     
-    if smtp_server and smtp_user and smtp_pass and email_from and email_to and instances:
-        table_html = tabulate(instances, headers='keys', tablefmt='html')
+    # Determine which instances to report
+    instances_to_report = instances if report_type == 'daily' else exceeding_instances
+    
+    # Send email based on report type
+    should_send_email = False
+    if report_type == 'daily':
+        # Always send daily report if there are instances
+        should_send_email = bool(instances)
+        email_subject = 'Daily AWS Instance Report - All Instances (Last 24 Hours)'
+    else:
+        # Only send email if there are exceeding instances
+        should_send_email = bool(exceeding_instances)
+        email_subject = 'AWS Instance Alert - Instances Exceeding Keep Time'
+    
+    if smtp_server and smtp_user and smtp_pass and email_from and email_to and should_send_email:
+        table_html = tabulate(instances_to_report, headers='keys', tablefmt='html')
+        
+        if report_type == 'daily':
+            summary = f"<p><strong>Total Running Instances:</strong> {len(instances)}</p>"
+            summary += f"<p><strong>Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
+            if instances_to_terminate:
+                summary += f"<p><strong>Terminated:</strong> {len(instances_to_terminate)} instance(s)</p>"
+        else:
+            summary = f"<p><strong>⚠️ Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
+            if instances_to_terminate:
+                summary += f"<p><strong>Terminated:</strong> {len(instances_to_terminate)} instance(s)</p>"
+        
         html_body = f"""
         <html>
         <head>
@@ -136,20 +178,21 @@ def main():
         th {{ background-color: #f2f2f2; font-weight: bold; }}
         tr:nth-child(even) {{ background-color: #f9f9f9; }}
         tr:hover {{ background-color: #e9e9e9; }}
+        .summary {{ background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin: 10px 0; }}
         </style>
         </head>
         <body>
-        <h2>AWS Instance Report</h2>
+        <h2>{email_subject}</h2>
+        <div class="summary">
+        {summary}
+        </div>
         {table_html}
-        """
-        if instances_to_terminate:
-            html_body += f"<p>Terminated {len(instances_to_terminate)} instance(s).</p>"
-        html_body += "</body></html>"
+        </body></html>"""
         
         msg = MIMEMultipart()
         msg['From'] = email_from
         msg['To'] = ', '.join(email_to)
-        msg['Subject'] = 'AWS Instance Report'
+        msg['Subject'] = email_subject
         msg.attach(MIMEText(html_body, 'html'))
         
         try:
@@ -163,8 +206,10 @@ def main():
             print("Email notification sent.")
         except Exception as e:
             print(f"Error sending email: {e}")
-    elif smtp_server and not instances:
-        print("No instances to report.")
+    elif smtp_server and report_type == 'daily' and not instances:
+        print("No instances to report in daily report.")
+    elif smtp_server and report_type == 'exceeding' and not exceeding_instances:
+        print("No exceeding instances to report.")
 
 if __name__ == "__main__":
     main()
