@@ -9,7 +9,7 @@ from collections import defaultdict
 
 def main():
     # Get report type from environment variable
-    report_type = os.getenv('REPORT_TYPE', 'exceeding')  # 'exceeding' or 'daily'
+    report_type = os.getenv('REPORT_TYPE', 'daily')  # 'exceeding' or 'daily'
     
     # Create EC2 client
     ec2 = boto3.client('ec2', region_name='us-east-1')
@@ -18,7 +18,6 @@ def main():
     regions = ec2.describe_regions()['Regions']
     
     instances = []
-    instances_to_terminate = []
     exceeding_instances = []  # For exceeding report
     
     for region in regions:
@@ -50,13 +49,13 @@ def main():
                 
                 # Check keep status
                 keep_value = tags.get('keep', 'N/A')
-                should_terminate = False
+                exceeding_keep = False
                 if keep_value != 'N/A':
                     try:
                         keep_hours = float(keep_value)
                         if uptime_hours > keep_hours:
                             keep_status = 'Exceeding'
-                            should_terminate = True
+                            exceeding_keep = True
                         else:
                             keep_status = 'Within'
                     except ValueError:
@@ -64,12 +63,9 @@ def main():
                 else:
                     if uptime_hours > 8:
                         keep_status = 'Exceeding (default 8h)'
-                        should_terminate = True
+                        exceeding_keep = True
                     else:
                         keep_status = 'Within (default 8h)'
-                
-                if should_terminate:
-                    instances_to_terminate.append({'id': instance['InstanceId'], 'region': region_name})
                 
                 row = {
                     'Region': region_name,
@@ -86,7 +82,7 @@ def main():
                 instances.append(row)
                 
                 # Track exceeding instances separately
-                if should_terminate:
+                if exceeding_keep:
                     exceeding_instances.append(row)
     
     # Print the table based on report type
@@ -105,18 +101,13 @@ def main():
         else:
             print("No instances exceeding keep time found.")
     
-    # Terminate instances if any
-    if instances_to_terminate:
-        terminate_by_region = defaultdict(list)
-        for item in instances_to_terminate:
-            terminate_by_region[item['region']].append(item['id'])
-        for reg, ids in terminate_by_region.items():
-            ec2_term = boto3.client('ec2', region_name=reg)
-            print(f"\nTerminating {len(ids)} instance(s) in {reg}: {', '.join(ids)}")
-            ec2_term.terminate_instances(InstanceIds=ids)
-            print("Termination initiated.")
+    # Report instances exceeding keep time (monitoring only - no termination)
+    if exceeding_instances:
+        print(f"\n⚠️  Found {len(exceeding_instances)} instance(s) exceeding keep time:")
+        for instance in exceeding_instances:
+            print(f"     - {instance['Instance ID']} in {instance['Region']} (Uptime: {instance['Uptime']})")
     else:
-        print("\nNo instances to terminate.")
+        print("\n✅ No instances found exceeding keep time.")
     
     # Send email notification
     smtp_server = os.getenv('SMTP_SERVER')
@@ -160,12 +151,8 @@ def main():
         if report_type == 'daily':
             summary = f"<p><strong>Total Running Instances:</strong> {len(instances)}</p>"
             summary += f"<p><strong>Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
-            if instances_to_terminate:
-                summary += f"<p><strong>Terminated:</strong> {len(instances_to_terminate)} instance(s)</p>"
         else:
             summary = f"<p><strong>⚠️ Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
-            if instances_to_terminate:
-                summary += f"<p><strong>Terminated:</strong> {len(instances_to_terminate)} instance(s)</p>"
         
         html_body = f"""
         <html>
@@ -203,9 +190,9 @@ def main():
             text = msg.as_string()
             server.sendmail(email_from, email_to, text)
             server.quit()
-            print("Email notification sent.")
+            print("📧 Email notification sent.")
         except Exception as e:
-            print(f"Error sending email: {e}")
+            print(f"❌ Error sending email: {e}")
     elif smtp_server and report_type == 'daily' and not instances:
         print("No instances to report in daily report.")
     elif smtp_server and report_type == 'exceeding' and not exceeding_instances:

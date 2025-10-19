@@ -1,24 +1,13 @@
-name: AWS Instance Monitor
+name: Daily AWS Instance Monitor
 
 on:
   schedule:
-    - cron: '0 */4 * * *'  # Runs every 4 hours
-    - cron: '0 8 * * *'   # Runs daily at 8 AM UTC for full report
+    - cron: '0 8 * * *'   # Runs daily at 8 AM UTC
   workflow_dispatch:  # Allows manual triggering
-    inputs:
-      report_type:
-        description: 'Report type (exceeding or daily)'
-        required: false
-        default: 'exceeding'
-        type: choice
-        options:
-          - exceeding
-          - daily
 
 jobs:
-  monitor-exceeding:
+  monitor:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 */4 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.report_type == 'exceeding')
 
     steps:
     - name: Checkout repository
@@ -34,38 +23,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install boto3 tabulate
 
-    - name: Run AWS Instance Monitor (Exceeding Only)
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        SMTP_SERVER: "smtp.gmail.com"
-        SMTP_PORT: "587"
-        SMTP_USER: ${{ secrets.SMTP_USER }}
-        SMTP_PASS: ${{ secrets.SMTP_PASS }}
-        EMAIL_FROM: "it.admin@scylladb.com"
-        EMAIL_TO: "releng-team@scylladb.com"
-        REPORT_TYPE: "exceeding"
-      run: python aws_instance_monitor/aws_instance_monitor.py
-
-  monitor-daily:
-    runs-on: ubuntu-latest
-    if: github.event.schedule == '0 8 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.report_type == 'daily')
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install boto3 tabulate
-
-    - name: Run AWS Instance Monitor (Daily Full Report)
+    - name: Run AWS Instance Monitor (Daily Report)
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

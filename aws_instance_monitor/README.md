@@ -1,17 +1,15 @@
 # AWS Instance Monitor
 
-This Python script monitors all running EC2 instances across all AWS regions in your account. It provides two types of reports:
-
-1. **Exceeding Instances Report** (runs every 4 hours): Only reports instances that have exceeded their keep time
-2. **Daily Full Report** (runs once per day at 8 AM UTC): Shows all running instances from the last 24 hours
+This Python script monitors all running EC2 instances across all AWS regions in your account and provides daily reports.
 
 ## Features
 
-- Monitors all AWS regions automatically
-- Tracks instance uptime and compares against 'keep' tag values
-- Automatically terminates instances exceeding their keep time
-- Sends email notifications based on report type
-- Provides detailed HTML email reports
+- **Daily Monitoring**: Runs once per day at 8 AM UTC
+- **Monitoring Only**: Reports on instances but does not terminate them automatically
+- **Multi-region Support**: Monitors all AWS regions automatically
+- **Instance Status Tracking**: Shows which instances are within or exceeding their keep time
+- **Smart Email Notifications**: Sends comprehensive daily reports
+- **Flexible Keep Time**: Supports custom keep times via instance tags or defaults to 8 hours
 
 ## Prerequisites
 
@@ -35,17 +33,17 @@ This Python script monitors all running EC2 instances across all AWS regions in 
 Run the script using Python:
 
 ```bash
-# For exceeding instances report (default)
+# Daily report (default)
 python aws_instance_monitor.py
 
-# For daily full report
-REPORT_TYPE=daily python aws_instance_monitor.py
+# Exceeding instances report only
+REPORT_TYPE=exceeding python aws_instance_monitor.py
 ```
 
 ### Environment Variables
 
 Set the following environment variables for email notifications:
-- `REPORT_TYPE` - Set to `daily` for full report or `exceeding` for exceeding-only report (default: `exceeding`)
+- `REPORT_TYPE` - Set to `daily` for full report (default) or `exceeding` for exceeding-only report
 - `SMTP_SERVER` (e.g., smtp.gmail.com)
 - `SMTP_PORT` (e.g., 587)
 - `SMTP_USER`
@@ -56,31 +54,14 @@ Set the following environment variables for email notifications:
 ### GitHub Actions
 
 The script runs automatically via GitHub Actions:
-- **Every 4 hours**: Checks for instances exceeding keep time and sends alerts
 - **Daily at 8 AM UTC**: Sends comprehensive report of all instances
 
 You can also trigger it manually:
 1. Go to Actions tab in GitHub
-2. Select "AWS Instance Monitor" workflow
+2. Select "Daily AWS Instance Monitor" workflow
 3. Click "Run workflow"
-4. Choose report type (exceeding or daily)
 
-## Report Types
-
-### Exceeding Instances Report
-- Runs every 4 hours
-- Only includes instances that have exceeded their keep time
-- Email sent only if there are exceeding instances
-- Terminates instances that exceed their keep time
-
-### Daily Full Report
-- Runs once per day at 8 AM UTC
-- Includes all running instances
-- Shows comprehensive statistics:
-  - Total running instances
-  - Number of instances exceeding keep time
-  - Number of terminated instances
-- Email always sent if there are any instances
+## Report Details
 
 ## Instance Keep Time
 
@@ -88,7 +69,7 @@ The script uses the `keep` tag on EC2 instances to determine how long they shoul
 - If `keep` tag exists: Uses the value (in hours)
 - If no `keep` tag: Defaults to 8 hours
 
-**Warning:** This script will automatically terminate EC2 instances that exceed their keep time. Ensure you have the necessary permissions and that termination is intended.
+**Note:** This script is for monitoring only and does not terminate instances automatically. It will report on instances that exceed their keep time for manual review.
 
 The script will output a table with the following columns:
 - Instance ID
@@ -103,9 +84,25 @@ The script will output a table with the following columns:
 
 Each row represents an instance, with tag values filled in or 'N/A' if the tag is missing.
 
+## Output
+
+The script will output a table with the following columns:
+- **Region**: AWS region where the instance is running
+- **Instance ID**: EC2 instance identifier
+- **Instance type**: EC2 instance type (e.g., t3.micro, m5.large)
+- **Public IP**: Public IP address (if assigned)
+- **JenkinsJobTag**: Custom tag for Jenkins job identification
+- **RunByUser**: User who launched the instance
+- **keep**: Keep time in hours from the instance tag
+- **Name**: Instance name from the Name tag
+- **Uptime**: Time since instance launch (days, hours, minutes)
+- **Keep Status**: Whether the instance is within or exceeding its keep time
+
+Each row represents an instance, with tag values filled in or 'N/A' if the tag is missing.
+
 ## GitHub Actions Setup
 
-To automate the script to run daily, you can use GitHub Actions. The workflow is configured to run once a day at midnight UTC.
+The workflow is configured to run once a day at 8 AM UTC.
 
 ### Setting up Secrets
 
@@ -113,25 +110,24 @@ In your GitHub repository, go to Settings > Secrets and variables > Actions and 
 
 - `AWS_ACCESS_KEY_ID`: Your AWS access key ID
 - `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
-- `SMTP_SERVER`: SMTP server (e.g., smtp.gmail.com)
-- `SMTP_PORT`: SMTP port (e.g., 587)
-- `SMTP_USER`: SMTP username
-- `SMTP_PASS`: SMTP password
-- `EMAIL_FROM`: Sender email address
-- `EMAIL_TO`: Recipient email addresses (comma-separated for multiple)
+- `SMTP_USER`: SMTP username for email notifications
+- `SMTP_PASS`: SMTP password for email notifications
 
 ### Workflow Details
 
-The workflow file is located at `.github/workflows/daily-run.yml`. It will:
+The workflow file is located at `.github/workflows/daily-aws-instance-monitor.yml`. It will:
 
 1. Checkout the repository
 2. Set up Python 3.x
 3. Install required dependencies (`boto3`, `tabulate`)
 4. Run the script with the environment variables set from secrets
+5. Send email notifications with the daily report
 
 You can also manually trigger the workflow from the Actions tab in GitHub.
 
 ## Notes
 
-- Ensure your AWS credentials have the necessary permissions to describe EC2 instances.
-- The script only shows running instances.
+- Ensure your AWS credentials have the necessary permissions to describe EC2 instances across all regions
+- The script monitors running instances only
+- No instances are terminated automatically - this is a monitoring-only tool
+- Email notifications are sent daily with comprehensive instance reports
