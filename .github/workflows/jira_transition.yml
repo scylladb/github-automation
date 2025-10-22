@@ -37,6 +37,7 @@ jobs:
           echo "Skipping transition for ${{ inputs.jira_key }} — already '${{ inputs.transition_name }}'."
 
       - name: Transition Jira Ticket
+        if: ${{ inputs.current_jira_status == '' || inputs.current_jira_status != inputs.transition_name }}
         env:
           JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
