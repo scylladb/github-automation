@@ -1,0 +1,64 @@
+name: Fetch Jira Issue Details
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        type: string
+        required: true
+    secrets:
+      jira_auth:
+        required: true
+    outputs:
+      current_jira_status:
+        value: ${{ jobs.fetch.outputs.current_status }}
+      current_jira_priority:
+        value: ${{ jobs.fetch.outputs.priority }}
+      current_jira_labels:
+        value: ${{ jobs.fetch.outputs.labels }}
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    outputs:
+      current_status: ${{ steps.jira.outputs.status }}
+      priority: ${{ steps.jira.outputs.priority }}
+      labels: ${{ steps.jira.outputs.labels }}
+    steps:
+    
+      - name: Ensure jq is available
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
+          fi
+
+      - name: Fetch Jira issue details
+        id: jira
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+          JIRA_KEY: ${{ inputs.jira_key }}
+        run: |
+          set -euo pipefail
+
+          echo "Fetching ${JIRA_KEY} from Jira ..."
+          RESP="$(curl -sS \
+                  --user "$JIRA_AUTH" \
+                  -H "Accept: application/json" \
+                  "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
+        
+          # Extract fields (priority may be null)
+          STATUS="$(echo "$RESP" | jq -r '.fields.status.name // ""')"
+          PRIORITY="$(echo "$RESP" | jq -r '.fields.priority.name // ""')"
+          LABELS="$(echo "$RESP" | jq -r '(.fields.labels // []) | join(",")')"
+
+
+          echo "Current status: ${STATUS}"
+          echo "Priority: ${PRIORITY}"
+          echo "Labels: ${LABELS}"
+
+          {
+            echo "status=${STATUS}"
+            echo "priority=${PRIORITY}"
+            echo "labels=${LABELS}"
+          } >> "$GITHUB_OUTPUT"
