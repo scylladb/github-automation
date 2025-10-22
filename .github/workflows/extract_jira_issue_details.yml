@@ -25,12 +25,21 @@ jobs:
       priority: ${{ steps.jira.outputs.priority }}
       labels: ${{ steps.jira.outputs.labels }}
     steps:
+    
       - name: Ensure jq is available
         run: |
           if ! command -v jq >/dev/null 2>&1; then
             sudo apt-get update -y
             sudo apt-get install -y jq
           fi
+
+      - name: Debug Jira identity (/myself)
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          curl -sS -H "Authorization: Basic ${JIRA_AUTH}" \
+             -H "Accept: application/json" \
+             "https://scylladb.atlassian.net/rest/api/3/myself" | head -c 500; echo
 
       - name: Fetch Jira issue details
         id: jira
