@@ -30,6 +30,9 @@ jobs:
           echo "Target status:    ${{ inputs.transition_name }}"
           echo "Current status:   ${{ inputs.current_jira_status }}"
           echo "Transition ID:    ${{ inputs.transition_id }}"
+          
+          if [ -n "${{ inputs.current_jira_status }}" ] && [ "${{ inputs.current_jira_status }}" = "${{ inputs.transition_name }}" ]; then
+            echo "Skipping transition for ${{ inputs.jira_key }} — already at desired status '${{ inputs.current_jira_status }}'."
 
       - name: Transition Jira Ticket
         if: ${{ inputs.current_jira_status == '' || inputs.current_jira_status != inputs.transition_name }}
