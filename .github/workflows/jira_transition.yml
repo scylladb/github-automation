@@ -26,14 +26,23 @@ jobs:
     steps:     
       - name: Show intent
         run: |
-          echo "Jira key:         ${{ inputs.jira_key }}"
-          echo "Target status:    ${{ inputs.transition_name }}"
-          echo "Current status:   ${{ inputs.current_jira_status }}"
-          echo "Transition ID:    ${{ inputs.transition_id }}"
-          
-          if [ -n "${{ inputs.current_jira_status }}" ] && [ "${{ inputs.current_jira_status }}" = "${{ inputs.transition_name }}" ]; then
-            echo "Skipping transition for ${{ inputs.jira_key }} — already at desired status '${{ inputs.current_jira_status }}'."
+          key="${{ inputs.jira_key }}"
+          target="${{ inputs.transition_name }}"
+          current="${{ inputs.current_jira_status }}"
+          id="${{ inputs.transition_id }}"
 
+          echo "Jira key:         ${key}"
+          echo "Target status:    ${target}"
+          echo "Current status:   ${current}"
+          echo "Transition ID:    ${id}"
+
+          # If/else with proper closing 'fi'
+          if [ -n "$current" ] && [ "$current" = "$target" ]; then
+            echo "Skipping transition for ${key} — already at desired status '${current}'."
+          else
+            echo "We are going to transition ${key} from '${current}' to '${target}'."
+          fi
+          
       - name: Transition Jira Ticket
         if: ${{ inputs.current_jira_status == '' || inputs.current_jira_status != inputs.transition_name }}
         env:
