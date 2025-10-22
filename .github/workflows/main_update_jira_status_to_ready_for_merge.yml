@@ -29,6 +29,7 @@ jobs:
                     
           if [ -n "$label" ] && [ "$label" = "status/merge_candidate" ]; then
             echo "Try to transition Jira issue to 'Ready For Merge'"
+          fi
           
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
           echo "$GITHUB_CONTEXT"
