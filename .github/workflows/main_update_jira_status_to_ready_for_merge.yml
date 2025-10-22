@@ -25,6 +25,11 @@ jobs:
           echo "action='${{ github.event.action }}'"
           echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
           echo "triggering-label='${{ github.event.label.name }}'"
+          label="${{ github.event.label.name }}"
+                    
+          if [ -n "$label" ] && [ "$label" = "status/merge_candidate" ]; then
+            echo "Try to transition Jira issue to 'Ready For Merge'"
+          
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
           echo "$GITHUB_CONTEXT"
 
