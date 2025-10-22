@@ -1,4 +1,4 @@
-name: Jira Issue Details
+name: Fetch Jira Issue Details
 
 on:
   workflow_call:
