@@ -12,6 +12,9 @@ on:
       transition_id:
         required: true
         type: string
+      current_jira_status:
+        required: false
+        type: string
     secrets:
       jira_auth:
         required: true
@@ -20,8 +23,28 @@ jobs:
   transition:
     if: ${{ inputs.jira_key != '' && inputs.jira_key != '__NO_KEYS_FOUND__' }}
     runs-on: ubuntu-latest
-    steps:
+    steps:     
+      - name: Show intent
+        run: |
+          key="${{ inputs.jira_key }}"
+          target="${{ inputs.transition_name }}"
+          current="${{ inputs.current_jira_status }}"
+          id="${{ inputs.transition_id }}"
+
+          echo "Jira key:         ${key}"
+          echo "Target status:    ${target}"
+          echo "Current status:   ${current}"
+          echo "Transition ID:    ${id}"
+
+          # If/else with proper closing 'fi'
+          if [ -n "$current" ] && [ "$current" = "$target" ]; then
+            echo "Skipping transition for ${key} — already at desired status '${current}'."
+          else
+            echo "We are going to transition ${key} from '${current}' to '${target}'."
+          fi
+          
       - name: Transition Jira Ticket
+        if: ${{ inputs.current_jira_status == '' || inputs.current_jira_status != inputs.transition_name }}
         env:
           JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
