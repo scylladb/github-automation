@@ -49,10 +49,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          #echo "Fetching ${JIRA_KEY} from Jira ..."
+          #RESP="$(curl -sS -H "Authorization: Basic ${JIRA_AUTH}" \
+          #              -H "Accept: application/json" \
+          #              "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
+
           echo "Fetching ${JIRA_KEY} from Jira ..."
-          RESP="$(curl -sS -H "Authorization: Basic ${JIRA_AUTH}" \
-                        -H "Accept: application/json" \
-                        "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
+          RESP="$(curl -sS \
+                  --user "$JIRA_AUTH" \
+                  -H "Accept: application/json" \
+                  "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
+
+
 
           echo "---- DEBUG: Raw Jira response (first 500 chars) ----"
           echo "$RESP" | head -c 500 || true
