@@ -10,11 +10,11 @@ on:
       jira_auth:
         required: true
     outputs:
-      current_status:
+      current_jira_status:
         value: ${{ jobs.fetch.outputs.current_status }}
-      priority:
+      current_jira_priority:
         value: ${{ jobs.fetch.outputs.priority }}
-      labels:
+      current_jira_labels:
         value: ${{ jobs.fetch.outputs.labels }}
 
 jobs:
