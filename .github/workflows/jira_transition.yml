@@ -31,7 +31,7 @@ jobs:
           echo "Current status:   ${{ inputs.current_jira_status }}"
           echo "Transition ID:    ${{ inputs.transition_id }}"
 
-      - name: Skip (already at desired status)
+      - name: Verify if we need to skip
         if: ${{ inputs.current_jira_status != '' && inputs.current_jira_status == inputs.transition_name }}
         run: |
           echo "Skipping transition for ${{ inputs.jira_key }} — already '${{ inputs.transition_name }}'."
