@@ -64,7 +64,7 @@ apply_labels:
           - jira_key: "__NO_KEYS_FOUND__"
 
   transition:
-    needs: [extract, details]
+    needs: [extract, details, apply_labels]
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
