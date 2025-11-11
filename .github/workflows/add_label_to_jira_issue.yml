@@ -1,0 +1,59 @@
+name: Add Label to Jira Issue
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        description: "Jira issue key (e.g., STAG-123)"
+        type: string
+        required: true
+      label:
+        description: "Label to add to the Jira issue"
+        type: string
+        required: true
+    secrets:
+      jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  add_label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add label to Jira issue
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+          JIRA_KEY:  ${{ inputs.jira_key }}
+          TARGET:    ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          BASE_URL="https://scylladb.atlassian.net"
+          ISSUE_URL="${BASE_URL}/rest/api/3/issue/${JIRA_KEY}"
+
+          # Build payload safely (handles any characters in the label)
+          python3 - <<'PY'
+          import json, os, sys
+          label = os.environ["TARGET"]
+          payload = {"update": {"labels": [{"add": label}]}}
+          with open("payload.json","w",encoding="utf-8") as f:
+              json.dump(payload, f, ensure_ascii=False)
+          print("Payload:", json.dumps(payload, ensure_ascii=False))
+          PY
+
+          # Perform update
+          code=$(curl -sS -o resp.json -w "%{http_code}" \
+            -X PUT "${ISSUE_URL}" \
+            --user "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+
+          echo "PUT ${ISSUE_URL} (label: '${TARGET}') -> HTTP ${code}"
+          if [ "${code}" = "204" ] || [ "${code}" = "200" ]; then
+            echo "Label '${TARGET}' added successfully to ${JIRA_KEY}."
+          else
+            echo "Failed to add label '${TARGET}'. Response (first 400 chars):"
+            head -c 400 resp.json || true; echo
+            exit 1
+          fi
