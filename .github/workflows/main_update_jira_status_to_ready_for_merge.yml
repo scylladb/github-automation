@@ -54,6 +54,23 @@ jobs:
     with:
       jira_key: ${{ matrix.jira_key }}
 
+  apply_labels:
+    needs: [extract, details]
+    uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@main
+    with:
+      pr_number:  ${{ github.event.pull_request.number }}
+      labels_csv: ${{ needs.details.outputs.current_jira_labels }}
+    strategy:
+      matrix:
+        jira_key: ${{ fromJSON(
+          (needs.extract.outputs['jira-keys-json'] != '' &&
+           needs.extract.outputs['jira-keys-json'] != '[]' &&
+           needs.extract.outputs['jira-keys-json'] != '[""]')
+            && needs.extract.outputs['jira-keys-json']
+            || '["__NO_KEYS_FOUND__"]') }}
+        exclude:
+          - jira_key: "__NO_KEYS_FOUND__"
+
   transition:
     needs: [extract, details]
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
