@@ -47,7 +47,7 @@ jobs:
       jira_key: ${{ matrix.jira_key }}
 
 apply_labels:
-    needs: details
+    needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@automation-staging-branch
     with:
       pr_number:  ${{ github.event.pull_request.number }}
