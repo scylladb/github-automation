@@ -46,7 +46,7 @@ jobs:
     with:
       jira_key: ${{ matrix.jira_key }}
 
-apply_labels:
+  apply_labels:
     needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@automation-staging-branch
     with:
@@ -64,7 +64,7 @@ apply_labels:
           - jira_key: "__NO_KEYS_FOUND__"
 
   transition:
-    needs: [extract, details, apply_labels]
+    needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
