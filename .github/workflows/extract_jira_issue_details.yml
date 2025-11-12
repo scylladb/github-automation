@@ -9,7 +9,7 @@ on:
         type: string
     secrets:
       jira_auth:
-        description: 'Authorization credential: either "email:api_token" for Basic, or a full "Bearer <token>"'
+        description: 'Either "email:api_token" (Basic) or "Bearer <token>"'
         required: true
     outputs:
       csv:
@@ -57,20 +57,7 @@ jobs:
           printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
           echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare auth header
-        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
-        id: auth
-        shell: bash
-        run: |
-          auth='${{ secrets.jira_auth }}'
-          if [[ "$auth" == Bearer\ * ]]; then
-            echo "header=Authorization: $auth" >> "$GITHUB_OUTPUT"
-          else
-            b64=$(printf "%s" "$auth" | base64 -w0)
-            echo "header=Authorization: Basic $b64" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Query Jira
+      - name: Query Jira (POST /search)
         if: ${{ steps.validate.outputs.empty_keys != 'true' }}
         id: query
         shell: bash
@@ -78,19 +65,40 @@ jobs:
           BASE: ${{ env.JIRA_BASE_URL }}
           KEYS_JSON: ${{ inputs.jira_keys_json }}
           FIELD_ID: ${{ env.SCYLLA_COMPONENTS_FIELD }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           set -euo pipefail
+
+          # Build JQL and fields list
           keys_csv=$(jq -r 'join(",")' <<< "$KEYS_JSON")
-          fields="status,labels,assignee,priority,fixVersions,$FIELD_ID"
+          fields="status,labels,assignee,priority,fixVersions,${FIELD_ID}"
           jql="key in (${keys_csv})"
+
+          # Prepare JSON body
           body=$(jq -n --arg jql "$jql" --arg fields "$fields" \
             '{ jql: $jql, maxResults: 1000, fields: ($fields | split(",")) }')
-          curl -sfSL -X POST \
-            -H "Content-Type: application/json" \
-            -H "${{ steps.auth.outputs.header }}" \
-            --data "$body" \
-            "$BASE/rest/api/3/search" \
-            -o search.json
+
+          # POST with proper auth
+          if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
+            curl -sS --fail -X POST \
+              -H "Authorization: $JIRA_AUTH" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data "$body" \
+              "$BASE/rest/api/3/search" \
+              -o search.json
+          else
+            # Basic auth using --user keeps credentials masked
+            curl -sS --fail -X POST \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data "$body" \
+              "$BASE/rest/api/3/search" \
+              -o search.json
+          fi
+
+          # Sanity check
           jq '.issues | length' search.json
 
       - name: Build CSV
