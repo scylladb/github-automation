@@ -1,171 +1,64 @@
-name: Extract Jira Issue Details (CSV)
+name: Fetch Jira Issue Details
 
 on:
   workflow_call:
     inputs:
-      jira_keys_json:
-        description: 'JSON array of Jira keys, e.g. ["PROJ-1","PROJ-2"]'
-        required: true
+      jira_key:
         type: string
+        required: true
     secrets:
       jira_auth:
-        description: 'Either "email:api_token" (Basic) or "Bearer <token>"'
         required: true
     outputs:
-      csv:
-        description: 'Full CSV content (header + rows)'
-        value: ${{ jobs.build.outputs.csv }}
-      csv_path:
-        description: 'Path to CSV artifact (downloaded filename)'
-        value: ${{ jobs.build.outputs.csv_path }}
-      labels_csv:
-        description: 'Deduped CSV of all labels across issues (no header)'
-        value: ${{ jobs.build.outputs.labels_csv }}
+      current_jira_status:
+        value: ${{ jobs.fetch.outputs.current_status }}
+      current_jira_priority:
+        value: ${{ jobs.fetch.outputs.priority }}
+      current_jira_labels:
+        value: ${{ jobs.fetch.outputs.labels }}
 
 jobs:
-  build:
+  fetch:
     runs-on: ubuntu-latest
     outputs:
-      csv:        ${{ steps.makecsv.outputs.csv }}
-      csv_path:   ${{ steps.artifacts-out.outputs.csv_path }}
-      labels_csv: ${{ steps.derive.outputs.labels_csv }}
-
-    env:
-      JIRA_BASE_URL: https://scylladb.atlassian.net
-      SCYLLA_COMPONENTS_FIELD: customfield_10321
-      DELIM: ";"
-
+      current_status: ${{ steps.jira.outputs.status }}
+      priority: ${{ steps.jira.outputs.priority }}
+      labels: ${{ steps.jira.outputs.labels }}
     steps:
-      - name: Validate input keys
-        id: validate
-        shell: bash
+    
+      - name: Ensure jq is available
         run: |
-          keys='${{ inputs.jira_keys_json }}'
-          if [ -z "$keys" ] || [ "$keys" = "[]" ] || [ "$keys" = '[""]' ]; then
-            echo "empty_keys=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "empty_keys=false" >> "$GITHUB_OUTPUT"
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y jq
           fi
 
-      - name: Short-circuit on no keys
-        if: ${{ steps.validate.outputs.empty_keys == 'true' }}
-        id: makecsv-empty
-        shell: bash
-        run: |
-          echo "csv=" >> "$GITHUB_OUTPUT"
-          echo "labels_csv=" >> "$GITHUB_OUTPUT"
-          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
-          echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
-
-      - name: Query Jira (POST /search)
-        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
-        id: query
-        shell: bash
+      - name: Fetch Jira issue details
+        id: jira
         env:
-          BASE: ${{ env.JIRA_BASE_URL }}
-          KEYS_JSON: ${{ inputs.jira_keys_json }}
-          FIELD_ID: ${{ env.SCYLLA_COMPONENTS_FIELD }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
+          JIRA_KEY: ${{ inputs.jira_key }}
         run: |
           set -euo pipefail
 
-          # Build JQL and fields list
-          keys_csv=$(jq -r 'join(",")' <<< "$KEYS_JSON")
-          fields="status,labels,assignee,priority,fixVersions,${FIELD_ID}"
-          jql="key in (${keys_csv})"
+          echo "Fetching ${JIRA_KEY} from Jira ..."
+          RESP="$(curl -sS \
+                  --user "$JIRA_AUTH" \
+                  -H "Accept: application/json" \
+                  "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
+        
+          # Extract fields (priority may be null)
+          STATUS="$(echo "$RESP" | jq -r '.fields.status.name // ""')"
+          PRIORITY="$(echo "$RESP" | jq -r '.fields.priority.name // ""')"
+          LABELS="$(echo "$RESP" | jq -r '(.fields.labels // []) | join(",")')"
 
-          # Prepare JSON body
-          body=$(jq -n --arg jql "$jql" --arg fields "$fields" \
-            '{ jql: $jql, maxResults: 1000, fields: ($fields | split(",")) }')
 
-          # POST with proper auth
-          if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
-            curl -sS --fail -X POST \
-              -H "Authorization: $JIRA_AUTH" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              --data "$body" \
-              "$BASE/rest/api/3/search" \
-              -o search.json
-          else
-            # Basic auth using --user keeps credentials masked
-            curl -sS --fail -X POST \
-              --user "$JIRA_AUTH" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              --data "$body" \
-              "$BASE/rest/api/3/search" \
-              -o search.json
-          fi
+          echo "Current status: ${STATUS}"
+          echo "Priority: ${PRIORITY}"
+          echo "Labels: ${LABELS}"
 
-          # Sanity check
-          jq '.issues | length' search.json
-
-      - name: Build CSV
-        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
-        id: makecsv
-        shell: bash
-        env:
-          FIELD_ID: ${{ env.SCYLLA_COMPONENTS_FIELD }}
-          DELIM: ${{ env.DELIM }}
-        run: |
-          set -euo pipefail
-          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
-
-          jq -r --arg delim "$DELIM" --arg field "$FIELD_ID" '
-            def join_or_empty($d): if (.|length) > 0 then join($d) else "" end;
-
-            .issues[]
-            | {
-                key: .key,
-                status: (.fields.status.name // ""),
-                labels: ((.fields.labels // []) | join_or_empty($delim)),
-                assignee: (.fields.assignee.displayName // ""),
-                priority: (.fields.priority.name // ""),
-                fixVersions: ((.fields.fixVersions // []) | map(.name // "") | join_or_empty($delim)),
-                scylla_components: (
-                  (.fields[$field] // [])
-                  | if type=="array" then
-                      (map(.value // "") | join_or_empty($delim))
-                    else
-                      (tostring)
-                    end
-                )
-              }
-            | [.key, .status, .labels, .assignee, .priority, .fixVersions, .scylla_components]
-            | @csv
-          ' search.json >> jira-details.csv
-
-          csv_content=$(cat jira-details.csv)
-          echo "csv<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$csv_content" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Derive labels_csv
-        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
-        id: derive
-        shell: bash
-        run: |
-          set -euo pipefail
-          labels_csv=$(
-            jq -r '
-              [.issues[].fields.labels[]?]
-              | map(tostring)
-              | unique
-              | join(",")
-            ' search.json
-          )
-          echo "labels_csv=$labels_csv" >> "$GITHUB_OUTPUT"
-
-      - name: Upload CSV artifact
-        id: artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: jira-details-csv
-          path: jira-details.csv
-
-      - name: Set csv_path output
-        id: artifacts-out
-        shell: bash
-        run: |
-          echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
+          {
+            echo "status=${STATUS}"
+            echo "priority=${PRIORITY}"
+            echo "labels=${LABELS}"
+          } >> "$GITHUB_OUTPUT"
