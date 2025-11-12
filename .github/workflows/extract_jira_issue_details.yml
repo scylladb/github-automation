@@ -68,36 +68,30 @@ jobs:
           JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           set -euo pipefail
-
+      
+          echo "Using Basic auth (email:api_token)"
+          echo "Jira Base: $BASE"
+      
           # Build JQL and fields list
           keys_csv=$(jq -r 'join(",")' <<< "$KEYS_JSON")
           fields="status,labels,assignee,priority,fixVersions,${FIELD_ID}"
           jql="key in (${keys_csv})"
-
-          # Prepare JSON body
+          echo "JQL: $jql"
+          echo "Fields: $fields"
+      
+          # Prepare JSON body for POST
           body=$(jq -n --arg jql "$jql" --arg fields "$fields" \
             '{ jql: $jql, maxResults: 1000, fields: ($fields | split(",")) }')
-
-          # POST with proper auth
-          if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
-            curl -sS --fail -X POST \
-              -H "Authorization: $JIRA_AUTH" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              --data "$body" \
-              "$BASE/rest/api/3/search" \
-              -o search.json
-          else
-            # Basic auth using --user keeps credentials masked
-            curl -sS --fail -X POST \
-              --user "$JIRA_AUTH" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              --data "$body" \
-              "$BASE/rest/api/3/search" \
-              -o search.json
-          fi
-
+      
+          # Perform the POST with Basic authentication (via --user)
+          curl -sS --fail -X POST \
+            --user "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            --data "$body" \
+            "$BASE/rest/api/3/search" \
+            -o search.json
+      
           # Sanity check
           jq '.issues | length' search.json
 
