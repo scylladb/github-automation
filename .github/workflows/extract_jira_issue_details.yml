@@ -81,17 +81,17 @@ jobs:
       
           # URL-encode JQL and fields safely
           enc_jql=$(python3 - <<'PY'
-      import urllib.parse, os
-      print(urllib.parse.quote(os.environ["JQL"]))
-      PY
-      JQL="$jql")
-      
-          enc_fields=$(python3 - <<'PY'
-      import urllib.parse, os
-      print(urllib.parse.quote(os.environ["FIELDS"]))
-      PY
-      FIELDS="$fields")
-      
+          import urllib.parse, os
+          print(urllib.parse.quote(os.environ["JQL"]))
+          PY
+          JQL="$jql")
+          
+              enc_fields=$(python3 - <<'PY'
+          import urllib.parse, os
+          print(urllib.parse.quote(os.environ["FIELDS"]))
+          PY
+          FIELDS="$fields")
+          
           # Build full GET URL
           url="${BASE%/}/rest/api/3/search?jql=${enc_jql}&fields=${enc_fields}&maxResults=1000"
       
