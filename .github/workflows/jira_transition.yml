@@ -1,9 +1,11 @@
-name: Jira Transition
+name: Jira Transition (from CSV)
 
 on:
   workflow_call:
     inputs:
-      jira_key:
+      # Full CSV text from the details job (header + rows).
+      # Expected columns include: key,status,labels,assignee,priority,fixVersions,scylla_components
+      details_csv:
         required: true
         type: string
       transition_name:
@@ -12,52 +14,139 @@ on:
       transition_id:
         required: true
         type: string
-      current_jira_status:
-        required: false
-        type: string
     secrets:
       jira_auth:
         required: true
 
 jobs:
   transition:
-    if: ${{ inputs.jira_key != '' && inputs.jira_key != '__NO_KEYS_FOUND__' }}
     runs-on: ubuntu-latest
-    steps:     
-      - name: Show intent
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+
+    steps:
+      - name: Write CSV to file
+        shell: bash
         run: |
-          key="${{ inputs.jira_key }}"
-          target="${{ inputs.transition_name }}"
-          current="${{ inputs.current_jira_status }}"
-          id="${{ inputs.transition_id }}"
+          cat > details.csv <<'CSV_EOF'
+          ${{ inputs.details_csv }}
+          CSV_EOF
+          echo "Wrote details.csv"
+          head -n 5 details.csv || true
 
-          echo "Jira key:         ${key}"
-          echo "Target status:    ${target}"
-          echo "Current status:   ${current}"
-          echo "Transition ID:    ${id}"
-
-          # If/else with proper closing 'fi'
-          if [ -n "$current" ] && [ "$current" = "$target" ]; then
-            echo "Skipping transition for ${key} — already at desired status '${current}'."
-          else
-            echo "We are going to transition ${key} from '${current}' to '${target}'."
-          fi
-          
-      - name: Transition Jira Ticket
-        if: ${{ inputs.current_jira_status == '' || inputs.current_jira_status != inputs.transition_name }}
+      - name: Plan transitions (parse CSV)
+        id: plan
+        shell: bash
         env:
-          JIRA_AUTH: ${{ secrets.jira_auth }}
+          TARGET: ${{ inputs.transition_name }}
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import csv, sys, io, os
+          
+          target = os.environ['TARGET']
+          to_transition = []   # list of (key, current_status)
+          already_ok = []      # list of (key, current_status)
+          done_issues = []     # list of (key, current_status == Done)
+          
+          with open('details.csv', newline='', encoding='utf-8') as f:
+              reader = csv.DictReader(f)
+              # Normalize headers
+              fieldmap = { (h or '').strip().lower(): h for h in reader.fieldnames or [] }
+              def get(row, name):
+                  h = fieldmap.get(name.lower())
+                  return (row.get(h) or "").strip() if h else ""
+          
+              for row in reader:
+                  key = get(row, 'key')
+                  status = get(row, 'status')
+                  if not key:
+                      continue
+          
+                  # Skip already correct or Done issues
+                  if status == target:
+                      already_ok.append((key, status))
+                  elif status.lower() == "done":
+                      done_issues.append((key, status))
+                  else:
+                      to_transition.append((key, status))
+          
+          # Write plan files
+          def write_list(fname, items):
+              with open(fname, 'w', encoding='utf-8') as out:
+                  for k,s in items:
+                      out.write(f"{k}|{s}\n")
+          
+          write_list('to_transition.txt', to_transition)
+          write_list('already_ok.txt', already_ok)
+          write_list('done_issues.txt', done_issues)
+          
+          print(f"{len(to_transition)} need transition, {len(already_ok)} already OK, {len(done_issues)} are Done.", file=sys.stderr)
+          PY
+
+          echo "----- Already OK (up to 10) -----"
+          head -n 10 already_ok.txt || true
+          echo "----- Done issues (up to 10) -----"
+          head -n 10 done_issues.txt || true
+          echo "----- Need Transition (up to 10) -----"
+          head -n 10 to_transition.txt || true
+
+      - name: Show intent summary
+        shell: bash
+        env:
+          TARGET: ${{ inputs.transition_name }}
+        run: |
+          need=$(wc -l < to_transition.txt 2>/dev/null || echo 0)
+          ok=$(wc -l < already_ok.txt 2>/dev/null || echo 0)
+          done=$(wc -l < done_issues.txt 2>/dev/null || echo 0)
+          echo "Target status: ${TARGET}"
+          echo "Issues already at target: ${ok}"
+          echo "Issues in 'Done' state:  ${done}"
+          echo "Issues to transition:     ${need}"
+
+      - name: Transition issues
+        if: ${{ always() }}
+        shell: bash
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+          TARGET: ${{ inputs.transition_name }}
+          TRANSITION_ID: ${{ inputs.transition_id }}
+          BASE: ${{ env.JIRA_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s to_transition.txt ]; then
+            echo "No issues require transition. Done."
+            exit 0
+          fi
+
           if [ -z "${JIRA_AUTH:-}" ]; then
-            echo "ERROR: JIRA_AUTH secret is not set."
+            echo "ERROR: jira_auth secret not set." >&2
             exit 1
           fi
 
-          echo "Transitioning Jira ticket ${{ inputs.jira_key }} to transition ${{ inputs.transition_name }}"
-          curl -v --fail -X POST \
-            --url "https://scylladb.atlassian.net/rest/api/3/issue/${{ inputs.jira_key }}/transitions" \
-            --user "$JIRA_AUTH" \
-            --header "Accept: application/json" \
-            --header "Content-Type: application/json" \
-            -d "{\"transition\": {\"id\": \"${{ inputs.transition_id }}\"}}"
+          while IFS='|' read -r key current; do
+            [ -n "${key:-}" ] || continue
+            echo "Transitioning ${key} from '${current}' -> '${TARGET}' (id=${TRANSITION_ID})"
+
+            if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
+              curl -sS --fail -X POST \
+                -H "Authorization: $JIRA_AUTH" \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                --data "{\"transition\": {\"id\": \"${TRANSITION_ID}\"}}" \
+                "${BASE}/rest/api/3/issue/${key}/transitions" \
+                || { echo "Failed to transition ${key}" >&2; exit 1; }
+            else
+              curl -sS --fail -X POST \
+                --user "$JIRA_AUTH" \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                --data "{\"transition\": {\"id\": \"${TRANSITION_ID}\"}}" \
+                "${BASE}/rest/api/3/issue/${key}/transitions" \
+                || { echo "Failed to transition ${key}" >&2; exit 1; }
+            fi
+
+            # Gentle rate limit
+            sleep 0.2
+          done < to_transition.txt
