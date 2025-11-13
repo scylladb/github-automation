@@ -27,60 +27,27 @@ jobs:
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
           echo "$GITHUB_CONTEXT"
           
-  # Retrieve details per jira key
   details:
     needs: extract
     uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@main
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-    strategy:
-      matrix:
-        jira_key: ${{ fromJSON(
-          (needs.extract.outputs['jira-keys-json'] != '' &&
-           needs.extract.outputs['jira-keys-json'] != '[]' &&
-           needs.extract.outputs['jira-keys-json'] != '[""]')
-            && needs.extract.outputs['jira-keys-json']
-            || '["__NO_KEYS_FOUND__"]') }}
-        exclude:
-          - jira_key: "__NO_KEYS_FOUND__"
-    with:
-      jira_key: ${{ matrix.jira_key }}
 
   apply_labels:
     needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@main
     with:
       pr_number:  ${{ github.event.pull_request.number }}
-      labels_csv: ${{ needs.details.outputs.current_jira_labels }}
-    strategy:
-      matrix:
-        jira_key: ${{ fromJSON(
-          (needs.extract.outputs['jira-keys-json'] != '' &&
-           needs.extract.outputs['jira-keys-json'] != '[]' &&
-           needs.extract.outputs['jira-keys-json'] != '[""]')
-            && needs.extract.outputs['jira-keys-json']
-            || '["__NO_KEYS_FOUND__"]') }}
-        exclude:
-          - jira_key: "__NO_KEYS_FOUND__"
-
+      labels_csv: ${{ needs.details.outputs.labels_csv }}
 
   transition:
     needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@main
     with:
-      jira_key: ${{ matrix.jira_key }}
+      details_csv:     ${{ needs.details.outputs.csv }}     # full CSV text
       transition_name: "In Review"
       transition_id: "121"
-      current_jira_status:   ${{ needs.details.outputs.current_jira_status }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-    strategy:
-      matrix:
-        jira_key: ${{ fromJSON(
-          (needs.extract.outputs['jira-keys-json'] != '' &&
-           needs.extract.outputs['jira-keys-json'] != '[]' &&
-           needs.extract.outputs['jira-keys-json'] != '[""]')
-            && needs.extract.outputs['jira-keys-json']
-            || '["__NO_KEYS_FOUND__"]') }}
-        exclude:
-          - jira_key: "__NO_KEYS_FOUND__"
