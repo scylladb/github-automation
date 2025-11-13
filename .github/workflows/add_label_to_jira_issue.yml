@@ -29,8 +29,8 @@ jobs:
         run: |
           set -euo pipefail
           cat > details.csv <<'CSV_EOF'
-          ${{ inputs.details_csv }}
-          CSV_EOF
+${{ inputs.details_csv }}
+CSV_EOF
           echo "Wrote details.csv"
           head -n 5 details.csv || true
 
@@ -40,48 +40,49 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import csv, sys
-          keys = []
-          with open("details.csv", newline="", encoding="utf-8") as f:
-              r = csv.DictReader(f)
-              if not r.fieldnames:
-                  print("ERROR: CSV has no header", file=sys.stderr)
-                  sys.exit(1)
-              fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
-              hkey = fmap.get("key")
-              if not hkey:
-                  print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
-                  sys.exit(1)
-              for row in r:
-                  k = (row.get(hkey) or "").strip()
-                  if k:
-                      keys.append(k)
-          
-          # de-duplicate, preserve order
-          seen=set()
-          uniq=[]
-          for k in keys:
-              if k not in seen:
-                  seen.add(k)
-                  uniq.append(k)
-          
-          with open("keys.txt","w",encoding="utf-8") as out:
-              for k in uniq:
-                  out.write(k+"\n")
-          
-          print(f"Found {len(uniq)} issues.")
-          PY
+import csv, sys
+keys = []
+with open("details.csv", newline="", encoding="utf-8") as f:
+    r = csv.DictReader(f)
+    if not r.fieldnames:
+        print("ERROR: CSV has no header", file=sys.stderr)
+        sys.exit(1)
+    fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
+    hkey = fmap.get("key")
+    if not hkey:
+        print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
+        sys.exit(1)
+    for row in r:
+        k = (row.get(hkey) or "").strip()
+        if k:
+            keys.append(k)
+
+# de-duplicate, preserve order
+seen=set()
+uniq=[]
+for k in keys:
+    if k not in seen:
+        seen.add(k)
+        uniq.append(k)
+
+with open("keys.txt","w",encoding="utf-8") as out:
+    for k in uniq:
+        out.write(k+"\n")
+
+print(f"Found {len(uniq)} issues.")
+PY
           echo "First 10 keys:"
           head -n 10 keys.txt || true
 
-      - name: Prepare payload(s) and mode
+      - name: Prepare payload(s) and mode (no heredocs)
         id: prep
         shell: bash
         env:
           TARGET_IN: ${{ inputs.label }}
         run: |
           set -euo pipefail
-          # Normalize label to uppercase to match P0..P4 in a case-insensitive way
+
+          # Normalize to uppercase for P0..P4 detection
           TARGET_UP=$(echo "${TARGET_IN}" | tr '[:lower:]' '[:upper:]')
 
           case "$TARGET_UP" in
@@ -98,38 +99,27 @@ jobs:
           echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
           echo "priority_name=${PRIORITY_NAME}" >> "$GITHUB_OUTPUT"
 
-          # Build the label payload (used only in mode=label)
-          python3 - <<'PY'
-          import json, os
-          label = os.environ.get("TARGET_IN","")
-          payload = {"update": {"labels": [{"add": label}]}}
-          with open("payload_label.json","w",encoding="utf-8") as f:
-              json.dump(payload, f, ensure_ascii=False)
-          print("Label payload ready.")
-          PY
+          # Build the label payload with jq (used when MODE=label)
+          jq -n --arg label "$TARGET_IN" \
+            '{update:{labels:[{add:$label}]}}' > payload_label.json
+          echo "Label payload ready."
 
-          # Build the priority payload (used only in mode=priority)
+          # Build the priority payload with jq (used when MODE=priority)
           if [ "$MODE" = "priority" ]; then
-            python3 - <<'PY'
-            import json, os
-            prio = os.environ.get("PRIORITY_NAME","")
-            # Use "fields" form to set priority by name
-            payload = {"fields": {"priority": {"name": prio}}}
-            with open("payload_priority.json","w",encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-            print("Priority payload ready.")
-            PY
+            jq -n --arg prio "$PRIORITY_NAME" \
+              '{fields:{priority:{name:$prio}}}' > payload_priority.json
+            echo "Priority payload ready."
           fi
 
       - name: Apply to each issue (Basic auth)
         id: apply
         shell: bash
         env:
-          JIRA_AUTH:    ${{ secrets.jira_auth }}
-          BASE_URL:     ${{ env.BASE_URL }}
-          MODE:         ${{ steps.prep.outputs.mode }}
+          JIRA_AUTH:     ${{ secrets.jira_auth }}
+          BASE_URL:      ${{ env.BASE_URL }}
+          MODE:          ${{ steps.prep.outputs.mode }}
           PRIORITY_NAME: ${{ steps.prep.outputs.priority_name }}
-          TARGET_LABEL: ${{ inputs.label }}
+          TARGET_LABEL:  ${{ inputs.label }}
         run: |
           set -euo pipefail
 
@@ -172,7 +162,7 @@ jobs:
               echo "OK ${key} (${code})"
               ok=$((ok+1))
             elif [ "$code" = "400" ] && [ "$MODE" = "label" ]; then
-              # Often returned if label already present in some configs; treat as skip for labels
+              # Often returned if label already present; treat as skip for labels
               echo "SKIP ${key} (${code}) likely already has the label. First 200 chars:"
               head -c 200 resp.json || true; echo
               skipped=$((skipped+1))
