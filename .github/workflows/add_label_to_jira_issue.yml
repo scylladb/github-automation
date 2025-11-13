@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       label:
-        description: "Label to add to each Jira issue"
+        description: "Label to add to each Jira issue, or P0..P4 to set priority"
         type: string
         required: true
     secrets:
@@ -74,35 +74,79 @@ jobs:
           echo "First 10 keys:"
           head -n 10 keys.txt || true
 
-      - name: Build label payload once
-        id: payload
+      - name: Prepare payload(s) and mode
+        id: prep
         shell: bash
         env:
-          TARGET: ${{ inputs.label }}
+          TARGET_IN: ${{ inputs.label }}
         run: |
           set -euo pipefail
+          # Normalize label to uppercase to match P0..P4 in a case-insensitive way
+          TARGET_UP=$(echo "${TARGET_IN}" | tr '[:lower:]' '[:upper:]')
+
+          case "$TARGET_UP" in
+            P0|P1|P2|P3|P4)
+              MODE="priority"
+              PRIORITY_NAME="$TARGET_UP"
+              ;;
+            *)
+              MODE="label"
+              PRIORITY_NAME=""
+              ;;
+          esac
+
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "priority_name=${PRIORITY_NAME}" >> "$GITHUB_OUTPUT"
+
+          # Build the label payload (used only in mode=label)
           python3 - <<'PY'
           import json, os
-          label = os.environ["TARGET"]
+          label = os.environ.get("TARGET_IN","")
           payload = {"update": {"labels": [{"add": label}]}}
-          with open("payload.json","w",encoding="utf-8") as f:
+          with open("payload_label.json","w",encoding="utf-8") as f:
               json.dump(payload, f, ensure_ascii=False)
-          print("Payload ready.")
+          print("Label payload ready.")
           PY
 
-      - name: Add label to each issue (Basic auth)
-        id: add
+          # Build the priority payload (used only in mode=priority)
+          if [ "$MODE" = "priority" ]; then
+            python3 - <<'PY'
+            import json, os
+            prio = os.environ.get("PRIORITY_NAME","")
+            # Use "fields" form to set priority by name
+            payload = {"fields": {"priority": {"name": prio}}}
+            with open("payload_priority.json","w",encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            print("Priority payload ready.")
+            PY
+          fi
+
+      - name: Apply to each issue (Basic auth)
+        id: apply
         shell: bash
         env:
-          JIRA_AUTH: ${{ secrets.jira_auth }}
-          TARGET:    ${{ inputs.label }}
-          BASE_URL:  ${{ env.BASE_URL }}
+          JIRA_AUTH:    ${{ secrets.jira_auth }}
+          BASE_URL:     ${{ env.BASE_URL }}
+          MODE:         ${{ steps.prep.outputs.mode }}
+          PRIORITY_NAME: ${{ steps.prep.outputs.priority_name }}
+          TARGET_LABEL: ${{ inputs.label }}
         run: |
           set -euo pipefail
 
           if [ ! -s keys.txt ]; then
-            echo "No issue keys found; nothing to label."
+            echo "No issue keys found; nothing to apply."
             exit 0
+          fi
+
+          echo "Operation mode: ${MODE}"
+          if [ "$MODE" = "priority" ]; then
+            echo "Will set priority to: ${PRIORITY_NAME}"
+            PAYLOAD_FILE="payload_priority.json"
+            ACTION_DESC="Set priority"
+          else
+            echo "Will add label: ${TARGET_LABEL}"
+            PAYLOAD_FILE="payload_label.json"
+            ACTION_DESC="Add label"
           fi
 
           ok=0
@@ -113,21 +157,22 @@ jobs:
             [ -n "${key:-}" ] || continue
             ISSUE_URL="${BASE_URL}/rest/api/3/issue/${key}"
 
-            echo "Adding label '${TARGET}' to ${key} ..."
+            echo "${ACTION_DESC} on ${key} ..."
 
+            # Perform update (Basic auth via --user)
             code=$(curl -sS -o resp.json -w "%{http_code}" \
               -X PUT "${ISSUE_URL}" \
               --user "$JIRA_AUTH" \
               -H "Accept: application/json" \
               -H "Content-Type: application/json" \
-              --data @payload.json)
+              --data @"${PAYLOAD_FILE}")
 
-            # Jira typically returns 204 No Content on successful edit; 200 is also OK
+            # Jira: 204 No Content (common) or 200 OK
             if [ "$code" = "204" ] || [ "$code" = "200" ]; then
               echo "OK ${key} (${code})"
               ok=$((ok+1))
-            elif [ "$code" = "400" ]; then
-              # Often returned if label already present in some configs; treat as skip
+            elif [ "$code" = "400" ] && [ "$MODE" = "label" ]; then
+              # Often returned if label already present in some configs; treat as skip for labels
               echo "SKIP ${key} (${code}) likely already has the label. First 200 chars:"
               head -c 200 resp.json || true; echo
               skipped=$((skipped+1))
