@@ -28,7 +28,7 @@ jobs:
     outputs:
       csv:        ${{ steps.makecsv.outputs.csv }}
       csv_path:   ${{ steps.artifacts-out.outputs.csv_path }}
-      labels_csv: ${{ steps.derive.outputs.labels_csv }}
+      labels_csv: ${{ steps.fetch.outputs.labels_csv }}
 
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
@@ -117,14 +117,6 @@ jobs:
           echo "csv<<EOF" >> "$GITHUB_OUTPUT"
           echo "$csv_content" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Derive labels_csv output
-        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
-        id: derive
-        shell: bash
-        run: |
-          labels_csv=$(grep -oP '(?<=,")[^"]*(?=")' jira-details.csv | tr ';' '\n' | sort -u | paste -sd, -)
-          echo "labels_csv=$labels_csv" >> "$GITHUB_OUTPUT"
 
       - name: Upload CSV artifact
         id: artifacts
