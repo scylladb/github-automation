@@ -1,64 +1,132 @@
-name: Fetch Jira Issue Details
+name: Extract Jira Issue Details (CSV - per issue)
 
 on:
   workflow_call:
     inputs:
-      jira_key:
-        type: string
+      jira_keys_json:
+        description: 'JSON array of Jira keys, e.g. ["PROJ-1","PROJ-2"]'
         required: true
+        type: string
     secrets:
       jira_auth:
+        description: 'Authorization credential: "email:api_token" for Basic, or "Bearer <token>"'
         required: true
     outputs:
-      current_jira_status:
-        value: ${{ jobs.fetch.outputs.current_status }}
-      current_jira_priority:
-        value: ${{ jobs.fetch.outputs.priority }}
-      current_jira_labels:
-        value: ${{ jobs.fetch.outputs.labels }}
+      csv:
+        description: 'Full CSV content (header + rows)'
+        value: ${{ jobs.build.outputs.csv }}
+      csv_path:
+        description: 'Path to CSV artifact (downloaded filename)'
+        value: ${{ jobs.build.outputs.csv_path }}
+      labels_csv:
+        description: 'Deduped CSV of all labels across issues (no header)'
+        value: ${{ jobs.build.outputs.labels_csv }}
 
 jobs:
-  fetch:
+  build:
     runs-on: ubuntu-latest
     outputs:
-      current_status: ${{ steps.jira.outputs.status }}
-      priority: ${{ steps.jira.outputs.priority }}
-      labels: ${{ steps.jira.outputs.labels }}
+      csv:        ${{ steps.makecsv.outputs.csv }}
+      csv_path:   ${{ steps.artifacts-out.outputs.csv_path }}
+      labels_csv: ${{ steps.fetch.outputs.labels_csv }}
+
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      SCYLLA_COMPONENTS_FIELD: customfield_10321
+      DELIM: ";"
+
     steps:
-    
-      - name: Ensure jq is available
+      - name: Validate input keys
+        id: validate
+        shell: bash
         run: |
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update -y
-            sudo apt-get install -y jq
+          keys='${{ inputs.jira_keys_json }}'
+          if [ -z "$keys" ] || [ "$keys" = "[]" ] || [ "$keys" = '[""]' ]; then
+            echo "empty_keys=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty_keys=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fetch Jira issue details
-        id: jira
+      - name: Short-circuit on no keys
+        if: ${{ steps.validate.outputs.empty_keys == 'true' }}
+        id: makecsv-empty
+        shell: bash
+        run: |
+          echo "csv=" >> "$GITHUB_OUTPUT"
+          echo "labels_csv=" >> "$GITHUB_OUTPUT"
+          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
+          echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch issues one by one
+        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
+        id: fetch
+        shell: bash
         env:
+          BASE: ${{ env.JIRA_BASE_URL }}
+          FIELD_ID: ${{ env.SCYLLA_COMPONENTS_FIELD }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
-          JIRA_KEY: ${{ inputs.jira_key }}
+          KEYS_JSON: ${{ inputs.jira_keys_json }}
+          DELIM: ${{ env.DELIM }}
         run: |
           set -euo pipefail
+          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
 
-          echo "Fetching ${JIRA_KEY} from Jira ..."
-          RESP="$(curl -sS \
-                  --user "$JIRA_AUTH" \
-                  -H "Accept: application/json" \
-                  "https://scylladb.atlassian.net/rest/api/3/issue/${JIRA_KEY}?fields=status,priority,labels")"
-        
-          # Extract fields (priority may be null)
-          STATUS="$(echo "$RESP" | jq -r '.fields.status.name // ""')"
-          PRIORITY="$(echo "$RESP" | jq -r '.fields.priority.name // ""')"
-          LABELS="$(echo "$RESP" | jq -r '(.fields.labels // []) | join(",")')"
+          keys=$(echo "$KEYS_JSON" | jq -r '.[]')
+          all_labels=()
 
+          for key in $keys; do
+            echo "Fetching Jira issue: $key"
 
-          echo "Current status: ${STATUS}"
-          echo "Priority: ${PRIORITY}"
-          echo "Labels: ${LABELS}"
+            resp=$(curl -sS --fail \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              "$BASE/rest/api/3/issue/$key?fields=status,labels,assignee,priority,fixVersions,${FIELD_ID}")
 
-          {
-            echo "status=${STATUS}"
-            echo "priority=${PRIORITY}"
-            echo "labels=${LABELS}"
-          } >> "$GITHUB_OUTPUT"
+            status=$(echo "$resp" | jq -r '.fields.status.name // ""')
+            assignee=$(echo "$resp" | jq -r '.fields.assignee.displayName // ""')
+            priority=$(echo "$resp" | jq -r '.fields.priority.name // ""')
+            labels=$(echo "$resp" | jq -r --arg d "$DELIM" '(.fields.labels // []) | join($d)')
+            fixVersions=$(echo "$resp" | jq -r --arg d "$DELIM" '(.fields.fixVersions // []) | map(.name // "") | join($d)')
+            components=$(echo "$resp" | jq -r --arg d "$DELIM" --arg f "$FIELD_ID" '
+              (.fields[$f] // [])
+              | if type=="array" then (map(.value // "") | join($d)) else (tostring) end
+            ')
+
+            # Append line to CSV
+            echo "\"$key\",\"$status\",\"$labels\",\"$assignee\",\"$priority\",\"$fixVersions\",\"$components\"" >> jira-details.csv
+
+            # Collect labels for aggregation
+            mapfile -t lbls < <(echo "$resp" | jq -r '.fields.labels[]?')
+            all_labels+=("${lbls[@]}")
+          done
+
+          # Deduplicate and join all labels
+          if [ ${#all_labels[@]} -gt 0 ]; then
+            deduped=$(printf "%s\n" "${all_labels[@]}" | sort -u | paste -sd, -)
+          else
+            deduped=""
+          fi
+          echo "labels_csv=$deduped" >> "$GITHUB_OUTPUT"
+
+      - name: Collect CSV content
+        if: ${{ steps.validate.outputs.empty_keys != 'true' }}
+        id: makecsv
+        shell: bash
+        run: |
+          csv_content=$(cat jira-details.csv)
+          echo "csv<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$csv_content" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Upload CSV artifact
+        id: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jira-details-csv
+          path: jira-details.csv
+
+      - name: Set csv_path output
+        id: artifacts-out
+        shell: bash
+        run: |
+          echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
