@@ -29,8 +29,8 @@ jobs:
         run: |
           set -euo pipefail
           cat > details.csv <<'CSV_EOF'
-${{ inputs.details_csv }}
-CSV_EOF
+          ${{ inputs.details_csv }}
+          CSV_EOF
           echo "Wrote details.csv"
           head -n 5 details.csv || true
 
@@ -40,37 +40,37 @@ CSV_EOF
         run: |
           set -euo pipefail
           python3 - <<'PY'
-import csv, sys
-keys = []
-with open("details.csv", newline="", encoding="utf-8") as f:
-    r = csv.DictReader(f)
-    if not r.fieldnames:
-        print("ERROR: CSV has no header", file=sys.stderr)
-        sys.exit(1)
-    fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
-    hkey = fmap.get("key")
-    if not hkey:
-        print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
-        sys.exit(1)
-    for row in r:
-        k = (row.get(hkey) or "").strip()
-        if k:
-            keys.append(k)
-
-# de-duplicate, preserve order
-seen=set()
-uniq=[]
-for k in keys:
-    if k not in seen:
-        seen.add(k)
-        uniq.append(k)
-
-with open("keys.txt","w",encoding="utf-8") as out:
-    for k in uniq:
-        out.write(k+"\n")
-
-print(f"Found {len(uniq)} issues.")
-PY
+          import csv, sys
+          keys = []
+          with open("details.csv", newline="", encoding="utf-8") as f:
+              r = csv.DictReader(f)
+              if not r.fieldnames:
+                  print("ERROR: CSV has no header", file=sys.stderr)
+                  sys.exit(1)
+              fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
+              hkey = fmap.get("key")
+              if not hkey:
+                  print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
+                  sys.exit(1)
+              for row in r:
+                  k = (row.get(hkey) or "").strip()
+                  if k:
+                      keys.append(k)
+          
+          # de-duplicate, preserve order
+          seen=set()
+          uniq=[]
+          for k in keys:
+              if k not in seen:
+                  seen.add(k)
+                  uniq.append(k)
+          
+          with open("keys.txt","w",encoding="utf-8") as out:
+              for k in uniq:
+                  out.write(k+"\n")
+          
+          print(f"Found {len(uniq)} issues.")
+          PY
           echo "First 10 keys:"
           head -n 10 keys.txt || true
 
