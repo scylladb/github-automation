@@ -1,0 +1,182 @@
+name: Add Label to Jira Issues (from CSV)
+
+on:
+  workflow_call:
+    inputs:
+      details_csv:
+        description: "Full CSV text (header + rows). Must include a 'key' column."
+        type: string
+        required: true
+      label:
+        description: "Label to add to each Jira issue, or P0..P4 to set priority"
+        type: string
+        required: true
+    secrets:
+      jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  add_label:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://scylladb.atlassian.net
+
+    steps:
+      - name: Save CSV
+        id: save
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > details.csv <<'CSV_EOF'
+          ${{ inputs.details_csv }}
+          CSV_EOF
+          echo "Wrote details.csv"
+          head -n 5 details.csv || true
+
+      - name: Extract Jira keys (case-insensitive 'key' header)
+        id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv, sys
+          keys = []
+          with open("details.csv", newline="", encoding="utf-8") as f:
+              r = csv.DictReader(f)
+              if not r.fieldnames:
+                  print("ERROR: CSV has no header", file=sys.stderr)
+                  sys.exit(1)
+              fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
+              hkey = fmap.get("key")
+              if not hkey:
+                  print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
+                  sys.exit(1)
+              for row in r:
+                  k = (row.get(hkey) or "").strip()
+                  if k:
+                      keys.append(k)
+          
+          # de-duplicate, preserve order
+          seen=set()
+          uniq=[]
+          for k in keys:
+              if k not in seen:
+                  seen.add(k)
+                  uniq.append(k)
+          
+          with open("keys.txt","w",encoding="utf-8") as out:
+              for k in uniq:
+                  out.write(k+"\n")
+          
+          print(f"Found {len(uniq)} issues.")
+          PY
+          echo "First 10 keys:"
+          head -n 10 keys.txt || true
+
+      - name: Prepare payload(s) and mode (no heredocs)
+        id: prep
+        shell: bash
+        env:
+          TARGET_IN: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          # Normalize to uppercase for P0..P4 detection
+          TARGET_UP=$(echo "${TARGET_IN}" | tr '[:lower:]' '[:upper:]')
+
+          case "$TARGET_UP" in
+            P0|P1|P2|P3|P4)
+              MODE="priority"
+              PRIORITY_NAME="$TARGET_UP"
+              ;;
+            *)
+              MODE="label"
+              PRIORITY_NAME=""
+              ;;
+          esac
+
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+          echo "priority_name=${PRIORITY_NAME}" >> "$GITHUB_OUTPUT"
+
+          # Build the label payload with jq (used when MODE=label)
+          jq -n --arg label "$TARGET_IN" \
+            '{update:{labels:[{add:$label}]}}' > payload_label.json
+          echo "Label payload ready."
+
+          # Build the priority payload with jq (used when MODE=priority)
+          if [ "$MODE" = "priority" ]; then
+            jq -n --arg prio "$PRIORITY_NAME" \
+              '{fields:{priority:{name:$prio}}}' > payload_priority.json
+            echo "Priority payload ready."
+          fi
+
+      - name: Apply to each issue (Basic auth)
+        id: apply
+        shell: bash
+        env:
+          JIRA_AUTH:     ${{ secrets.jira_auth }}
+          BASE_URL:      ${{ env.BASE_URL }}
+          MODE:          ${{ steps.prep.outputs.mode }}
+          PRIORITY_NAME: ${{ steps.prep.outputs.priority_name }}
+          TARGET_LABEL:  ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s keys.txt ]; then
+            echo "No issue keys found; nothing to apply."
+            exit 0
+          fi
+
+          echo "Operation mode: ${MODE}"
+          if [ "$MODE" = "priority" ]; then
+            echo "Will set priority to: ${PRIORITY_NAME}"
+            PAYLOAD_FILE="payload_priority.json"
+            ACTION_DESC="Set priority"
+          else
+            echo "Will add label: ${TARGET_LABEL}"
+            PAYLOAD_FILE="payload_label.json"
+            ACTION_DESC="Add label"
+          fi
+
+          ok=0
+          skipped=0
+          failed=0
+
+          while IFS= read -r key; do
+            [ -n "${key:-}" ] || continue
+            ISSUE_URL="${BASE_URL}/rest/api/3/issue/${key}"
+
+            echo "${ACTION_DESC} on ${key} ..."
+
+            # Perform update (Basic auth via --user)
+            code=$(curl -sS -o resp.json -w "%{http_code}" \
+              -X PUT "${ISSUE_URL}" \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data @"${PAYLOAD_FILE}")
+
+            # Jira: 204 No Content (common) or 200 OK
+            if [ "$code" = "204" ] || [ "$code" = "200" ]; then
+              echo "OK ${key} (${code})"
+              ok=$((ok+1))
+            elif [ "$code" = "400" ] && [ "$MODE" = "label" ]; then
+              # Often returned if label already present; treat as skip for labels
+              echo "SKIP ${key} (${code}) likely already has the label. First 200 chars:"
+              head -c 200 resp.json || true; echo
+              skipped=$((skipped+1))
+            else
+              echo "FAIL ${key} (${code}) First 400 chars:"
+              head -c 400 resp.json || true; echo
+              failed=$((failed+1))
+            fi
+
+            # Gentle pacing
+            sleep 0.2
+          done < keys.txt
+
+          echo "Summary: ok=${ok} skipped=${skipped} failed=${failed}"
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
