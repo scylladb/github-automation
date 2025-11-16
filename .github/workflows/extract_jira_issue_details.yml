@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           keys='${{ inputs.jira_keys_json }}'
-          if [ -z "$keys" ] || [ "$keys" = "[]" ] || [ "$keys" = '[""]' ]; then
+          if [ -z "$keys" ] || [ "$keys" = "[]" ] || [ "$keys" = '[""]' ] || [[ "$keys" == '["__NO_KEYS_FOUND__"]' ]]; then
             echo "empty_keys=true" >> "$GITHUB_OUTPUT"
           else
             echo "empty_keys=false" >> "$GITHUB_OUTPUT"
