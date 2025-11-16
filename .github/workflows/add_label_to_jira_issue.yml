@@ -40,35 +40,49 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import csv, sys
+          import csv, sys, os
+
           keys = []
+
+          # NEW: If file is missing or truly empty -> log and skip
+          if not os.path.exists("details.csv") or os.path.getsize("details.csv") == 0:
+              print("details.csv is empty or missing; no issues to update.")
+              # Ensure keys.txt exists and is empty so the next step can short-circuit cleanly
+              open("keys.txt", "w", encoding="utf-8").close()
+              sys.exit(0)
+
           with open("details.csv", newline="", encoding="utf-8") as f:
               r = csv.DictReader(f)
-              if not r.fieldnames:
-                  print("ERROR: CSV has no header", file=sys.stderr)
-                  sys.exit(1)
+
+              if not r.fieldnames or all((h or "").strip() == "" for h in r.fieldnames):
+                  print("details.csv has no header (or only blank header); no issues to update.")
+                  open("keys.txt", "w", encoding="utf-8").close()
+                  sys.exit(0)
+
               fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
               hkey = fmap.get("key")
               if not hkey:
+                  # This remains a hard error: non-empty CSV but missing required column
                   print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
                   sys.exit(1)
+
               for row in r:
                   k = (row.get(hkey) or "").strip()
                   if k:
                       keys.append(k)
-          
-          # de-duplicate, preserve order
-          seen=set()
-          uniq=[]
+
+          # ORIGINAL LOGIC: de-duplicate, preserve order
+          seen = set()
+          uniq = []
           for k in keys:
               if k not in seen:
                   seen.add(k)
                   uniq.append(k)
-          
+
           with open("keys.txt","w",encoding="utf-8") as out:
               for k in uniq:
-                  out.write(k+"\n")
-          
+                  out.write(k + "\n")
+
           print(f"Found {len(uniq)} issues.")
           PY
           echo "First 10 keys:"
