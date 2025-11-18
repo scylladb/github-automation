@@ -46,7 +46,7 @@ jobs:
           
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          printf '%s\n' "$body"  | grep -iE '(refs|reference|close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
+          printf '%s\n' "$body"  | grep -iE '(refs|reference|close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*\[?[[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
           sort -u tickets.txt > unique_tickets.txt
