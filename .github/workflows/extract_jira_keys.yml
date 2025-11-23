@@ -65,44 +65,83 @@ jobs:
             exit 0
           fi
 
-          # ------------------------------------------------------------------
-          # Query Jira for the list of valid project keys
-          # ------------------------------------------------------------------
           echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-          echo "Fetching Jira project keys..."
+          echo "Candidate keys:"
+          cat candidate_tickets.txt || true
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
-          project_resp=$(curl -sS --fail \
-            --user "$JIRA_AUTH" \
-            -H "Accept: application/json" \
-            "https://scylladb.atlassian.net/rest/api/3/project/search?maxResults=1000")
+          # ------------------------------------------------------------------
+          # 1) Hard-coded list of known Jira project keys (prefixes)
+          # ------------------------------------------------------------------
+          # Edit this list to match your common Jira projects:
+          # e.g. KNOWN_PROJECT_PREFIXES="SCYLLA STAG DOCS ENG"
+          KNOWN_PROJECT_PREFIXES="SCYLLADB PKG PM CUSTOMER VECTOR ANSROLES CLOUDEVOPS CXTOOLS DOCTOR FIELDAUTO FIELDENG ILIAD OPERATOR PKGDASH PUB SMI WEBINSTALL"
 
-          echo "$project_resp" | jq -r '.values[].key' | sort -u > jira_project_keys.txt
+          echo "Known project prefixes (hard-coded): $KNOWN_PROJECT_PREFIXES"
 
-          echo "Valid Jira project keys (first 20):"
-          head -n 20 jira_project_keys.txt || true
+          # Write known prefixes (one per line)
+          printf "%s\n" $KNOWN_PROJECT_PREFIXES | sort -u > hardcoded_project_keys.txt
 
           > unique_tickets.txt
-          
-          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-          
+          > unknown_prefix_candidates.txt
+
+          # First pass: use only hard-coded project prefixes
           while read -r key; do
             [ -z "$key" ] && continue
             prefix="${key%%-*}"
 
-            if grep -qx "$prefix" jira_project_keys.txt; then
-              echo "Accepting $key (valid project prefix '$prefix')."
+            if grep -qx "$prefix" hardcoded_project_keys.txt; then
+              echo "Accepting $key via hard-coded prefix '$prefix'."
               echo "$key" >> unique_tickets.txt
             else
-              echo "Skipping $key — unknown project prefix '$prefix'."
+              echo "Deferring $key — prefix '$prefix' not in hard-coded list."
+              echo "$key" >> unknown_prefix_candidates.txt
             fi
           done < candidate_tickets.txt
 
+          # ------------------------------------------------------------------
+          # 2) Only if we still have keys with unknown prefixes, query Jira
+          # ------------------------------------------------------------------
+          if [[ -s unknown_prefix_candidates.txt ]]; then
+            echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+            echo "Some prefixes not in hard-coded list; querying Jira for project keys..."
+            echo "Unknown-prefix candidates:"
+            cat unknown_prefix_candidates.txt || true
+
+            project_resp=$(curl -sS --fail \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              "https://scylladb.atlassian.net/rest/api/3/project/search?maxResults=1000")
+
+            echo "$project_resp" | jq -r '.values[].key' | sort -u > jira_project_keys.txt
+
+            echo "Valid Jira project keys from API (first 20):"
+            head -n 20 jira_project_keys.txt || true
+
+            # Second pass: validate unknown prefixes against Jira project list
+            while read -r key; do
+              [ -z "$key" ] && continue
+              prefix="${key%%-*}"
+
+              if grep -qx "$prefix" jira_project_keys.txt; then
+                echo "Accepting $key via Jira API (valid project prefix '$prefix')."
+                echo "$key" >> unique_tickets.txt
+              else
+                echo "Skipping $key — unknown project prefix '$prefix' (not in Jira)."
+              fi
+            done < unknown_prefix_candidates.txt
+          else
+            echo "All prefixes resolved via hard-coded list; no Jira project lookup needed."
+          fi
+
           echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 
+          # Final result set
           if [[ ! -s unique_tickets.txt ]]; then
-            echo "No valid Jira keys found after project-prefix validation"
+            echo "No valid Jira keys found after validation"
             echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
           else
+            sort -u unique_tickets.txt -o unique_tickets.txt
             echo "Final Jira keys:"
             cat unique_tickets.txt
 
