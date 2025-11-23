@@ -49,8 +49,11 @@ jobs:
           printf '%s\n' "$body"  | grep -iE '(refs|reference|close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*\[?[[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
-          EXCLUDE='^(SHA|DUMMY)-[0-9]+$'
-          sort -u tickets.txt | grep -vE "$EXCLUDE" > unique_tickets.txt
+          EXCLUDE_PREFIXES="SHA|DUMMY"
+          echo "Excluding Jira prefixes: $EXCLUDE_PREFIXES"
+          sort -u tickets.txt \
+            | grep -vE "^(${EXCLUDE_PREFIXES})-[0-9]+$" \
+            > unique_tickets.txt
 
           if [[ ! -s unique_tickets.txt ]]; then
             echo "No Jira keys found in PR title or body"
