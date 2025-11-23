@@ -82,7 +82,9 @@ jobs:
           head -n 20 jira_project_keys.txt || true
 
           > unique_tickets.txt
-
+          
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+          
           while read -r key; do
             [ -z "$key" ] && continue
             prefix="${key%%-*}"
