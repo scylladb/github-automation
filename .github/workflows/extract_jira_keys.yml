@@ -9,6 +9,10 @@ on:
       pr_body:
         required: true
         type: string
+    secrets:
+      jira_auth:
+        description: 'Authorization credential: "email:api_token" for Basic, or "Bearer <token>"'
+        required: true
     outputs:
       jira-keys-json:
         description: "JSON array of Jira keys"
@@ -19,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
+
     steps:
       - id: save
         shell: bash
@@ -34,10 +39,12 @@ jobs:
 
       - id: process
         shell: bash
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           set -euo pipefail
 
-          # Remove backtics and \r before locating jira keys
+          # Remove backticks and \r before locating jira keys
           title=$(tr -d '\r' < pr_title.txt | tr '\`' ' ')
           body=$(tr -d '\r' < pr_body.txt | tr '\`' ' ')
 
@@ -46,26 +53,56 @@ jobs:
           
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
-          printf '%s\n' "$body"  | grep -iE '(refs|reference|close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*\[?[[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
+
+          printf '%s\n' "$body"  | grep -iE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*\[?[[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
-          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-          EXCLUDE_PREFIXES="SHA|DUMMY"
-          echo "Excluding Jira prefixes: $EXCLUDE_PREFIXES"
-          sort -u tickets.txt \
-            | grep -vE "^(${EXCLUDE_PREFIXES})-[0-9]+$" \
-            > unique_tickets.txt
+          sort -u tickets.txt > candidate_tickets.txt
+
+          if [[ ! -s candidate_tickets.txt ]]; then
+            echo "No Jira-like keys found in PR title or body"
+            echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ------------------------------------------------------------------
+          # Query Jira for the list of valid project keys
+          # ------------------------------------------------------------------
+          echo "Fetching Jira project keys..."
+
+          project_resp=$(curl -sS --fail \
+            --user "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            "https://scylladb.atlassian.net/rest/api/3/project/search?maxResults=1000")
+
+          echo "$project_resp" | jq -r '.values[].key' | sort -u > jira_project_keys.txt
+
+          echo "Valid Jira project keys (first 20):"
+          head -n 20 jira_project_keys.txt || true
+
+          > unique_tickets.txt
+
+          while read -r key; do
+            [ -z "$key" ] && continue
+            prefix="${key%%-*}"
+
+            if grep -qx "$prefix" jira_project_keys.txt; then
+              echo "Accepting $key (valid project prefix '$prefix')."
+              echo "$key" >> unique_tickets.txt
+            else
+              echo "Skipping $key — unknown project prefix '$prefix'."
+            fi
+          done < candidate_tickets.txt
 
           if [[ ! -s unique_tickets.txt ]]; then
-            echo "No Jira keys found in PR title or body"
+            echo "No valid Jira keys found after project-prefix validation"
             echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
           else
-            echo "Found Jira tickets:"
+            echo "Final Jira keys:"
             cat unique_tickets.txt
 
             json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
             json="[${json}]"
 
-            # Always emit valid outputs
             echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
           fi
