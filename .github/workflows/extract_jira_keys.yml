@@ -95,6 +95,8 @@ jobs:
             fi
           done < candidate_tickets.txt
 
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+
           if [[ ! -s unique_tickets.txt ]]; then
             echo "No valid Jira keys found after project-prefix validation"
             echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
