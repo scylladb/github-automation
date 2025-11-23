@@ -9,6 +9,10 @@ on:
       pr_body:
         required: true
         type: string
+    secrets:
+      jira_auth:
+        description: 'Authorization credential: "email:api_token" for Basic, or "Bearer <token>"'
+        required: true
     outputs:
       jira-keys-json:
         description: "JSON array of Jira keys"
@@ -19,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
+
     steps:
       - id: save
         shell: bash
@@ -34,10 +39,12 @@ jobs:
 
       - id: process
         shell: bash
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           set -euo pipefail
 
-          # Remove backtics and \r before locating jira keys
+          # Remove backticks and \r before locating jira keys
           title=$(tr -d '\r' < pr_title.txt | tr '\`' ' ')
           body=$(tr -d '\r' < pr_body.txt | tr '\`' ' ')
 
@@ -46,21 +53,100 @@ jobs:
           
           > tickets.txt
           printf '%s\n' "$title" | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
+
           printf '%s\n' "$body"  | grep -iE '(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]*[: ][[:space:]]*\[?[[:space:]]*((https?://[^[:space:]]*/browse/)?[A-Z]+-[0-9]+)' \
                                 | grep -oE '[A-Z]+-[0-9]+' >> tickets.txt || true
 
-          sort -u tickets.txt > unique_tickets.txt
+          sort -u tickets.txt > candidate_tickets.txt
 
+          if [[ ! -s candidate_tickets.txt ]]; then
+            echo "No Jira-like keys found in PR title or body"
+            echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+          echo "Candidate keys:"
+          cat candidate_tickets.txt || true
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+
+          # ------------------------------------------------------------------
+          # 1) Hard-coded list of known Jira project keys (prefixes)
+          # ------------------------------------------------------------------
+          # Edit this list to match your common Jira projects:
+          # e.g. KNOWN_PROJECT_PREFIXES="SCYLLA STAG DOCS ENG"
+          KNOWN_PROJECT_PREFIXES="SCYLLADB PKG PM CUSTOMER VECTOR ANSROLES CLOUDEVOPS CXTOOLS DOCTOR FIELDAUTO FIELDENG ILIAD OPERATOR PKGDASH PUB SMI WEBINSTALL STAG"
+
+          echo "Known project prefixes (hard-coded): $KNOWN_PROJECT_PREFIXES"
+
+          # Write known prefixes (one per line)
+          printf "%s\n" $KNOWN_PROJECT_PREFIXES | sort -u > hardcoded_project_keys.txt
+
+          > unique_tickets.txt
+          > unknown_prefix_candidates.txt
+
+          # First pass: use only hard-coded project prefixes
+          while read -r key; do
+            [ -z "$key" ] && continue
+            prefix="${key%%-*}"
+
+            if grep -qx "$prefix" hardcoded_project_keys.txt; then
+              echo "Accepting $key via hard-coded prefix '$prefix'."
+              echo "$key" >> unique_tickets.txt
+            else
+              echo "Deferring $key — prefix '$prefix' not in hard-coded list."
+              echo "$key" >> unknown_prefix_candidates.txt
+            fi
+          done < candidate_tickets.txt
+
+          # ------------------------------------------------------------------
+          # 2) Only if we still have keys with unknown prefixes, query Jira
+          # ------------------------------------------------------------------
+          if [[ -s unknown_prefix_candidates.txt ]]; then
+            echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+            echo "Some prefixes not in hard-coded list; querying Jira for project keys..."
+            echo "Unknown-prefix candidates:"
+            cat unknown_prefix_candidates.txt || true
+
+            project_resp=$(curl -sS --fail \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              "https://scylladb.atlassian.net/rest/api/3/project/search?maxResults=1000")
+
+            echo "$project_resp" | jq -r '.values[].key' | sort -u > jira_project_keys.txt
+
+            echo "Valid Jira project keys from API (first 20):"
+            head -n 20 jira_project_keys.txt || true
+
+            # Second pass: validate unknown prefixes against Jira project list
+            while read -r key; do
+              [ -z "$key" ] && continue
+              prefix="${key%%-*}"
+
+              if grep -qx "$prefix" jira_project_keys.txt; then
+                echo "Accepting $key via Jira API (valid project prefix '$prefix')."
+                echo "$key" >> unique_tickets.txt
+              else
+                echo "Skipping $key — unknown project prefix '$prefix' (not in Jira)."
+              fi
+            done < unknown_prefix_candidates.txt
+          else
+            echo "All prefixes resolved via hard-coded list; no Jira project lookup needed."
+          fi
+
+          echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+
+          # Final result set
           if [[ ! -s unique_tickets.txt ]]; then
-            echo "No Jira keys found in PR title or body"
+            echo "No valid Jira keys found after validation"
             echo 'jira-keys-json=["__NO_KEYS_FOUND__"]' >> "$GITHUB_OUTPUT"
           else
-            echo "Found Jira tickets:"
+            sort -u unique_tickets.txt -o unique_tickets.txt
+            echo "Final Jira keys:"
             cat unique_tickets.txt
 
             json=$(awk '{printf "\"%s\",",$1}' unique_tickets.txt | sed 's/,$//')
             json="[${json}]"
 
-            # Always emit valid outputs
             echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
           fi
