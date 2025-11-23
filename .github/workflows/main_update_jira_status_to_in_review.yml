@@ -12,6 +12,8 @@ jobs:
     with:
       pr_title: ${{ github.event.pull_request.title }}
       pr_body:  ${{ github.event.pull_request.body }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
 
   debug:                         
     needs: extract               
