@@ -52,7 +52,8 @@ jobs:
       transition_id:   "141"
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-
+      
+  # Add a descriptive comment to the closed issue
   add_comment:
     needs: [extract, transition]
 
@@ -67,13 +68,11 @@ jobs:
 
     # Call the reusable workflow
     uses: scylladb/github-automation/.github/workflows/jira_add_comment.yml@automation-staging-branch
-
     with:
       jira_key: ${{ matrix.jira_key }}
       comment: >
         This issue was closed due to the merge of PR
         [${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }}).
-
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
