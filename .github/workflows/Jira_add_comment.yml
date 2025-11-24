@@ -1,0 +1,56 @@
+name: Add Comment to Jira Issue
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        description: "The Jira issue key (e.g. STAG-17)"
+        required: true
+        type: string
+      comment:
+        description: "The comment text to add to the issue"
+        required: true
+        type: string
+    secrets:
+      jira_auth:
+        description: 'Plain "email:api_token" for Jira Cloud Basic auth'
+        required: true
+
+jobs:
+  add_comment:
+    runs-on: ubuntu-latest
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      JIRA_KEY: ${{ inputs.jira_key }}
+      COMMENT_RAW: ${{ inputs.comment }}
+      JIRA_AUTH: ${{ secrets.jira_auth }}
+
+    steps:
+      - name: Post comment to Jira issue
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$JIRA_KEY" ]; then
+            echo "JIRA_KEY is empty; nothing to do."
+            exit 0
+          fi
+
+          echo "Adding comment to Jira issue: $JIRA_KEY"
+
+          # Safely JSON-encode the comment text
+          COMMENT_JSON=$(printf '%s' "$COMMENT_RAW" | jq -Rs .)
+
+          # Build JSON payload: { "body": "<comment>" }
+          PAYLOAD=$(jq -n --arg body "$COMMENT_RAW" '{body: $body}')
+
+          ISSUE_URL="${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment"
+
+          curl -sS --fail \
+            --user "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -X POST "$ISSUE_URL" \
+            --data "$PAYLOAD"
+
+          echo "Comment added to $JIRA_KEY"
