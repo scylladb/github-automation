@@ -52,3 +52,28 @@ jobs:
       transition_id:   "141"
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
+
+  add_comment:
+    needs: [extract, transition]
+
+    # Expand each Jira key into a separate workflow run
+    strategy:
+      fail-fast: false
+      matrix:
+        jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
+
+    # Skip fake placeholder key
+    if: ${{ matrix.jira_key != '__NO_KEYS_FOUND__' }}
+
+    # Call the reusable workflow
+    uses: scylladb/github-automation/.github/workflows/jira_add_comment.yml@automation-staging-branch
+
+    with:
+      jira_key: ${{ matrix.jira_key }}
+      comment: >
+        This issue was closed due to the merge of PR
+        [${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }}).
+
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
