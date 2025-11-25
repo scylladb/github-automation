@@ -105,8 +105,29 @@ jobs:
 
             echo "Updating $key - [ $COMMENT_TEXT ]"
 
-            jq -n --arg msg "$COMMENT_TEXT" --arg field "$FIELD_ID" \
-              '{fields: {($field): $msg}}' > payload.json
+            # Build ADF document payload for rich-text custom field
+            jq -n \
+              --arg text "$COMMENT_TEXT" \
+              --arg field "$FIELD_ID" \
+              '{
+                fields: {
+                  ($field): {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": $text
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }' > payload.json
 
             code=$(curl -sS -o resp.json -w "%{http_code}" \
               -X PUT "$BASE_URL/rest/api/3/issue/$key" \
@@ -115,9 +136,9 @@ jobs:
               --data @payload.json)
 
             if [[ "$code" == "204" || "$code" == "200" ]]; then
-              echo "OK $key ($code)"
+              echo "OK $key (${code})"
             else
-              echo "FAIL $key ($code)"
+              echo "FAIL $key (${code})"
               head -c 200 resp.json || true
               echo
               exit 1
