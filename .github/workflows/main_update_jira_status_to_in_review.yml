@@ -60,5 +60,6 @@ jobs:
     with:
       details_csv: ${{ needs.details.outputs.csv }}
     secrets:
-      jira_auth: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
 
