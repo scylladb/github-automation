@@ -103,7 +103,7 @@ jobs:
           while IFS= read -r key; do
             [ -n "$key" ] || continue
 
-            echo "Updating $key ..."
+            echo "Updating $key - [ $COMMENT_TEXT ]"
 
             jq -n --arg msg "$COMMENT_TEXT" --arg field "$FIELD_ID" \
               '{fields: {($field): $msg}}' > payload.json
