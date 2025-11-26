@@ -1,0 +1,150 @@
+name: Fill Jira Field with GitHub PR Data
+
+on:
+  workflow_call:
+    inputs:
+      details_csv:
+        description: "Full CSV text (header + rows). Must include a 'key' column."
+        required: true
+        type: string
+    secrets:
+      jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  fill_field:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://scylladb.atlassian.net
+      TARGET_FIELD: customfield_10718
+      PR_URL: ${{ github.event.pull_request.html_url }}
+
+    steps:
+      - name: Save CSV
+        id: save
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > details.csv <<'CSV_EOF'
+          ${{ inputs.details_csv }}
+          CSV_EOF
+
+          echo "Saved details.csv"
+          head -n 5 details.csv || true
+
+      - name: Extract Jira keys (case-insensitive 'key' column)
+        id: extract
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import csv, sys, os
+
+          if not os.path.exists("details.csv") or os.path.getsize("details.csv") == 0:
+              print("CSV empty → no keys to process.")
+              open("keys.txt", "w").close()
+              sys.exit(0)
+
+          with open("details.csv", newline="", encoding="utf-8") as f:
+              reader = csv.DictReader(f)
+              if not reader.fieldnames:
+                  open("keys.txt", "w").close()
+                  sys.exit(0)
+
+              # Find the 'key' column
+              fmap = {(h or "").strip().lower(): h for h in reader.fieldnames}
+              hkey = fmap.get("key")
+              if not hkey:
+                  print(f"ERROR: No 'key' column. Found: {reader.fieldnames}", file=sys.stderr)
+                  sys.exit(1)
+
+              keys = []
+              for row in reader:
+                  val = (row.get(hkey) or "").strip()
+                  if val:
+                      keys.append(val)
+
+          seen = set()
+          uniq = []
+          for k in keys:
+              if k not in seen:
+                  uniq.append(k)
+                  seen.add(k)
+
+          with open("keys.txt", "w") as out:
+              for k in uniq:
+                  out.write(k + "\n")
+
+          print(f"Found {len(uniq)} Jira issues.")
+          PY
+
+          echo "First few keys:"
+          head -n 10 keys.txt || true
+
+      - name: Write PR data to Jira custom field
+        shell: bash
+        env:
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+          PR_URL:   ${{ env.PR_URL }}
+          BASE_URL: ${{ env.BASE_URL }}
+          FIELD_ID: ${{ env.TARGET_FIELD }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s keys.txt ]; then
+            echo "No keys found. Done."
+            exit 0
+          fi
+
+          COMMENT_TEXT="This issue will be closed by ${PR_URL}"
+
+          while IFS= read -r key; do
+            [ -n "$key" ] || continue
+
+            echo "Updating $key - [ $COMMENT_TEXT ]"
+
+            # Build ADF document payload for rich-text custom field
+            jq -n \
+              --arg text "$COMMENT_TEXT" \
+              --arg field "$FIELD_ID" \
+              '{
+                fields: {
+                  ($field): {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": $text
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }' > payload.json
+
+            code=$(curl -sS -o resp.json -w "%{http_code}" \
+              -X PUT "$BASE_URL/rest/api/3/issue/$key" \
+              --user "$JIRA_AUTH" \
+              -H "Content-Type: application/json" \
+              --data @payload.json)
+
+            if [[ "$code" == "204" || "$code" == "200" ]]; then
+              echo "OK $key (${code})"
+            else
+              echo "FAIL $key (${code})"
+              head -c 200 resp.json || true
+              echo
+              exit 1
+            fi
+
+            sleep 0.2
+          done < keys.txt
+
+          echo "All Jira fields updated successfully."
