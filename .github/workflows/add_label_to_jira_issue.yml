@@ -198,16 +198,26 @@ jobs:
             if [ "$code" = "204" ] || [ "$code" = "200" ]; then
               echo "OK ${key} (${code})"
               ok=$((ok+1))
+
             elif [ "$code" = "400" ] && [ "$MODE" = "label" ]; then
+              # Often returned if label already present; treat as skip for labels
               echo "SKIP ${key} (${code}) likely already has the label. First 200 chars:"
               head -c 200 resp.json || true; echo
               skipped=$((skipped+1))
+
+            elif [ "$code" = "400" ] && [ "$MODE" = "scylla_component" ]; then
+              # Option value not valid for scylla_components – log and skip
+              echo "SKIP ${key} (${code}) invalid Scylla component option. First 200 chars:"
+              head -c 200 resp.json || true; echo
+              skipped=$((skipped+1))
+
             else
               echo "FAIL ${key} (${code}) First 400 chars:"
               head -c 400 resp.json || true; echo
               failed=$((failed+1))
             fi
 
+            # Gentle pacing
             sleep 0.2
           done < keys.txt
 
@@ -215,3 +225,4 @@ jobs:
           if [ "$failed" -gt 0 ]; then
             exit 1
           fi
+
