@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       label:
-        description: "Label to add to each Jira issue, or P0..P4 to set priority"
+        description: "Label to add to each Jira issue, or P0..P4 to set priority, or area/* to add Scylla component"
         type: string
         required: true
     secrets:
@@ -21,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://scylladb.atlassian.net
+      SCYLLA_COMPONENTS_FIELD: customfield_10321
 
     steps:
       - name: Save CSV
@@ -47,7 +48,6 @@ jobs:
           # NEW: If file is missing or truly empty -> log and skip
           if not os.path.exists("details.csv") or os.path.getsize("details.csv") == 0:
               print("details.csv is empty or missing; no issues to update.")
-              # Ensure keys.txt exists and is empty so the next step can short-circuit cleanly
               open("keys.txt", "w", encoding="utf-8").close()
               sys.exit(0)
 
@@ -62,7 +62,6 @@ jobs:
               fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
               hkey = fmap.get("key")
               if not hkey:
-                  # This remains a hard error: non-empty CSV but missing required column
                   print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
                   sys.exit(1)
 
@@ -71,7 +70,6 @@ jobs:
                   if k:
                       keys.append(k)
 
-          # ORIGINAL LOGIC: de-duplicate, preserve order
           seen = set()
           uniq = []
           for k in keys:
@@ -88,25 +86,46 @@ jobs:
           echo "First 10 keys:"
           head -n 10 keys.txt || true
 
-      - name: Prepare payload(s) and mode (no heredocs)
+      - name: Prepare payload(s) and mode (priority / label / scylla component)
         id: prep
         shell: bash
         env:
-          TARGET_IN: ${{ inputs.label }}
+          TARGET_IN:  ${{ inputs.label }}
+          SCYLLA_FIELD: ${{ env.SCYLLA_COMPONENTS_FIELD }}
         run: |
           set -euo pipefail
 
-          # Normalize to uppercase for P0..P4 detection
           TARGET_UP=$(echo "${TARGET_IN}" | tr '[:lower:]' '[:upper:]')
 
+          MODE=""
+          PRIORITY_NAME=""
+          echo "Incoming label: '${TARGET_IN}'"
+
+          # 1) P0..P4 → priority field
           case "$TARGET_UP" in
             P0|P1|P2|P3|P4)
               MODE="priority"
               PRIORITY_NAME="$TARGET_UP"
               ;;
             *)
-              MODE="label"
-              PRIORITY_NAME=""
+              # 2) area/* → scylla_components
+              if [[ "$TARGET_IN" == area/* ]]; then
+                MODE="scylla_component"
+                RAW="${TARGET_IN#area/}"
+                # Replace underscores with spaces across the entire remainder
+                COMPONENT_VALUE="${RAW//_/ }"
+
+                echo "Derived Scylla component value: '${COMPONENT_VALUE}' from label '${TARGET_IN}'"
+
+                # JSON-escape the component value
+                ESCAPED=$(jq -Rn --arg v "$COMPONENT_VALUE" '$v')
+                # Build payload: update customfield_10321 with add { value: "<component>" }
+                printf '{"update":{"%s":[{"add":{"value":%s}}]}}\n' "$SCYLLA_FIELD" "$ESCAPED" > payload_scylla.json
+                echo "Scylla components payload ready."
+              else
+                # 3) Fallback: normal Jira label
+                MODE="label"
+              fi
               ;;
           esac
 
@@ -114,9 +133,11 @@ jobs:
           echo "priority_name=${PRIORITY_NAME}" >> "$GITHUB_OUTPUT"
 
           # Build the label payload with jq (used when MODE=label)
-          jq -n --arg label "$TARGET_IN" \
-            '{update:{labels:[{add:$label}]}}' > payload_label.json
-          echo "Label payload ready."
+          if [ "$MODE" = "label" ]; then
+            jq -n --arg label "$TARGET_IN" \
+              '{update:{labels:[{add:$label}]}}' > payload_label.json
+            echo "Label payload ready."
+          fi
 
           # Build the priority payload with jq (used when MODE=priority)
           if [ "$MODE" = "priority" ]; then
@@ -147,6 +168,10 @@ jobs:
             echo "Will set priority to: ${PRIORITY_NAME}"
             PAYLOAD_FILE="payload_priority.json"
             ACTION_DESC="Set priority"
+          elif [ "$MODE" = "scylla_component" ]; then
+            echo "Will add Scylla component derived from label: ${TARGET_LABEL}"
+            PAYLOAD_FILE="payload_scylla.json"
+            ACTION_DESC="Add Scylla component"
           else
             echo "Will add label: ${TARGET_LABEL}"
             PAYLOAD_FILE="payload_label.json"
@@ -163,7 +188,6 @@ jobs:
 
             echo "${ACTION_DESC} on ${key} ..."
 
-            # Perform update (Basic auth via --user)
             code=$(curl -sS -o resp.json -w "%{http_code}" \
               -X PUT "${ISSUE_URL}" \
               --user "$JIRA_AUTH" \
@@ -171,12 +195,10 @@ jobs:
               -H "Content-Type: application/json" \
               --data @"${PAYLOAD_FILE}")
 
-            # Jira: 204 No Content (common) or 200 OK
             if [ "$code" = "204" ] || [ "$code" = "200" ]; then
               echo "OK ${key} (${code})"
               ok=$((ok+1))
             elif [ "$code" = "400" ] && [ "$MODE" = "label" ]; then
-              # Often returned if label already present; treat as skip for labels
               echo "SKIP ${key} (${code}) likely already has the label. First 200 chars:"
               head -c 200 resp.json || true; echo
               skipped=$((skipped+1))
@@ -186,7 +208,6 @@ jobs:
               failed=$((failed+1))
             fi
 
-            # Gentle pacing
             sleep 0.2
           done < keys.txt
 
