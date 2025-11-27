@@ -60,6 +60,7 @@ jobs:
     with:
       pr_number:  ${{ github.event.pull_request.number }}
       labels_csv: ${{ needs.details.outputs.labels_csv }}
+      details_csv: ${{ needs.details.outputs.csv }}
 
   transition:
     needs: [extract, details]
