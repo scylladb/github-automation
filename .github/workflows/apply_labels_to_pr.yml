@@ -12,7 +12,7 @@ on:
         type: string
         required: true
       details_csv:
-        description: "Full CSV from Jira details (header + rows). Must include a 'priority' column."
+        description: "Full CSV from Jira details (header + rows). Must include 'priority' and 'scylla_components' columns."
         type: string
         required: true
 
@@ -25,7 +25,7 @@ jobs:
   apply:
     runs-on: ubuntu-latest
     steps:
-      - name: Prepare labels list (trim, dedupe, ignore empties, compute P* from Jira)
+      - name: Prepare labels list (trim, dedupe, ignore empties, compute P* & area/* from Jira)
         id: prepare
         env:
           LABELS_CSV:  ${{ inputs.labels_csv }}
@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, io, csv
+          import os, io, csv, re
 
           labels_csv = os.environ.get("LABELS_CSV", "")
           details_csv = os.environ.get("DETAILS_CSV", "")
@@ -47,12 +47,11 @@ jobs:
                   seen.add(s)
                   labels.append(s)
 
-          # 2) Remove any existing P0..P4 from this list.
+          # 2) Remove any existing P0..P4 from this base list
           priority_labels = {"P0", "P1", "P2", "P3", "P4"}
           labels = [l for l in labels if l not in priority_labels]
 
-          # 3) Determine the "highest" Jira priority across issues and map to P0..P4.
-          #    You can tweak this mapping to match your Jira instance.
+          # 3) Prepare to compute Jira-based priority and area/* labels
           priority_rank_map = {
               "p0": 0, "highest": 0, "blocker": 0,
               "p1": 1, "critical": 1, "high": 1,
@@ -62,21 +61,38 @@ jobs:
           }
 
           best_rank = None
+          area_labels = []
+          area_seen = set()
 
           details_csv = details_csv.strip()
           if details_csv:
               reader = csv.DictReader(io.StringIO(details_csv))
               for row in reader:
+                  # ----- priority → P* -----
                   prio = (row.get("priority") or "").strip()
-                  if not prio:
-                      continue
-                  key = prio.lower()
-                  rank = priority_rank_map.get(key)
-                  if rank is None:
-                      continue
-                  if best_rank is None or rank < best_rank:
-                      best_rank = rank
+                  if prio:
+                      key = prio.lower()
+                      rank = priority_rank_map.get(key)
+                      if rank is not None:
+                          if best_rank is None or rank < best_rank:
+                              best_rank = rank
 
+                  # ----- scylla_components → area/* labels -----
+                  comp_raw = (row.get("scylla_components") or "").strip()
+                  if comp_raw:
+                      # components are ";"-separated in the CSV we build
+                      for part in comp_raw.split(";"):
+                          comp = part.strip()
+                          if not comp:
+                              continue
+                          # Replace whitespace with underscores
+                          safe = re.sub(r"\s+", "_", comp)
+                          label = f"area/{safe}"
+                          if label not in area_seen:
+                              area_seen.add(label)
+                              area_labels.append(label)
+
+          # 4) Add computed P* label (if any) at the front
           priority_label = None
           if best_rank is not None:
               priority_label = f"P{best_rank}"
@@ -84,10 +100,14 @@ jobs:
           if priority_label:
               print(f"Computed priority label from Jira: {priority_label}")
               if priority_label not in labels:
-                  # Put the P* label first, rest afterwards.
                   labels.insert(0, priority_label)
           else:
               print("No mappable Jira priority found; not adding P* label.")
+
+          # 5) Append area/* labels (dedup vs other labels)
+          for area in area_labels:
+              if area not in labels:
+                  labels.append(area)
 
           print("Final labels to apply:", labels)
 
@@ -107,7 +127,7 @@ jobs:
         env:
           GH_TOKEN:   ${{ github.token }}
           OWNER_REPO: ${{ github.repository }}
-          PR_NUMBER:  ${{ inputs.pr_number }}
+          PR_NUMBER:  "${{ inputs.pr_number }}"
         run: |
           set -euo pipefail
 
@@ -134,11 +154,11 @@ jobs:
             fi
           done
 
-      - name: Add labels (after priority normalization)
+      - name: Add labels (after priority & area/* normalization)
         env:
           GH_TOKEN:   ${{ github.token }}
           OWNER_REPO: ${{ github.repository }}
-          PR_NUMBER:  ${{ inputs.pr_number }}
+          PR_NUMBER:  "${{ inputs.pr_number }}"
         run: |
           set -euo pipefail
           ISSUE_API="https://api.github.com/repos/${OWNER_REPO}/issues/${PR_NUMBER}/labels"
