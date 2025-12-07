@@ -17,7 +17,7 @@ on:
         required: true
 
 jobs:
-  add_label:
+  add_labels_to_jira:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://scylladb.atlassian.net
