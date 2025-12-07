@@ -22,7 +22,7 @@ permissions:
   issues: write
 
 jobs:
-  apply:
+  apply_labels_to_pr:
     runs-on: ubuntu-latest
     steps:
       - name: Prepare labels list (trim, dedupe, ignore empties, compute P* & area/* from Jira)
