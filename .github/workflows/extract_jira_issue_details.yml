@@ -23,7 +23,7 @@ on:
         value: ${{ jobs.build.outputs.labels_csv }}
 
 jobs:
-  build:
+  build_csv_with_jira_data:
     runs-on: ubuntu-latest
     outputs:
       csv:        ${{ steps.makecsv.outputs.csv }}
