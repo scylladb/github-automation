@@ -16,7 +16,7 @@ on:
     outputs:
       jira-keys-json:
         description: "JSON array of Jira keys"
-        value: ${{ jobs.extract.outputs.jira-keys-json }}
+        value: ${{ jobs.extract_jira_keys_from_pr.outputs.jira-keys-json }}
 
 jobs:
   extract_jira_keys_from_pr:
