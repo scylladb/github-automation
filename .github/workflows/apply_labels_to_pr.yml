@@ -162,6 +162,12 @@ jobs:
           echo "Existing labels on PR:"
           cat existing_labels.txt || true
 
+          # If we didn't compute any desired P* label, don't touch existing priorities
+          if [ ! -s desired_p_labels.txt ]; then
+            echo "No desired P* labels computed; keeping existing P* labels unchanged."
+            exit 0
+          fi
+
           for p in P0 P1 P2 P3 P4; do
             if grep -qx "$p" existing_labels.txt 2>/dev/null; then
               if grep -qx "$p" desired_p_labels.txt 2>/dev/null; then
@@ -177,6 +183,7 @@ jobs:
               fi
             fi
           done
+
 
       - name: Add labels (after priority & area/* normalization)
         env:
