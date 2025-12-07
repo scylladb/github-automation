@@ -35,9 +35,6 @@ jobs:
           python3 - <<'PY'
           import os, io, csv, re
 
-          # -------------------------------------------------------------
-          # PRINT INPUT PARAMETERS
-          # -------------------------------------------------------------
           pr_number   = os.environ.get("PR_NUMBER", "")
           labels_csv  = os.environ.get("LABELS_CSV", "")
           details_csv = os.environ.get("DETAILS_CSV", "")
@@ -66,15 +63,6 @@ jobs:
 
           # 2) Remove any existing P0..P4 from this base list
           priority_labels = {"P0", "P1", "P2", "P3", "P4"}
-          # Check if a P* priority label already exists on the PR
-          existing_p = next((l for l in labels if l in priority_labels), None)
-          if existing_p:
-              print(f"PR already has priority label: {existing_p}")
-              # Keep this priority label and skip recomputing Jira-based priority
-              best_rank = None
-          else:
-              print("No existing P* label on PR; will compute P* from Jira.")
-
           labels = [l for l in labels if l not in priority_labels]
 
           # 3) Prepare to compute Jira-based priority and area/* labels
@@ -106,12 +94,10 @@ jobs:
                   # ----- scylla_components → area/* labels -----
                   comp_raw = (row.get("scylla_components") or "").strip()
                   if comp_raw:
-                      # components are ";"-separated in the CSV we build
                       for part in comp_raw.split(";"):
                           comp = part.strip()
                           if not comp:
                               continue
-                          # Replace whitespace with underscores
                           safe = re.sub(r"\s+", "_", comp)
                           label = f"area/{safe}"
                           if label not in area_seen:
@@ -168,15 +154,27 @@ jobs:
 
           jq -r '.[].name' /tmp/existing_labels.json > existing_labels.txt || true
 
+          # Priority labels we *want* after normalization (from labels.txt)
+          grep -E '^P[0-4]$' labels.txt > desired_p_labels.txt || true
+
+          echo "Desired priority labels:"
+          cat desired_p_labels.txt || true
+          echo "Existing labels on PR:"
+          cat existing_labels.txt || true
+
           for p in P0 P1 P2 P3 P4; do
             if grep -qx "$p" existing_labels.txt 2>/dev/null; then
-              echo "Removing existing label: $p"
-              code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
-                -X DELETE "${ISSUE_API_BASE}/labels/${p}" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                -H "X-GitHub-Api-Version: 2022-11-28" || true)
-              echo "Delete $p → HTTP ${code}"
+              if grep -qx "$p" desired_p_labels.txt 2>/dev/null; then
+                echo "Keeping existing priority label: $p (also desired)"
+              else
+                echo "Removing existing priority label not desired anymore: $p"
+                code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
+                  -X DELETE "${ISSUE_API_BASE}/labels/${p}" \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" || true)
+                echo "Delete $p → HTTP ${code}"
+              fi
             fi
           done
 
