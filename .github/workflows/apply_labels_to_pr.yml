@@ -35,8 +35,25 @@ jobs:
           python3 - <<'PY'
           import os, io, csv, re
 
-          labels_csv = os.environ.get("LABELS_CSV", "")
+          # -------------------------------------------------------------
+          # PRINT INPUT PARAMETERS
+          # -------------------------------------------------------------
+          pr_number   = os.environ.get("PR_NUMBER", "")
+          labels_csv  = os.environ.get("LABELS_CSV", "")
           details_csv = os.environ.get("DETAILS_CSV", "")
+
+          print("======================================================")
+          print(" Apply Labels to PR — Input Parameters")
+          print("======================================================")
+          print(f"PR Number:       {pr_number}")
+          print(f"labels_csv:      {labels_csv}")
+          print("details_csv (first 5 lines):")
+          print("------------------------------------------------------")
+          for i, line in enumerate(details_csv.splitlines()):
+              print(line)
+              if i >= 4:
+                  break
+          print("------------------------------------------------------\n")
 
           # 1) Parse labels_csv into a deduped list
           raw_labels = [s.strip() for s in labels_csv.split(",")]
