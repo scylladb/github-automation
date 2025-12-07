@@ -36,20 +36,20 @@ jobs:
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
           echo "$GITHUB_CONTEXT"
 
-  add_jira_label:
-    needs: [extract]
-    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@automation-staging-branch
-    with:
-      details_csv: ${{ needs.details.outputs.csv }}
-      label:       ${{ github.event.label.name }}
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
-
   details:
     needs: extract
     uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
     with:
       jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  add_jira_label:
+    needs: [extract, details]
+    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@automation-staging-branch
+    with:
+      details_csv: ${{ needs.details.outputs.csv }}
+      label:       ${{ github.event.label.name }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
