@@ -169,8 +169,8 @@ jobs:
           fi
 
           for p in P0 P1 P2 P3 P4; do
-            if grep -qx "$p" existing_labels.txt 2>/dev/null; then
-              if grep -qx "$p" desired_p_labels.txt 2>/dev/null; then
+            if grep -qix "$p" existing_labels.txt 2>/dev/null; then
+              if grep -qix "$p" desired_p_labels.txt 2>/dev/null; then
                 echo "Keeping existing priority label: $p (also desired)"
               else
                 echo "Removing existing priority label not desired anymore: $p"
