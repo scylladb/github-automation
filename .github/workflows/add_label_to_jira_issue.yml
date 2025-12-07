@@ -1,10 +1,10 @@
-name: Add Label to Jira Issues (from CSV)
+name: Add Label to Jira Issues (from jira_keys_json)
 
 on:
   workflow_call:
     inputs:
-      details_csv:
-        description: "Full CSV text (header + rows). Must include a 'key' column."
+      jira_keys_json:
+        description: 'JSON array of Jira keys, e.g. ["STAG-1","STAG-2"] or ["__NO_KEYS_FOUND__"]'
         type: string
         required: true
       label:
@@ -24,52 +24,47 @@ jobs:
       SCYLLA_COMPONENTS_FIELD: customfield_10321
 
     steps:
-      - name: Save CSV
-        id: save
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > details.csv <<'CSV_EOF'
-          ${{ inputs.details_csv }}
-          CSV_EOF
-          echo "Wrote details.csv"
-          head -n 5 details.csv || true
-
-      - name: Extract Jira keys (case-insensitive 'key' header)
+      - name: Extract Jira keys from jira_keys_json
         id: extract
         shell: bash
+        env:
+          JIRA_KEYS_JSON: ${{ inputs.jira_keys_json }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import csv, sys, os
+          import json, sys, os
 
-          keys = []
+          raw = os.environ.get("JIRA_KEYS_JSON", "").strip()
+          print(f"Incoming jira_keys_json: {raw}")
 
-          # NEW: If file is missing or truly empty -> log and skip
-          if not os.path.exists("details.csv") or os.path.getsize("details.csv") == 0:
-              print("details.csv is empty or missing; no issues to update.")
+          # Handle empty / sentinel cases
+          if (not raw or
+              raw == "[]" or
+              raw == '[""]' or
+              raw == '["__NO_KEYS_FOUND__"]'):
+              print("No usable Jira keys in jira_keys_json; nothing to update.")
               open("keys.txt", "w", encoding="utf-8").close()
               sys.exit(0)
 
-          with open("details.csv", newline="", encoding="utf-8") as f:
-              r = csv.DictReader(f)
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError as e:
+              print(f"ERROR: jira_keys_json is not valid JSON: {e}", file=sys.stderr)
+              sys.exit(1)
 
-              if not r.fieldnames or all((h or "").strip() == "" for h in r.fieldnames):
-                  print("details.csv has no header (or only blank header); no issues to update.")
-                  open("keys.txt", "w", encoding="utf-8").close()
-                  sys.exit(0)
+          if not isinstance(data, list):
+              print(f"ERROR: jira_keys_json must be a JSON array; got: {type(data)}", file=sys.stderr)
+              sys.exit(1)
 
-              fmap = { (h or "").strip().lower(): h for h in r.fieldnames }  # case-insensitive
-              hkey = fmap.get("key")
-              if not hkey:
-                  print(f"ERROR: CSV header must include a 'key' column. Found: {r.fieldnames}", file=sys.stderr)
-                  sys.exit(1)
+          keys = []
+          for item in data:
+              if not isinstance(item, str):
+                  continue
+              k = item.strip()
+              if k and k != "__NO_KEYS_FOUND__":
+                  keys.append(k)
 
-              for row in r:
-                  k = (row.get(hkey) or "").strip()
-                  if k:
-                      keys.append(k)
-
+          # Deduplicate, preserve order
           seen = set()
           uniq = []
           for k in keys:
@@ -83,6 +78,7 @@ jobs:
 
           print(f"Found {len(uniq)} issues.")
           PY
+
           echo "First 10 keys:"
           head -n 10 keys.txt || true
 
@@ -90,7 +86,7 @@ jobs:
         id: prep
         shell: bash
         env:
-          TARGET_IN:  ${{ inputs.label }}
+          TARGET_IN:    ${{ inputs.label }}
           SCYLLA_FIELD: ${{ env.SCYLLA_COMPONENTS_FIELD }}
         run: |
           set -euo pipefail
@@ -225,4 +221,3 @@ jobs:
           if [ "$failed" -gt 0 ]; then
             exit 1
           fi
-
