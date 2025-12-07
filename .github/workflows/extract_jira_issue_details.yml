@@ -14,13 +14,13 @@ on:
     outputs:
       csv:
         description: 'Full CSV content (header + rows)'
-        value: ${{ jobs.build.outputs.csv }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.csv }}
       csv_path:
         description: 'Path to CSV artifact (downloaded filename)'
-        value: ${{ jobs.build.outputs.csv_path }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.csv_path }}
       labels_csv:
         description: 'Deduped CSV of all labels across issues (no header)'
-        value: ${{ jobs.build.outputs.labels_csv }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.labels_csv }}
 
 jobs:
   build_csv_with_jira_data:
