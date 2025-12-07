@@ -37,6 +37,11 @@ def main():
         for reservation in response['Reservations']:
             for instance in reservation['Instances']:
                 tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                instance_name = tags.get('Name', 'N/A')
+                
+                # Ignore specific instances that should always be running
+                if instance_name in ['build-status-monitor', 'prometheus-grafana-server']:
+                    continue
                 
                 # Calculate uptime
                 launch_time = instance['LaunchTime']
@@ -75,11 +80,15 @@ def main():
                     'JenkinsJobTag': tags.get('JenkinsJobTag', 'N/A'),
                     'RunByUser': tags.get('RunByUser', 'N/A'),
                     'keep': keep_value,
-                    'Name': tags.get('Name', 'N/A'),
+                    'Name': instance_name,
                     'Uptime': uptime_str,
                     'Keep Status': keep_status
                 }
-                instances.append(row)
+                
+                # Only add instances with "Within" status to the full list for daily reports
+                # Exceeding instances are tracked separately
+                if keep_status != 'Within' and keep_status != 'Within (default 8h)':
+                    instances.append(row)
                 
                 # Track exceeding instances separately
                 if exceeding_keep:
@@ -131,28 +140,21 @@ def main():
     if not email_from:
         print("EMAIL_FROM not set")
     
-    # Determine which instances to report
-    instances_to_report = instances if report_type == 'daily' else exceeding_instances
-    
     # Send email based on report type
     should_send_email = False
     if report_type == 'daily':
-        # Always send daily report if there are instances
-        should_send_email = bool(instances)
-        email_subject = 'Daily AWS Instance Report - All Instances (Last 24 Hours)'
+        # Only send daily report if there are exceeding instances
+        should_send_email = bool(exceeding_instances)
+        email_subject = 'Daily AWS Instance Report - Instances Exceeding Keep Time'
     else:
         # Only send email if there are exceeding instances
         should_send_email = bool(exceeding_instances)
         email_subject = 'AWS Instance Alert - Instances Exceeding Keep Time'
     
     if smtp_server and smtp_user and smtp_pass and email_from and email_to and should_send_email:
-        table_html = tabulate(instances_to_report, headers='keys', tablefmt='html')
+        table_html = tabulate(exceeding_instances, headers='keys', tablefmt='html')
         
-        if report_type == 'daily':
-            summary = f"<p><strong>Total Running Instances:</strong> {len(instances)}</p>"
-            summary += f"<p><strong>Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
-        else:
-            summary = f"<p><strong>⚠️ Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
+        summary = f"<p><strong>⚠️ Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
         
         html_body = f"""
         <html>
@@ -193,10 +195,8 @@ def main():
             print("📧 Email notification sent.")
         except Exception as e:
             print(f"❌ Error sending email: {e}")
-    elif smtp_server and report_type == 'daily' and not instances:
-        print("No instances to report in daily report.")
-    elif smtp_server and report_type == 'exceeding' and not exceeding_instances:
-        print("No exceeding instances to report.")
+    elif smtp_server and not exceeding_instances:
+        print("No exceeding instances to report - email not sent.")
 
 if __name__ == "__main__":
     main()
