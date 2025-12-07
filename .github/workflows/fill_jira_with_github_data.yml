@@ -13,7 +13,7 @@ on:
         required: true
 
 jobs:
-  fill_field:
+  fill_jira_fields:
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://scylladb.atlassian.net
