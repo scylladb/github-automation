@@ -154,35 +154,48 @@ jobs:
 
           jq -r '.[].name' /tmp/existing_labels.json > existing_labels.txt || true
 
-          # Priority labels we *want* after normalization (from labels.txt)
-          grep -E '^P[0-4]$' labels.txt > desired_p_labels.txt || true
-
-          echo "Desired priority labels:"
-          cat desired_p_labels.txt || true
           echo "Existing labels on PR:"
           cat existing_labels.txt || true
 
-          # If we didn't compute any desired P* label, don't touch existing priorities
-          if [ ! -s desired_p_labels.txt ]; then
+          # Build desired priority labels (normalized to uppercase)
+          awk '/^P[0-4]$/ {print toupper($0)}' labels.txt > desired_p_upper.txt || true
+
+          echo "Desired priority labels (uppercased):"
+          cat desired_p_upper.txt || true
+
+          # If we didn't compute any desired P* label, don't touch existing priorities at all
+          if [ ! -s desired_p_upper.txt ]; then
             echo "No desired P* labels computed; keeping existing P* labels unchanged."
             exit 0
           fi
 
-          for p in P0 P1 P2 P3 P4; do
-            if grep -qx "$p" existing_labels.txt 2>/dev/null; then
-              if grep -qx "$p" desired_p_labels.txt 2>/dev/null; then
-                echo "Keeping existing priority label: $p (also desired)"
-              else
-                echo "Removing existing priority label not desired anymore: $p"
-                code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
-                  -X DELETE "${ISSUE_API_BASE}/labels/${p}" \
-                  -H "Authorization: Bearer ${GH_TOKEN}" \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "X-GitHub-Api-Version: 2022-11-28" || true)
-                echo "Delete $p → HTTP ${code}"
-              fi
-            fi
-          done
+          # Loop over existing labels, detect P* case-insensitively, and remove if not desired
+          while IFS= read -r EXIST || [ -n "$EXIST" ]; do
+            [ -z "$EXIST" ] && continue
+
+            UPPER=$(printf '%s\n' "$EXIST" | tr '[:lower:]' '[:upper:]')
+
+            case "$UPPER" in
+              P0|P1|P2|P3|P4)
+                if grep -qx "$UPPER" desired_p_upper.txt 2>/dev/null; then
+                  echo "Keeping existing priority label: ${EXIST} (desired as ${UPPER})"
+                else
+                  echo "Removing existing priority label not desired anymore: ${EXIST} (normalized ${UPPER})"
+                  code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
+                    -X DELETE "${ISSUE_API_BASE}/labels/${EXIST}" \
+                    -H "Authorization: Bearer ${GH_TOKEN}" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" || true)
+                  echo "Delete ${EXIST} → HTTP ${code}"
+                fi
+                ;;
+              *)
+                # Non-priority label, leave alone
+                :
+                ;;
+            esac
+          done < existing_labels.txt
+
 
 
       - name: Add labels (after priority & area/* normalization)
