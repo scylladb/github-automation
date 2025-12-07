@@ -57,6 +57,12 @@ jobs:
           printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
           echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
 
+          echo "---------------------------------------------------"
+          echo "Generated CSV (empty-keys short-circuit):"
+          echo "---------------------------------------------------"
+          cat jira-details.csv
+          echo "---------------------------------------------------"
+
       - name: Fetch issues one by one
         if: ${{ steps.validate.outputs.empty_keys != 'true' }}
         id: fetch
@@ -107,6 +113,14 @@ jobs:
             deduped=""
           fi
           echo "labels_csv=$deduped" >> "$GITHUB_OUTPUT"
+
+          echo "---------------------------------------------------"
+          echo "Generated CSV (after fetching issues):"
+          echo "Showing first 20 lines:"
+          echo "---------------------------------------------------"
+          head -n 20 jira-details.csv
+          echo "---------------------------------------------------"
+
 
       - name: Collect CSV content
         if: ${{ steps.validate.outputs.empty_keys != 'true' }}
