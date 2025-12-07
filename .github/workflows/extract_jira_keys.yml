@@ -149,4 +149,12 @@ jobs:
             json="[${json}]"
 
             echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
+            
+            # PRINT THE "CSV-LIKE" FILE CONTENTS
+            echo "------------------------------------------"
+            echo "Extracted Jira Keys (CSV-like output)"
+            echo "key"
+            cat unique_tickets.txt
+            echo "------------------------------------------"
+            
           fi
