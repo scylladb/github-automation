@@ -28,8 +28,9 @@ jobs:
       - name: Prepare labels list (trim, dedupe, ignore empties, compute P* & area/* from Jira)
         id: prepare
         env:
-          LABELS_CSV:  ${{ inputs.labels_csv }}
-          DETAILS_CSV: ${{ inputs.details_csv }}
+          LABELS_CSV:         ${{ inputs.labels_csv }}
+          DETAILS_CSV:        ${{ inputs.details_csv }}
+          NEW_PRIORITY_LABEL: ${{ github.event.label.name }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -38,12 +39,14 @@ jobs:
           pr_number   = os.environ.get("PR_NUMBER", "")
           labels_csv  = os.environ.get("LABELS_CSV", "")
           details_csv = os.environ.get("DETAILS_CSV", "")
+          new_p_label = (os.environ.get("NEW_PRIORITY_LABEL") or "").strip()
 
           print("======================================================")
           print(" Apply Labels to PR — Input Parameters")
           print("======================================================")
           print(f"PR Number:       {pr_number}")
           print(f"labels_csv:      {labels_csv}")
+          print(f"NEW_PRIORITY_LABEL (from event): {new_p_label or '<none>'}")
           print("details_csv (first 5 lines):")
           print("------------------------------------------------------")
           for i, line in enumerate(details_csv.splitlines()):
@@ -82,7 +85,7 @@ jobs:
           if details_csv:
               reader = csv.DictReader(io.StringIO(details_csv))
               for row in reader:
-                  # ----- priority → P* -----
+                  # ----- priority → P* from Jira -----
                   prio = (row.get("priority") or "").strip()
                   if prio:
                       key = prio.lower()
@@ -104,17 +107,22 @@ jobs:
                               area_seen.add(label)
                               area_labels.append(label)
 
-          # 4) Add computed P* label (if any) at the front
+          # 4) Decide which P* to use
           priority_label = None
           if best_rank is not None:
               priority_label = f"P{best_rank}"
 
+          # If the event added a P* label, override Jira priority with it
+          if new_p_label and re.match(r"(?i)^P[0-4]$", new_p_label):
+              print(f"Overriding Jira priority with PR-added label: {new_p_label}")
+              priority_label = new_p_label.upper()
+
           if priority_label:
-              print(f"Computed priority label from Jira: {priority_label}")
+              print(f"Effective priority label: {priority_label}")
               if priority_label not in labels:
                   labels.insert(0, priority_label)
           else:
-              print("No mappable Jira priority found; not adding P* label.")
+              print("No effective P* priority (from Jira or event); not adding P* label.")
 
           # 5) Append area/* labels (dedup vs other labels)
           for area in area_labels:
@@ -127,6 +135,7 @@ jobs:
               for l in labels:
                   f.write(l + "\n")
           PY
+
 
       - name: Skip if no labels
         run: |
