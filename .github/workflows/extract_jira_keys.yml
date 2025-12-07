@@ -19,7 +19,7 @@ on:
         value: ${{ jobs.extract.outputs.jira-keys-json }}
 
 jobs:
-  extract:
+  extract_jira_keys_from_pr:
     runs-on: ubuntu-latest
     outputs:
       jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
