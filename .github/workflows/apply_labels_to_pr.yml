@@ -49,6 +49,15 @@ jobs:
 
           # 2) Remove any existing P0..P4 from this base list
           priority_labels = {"P0", "P1", "P2", "P3", "P4"}
+          # Check if a P* priority label already exists on the PR
+          existing_p = next((l for l in labels if l in priority_labels), None)
+          if existing_p:
+              print(f"PR already has priority label: {existing_p}")
+              # Keep this priority label and skip recomputing Jira-based priority
+              best_rank = None
+          else:
+              print("No existing P* label on PR; will compute P* from Jira.")
+
           labels = [l for l in labels if l not in priority_labels]
 
           # 3) Prepare to compute Jira-based priority and area/* labels
