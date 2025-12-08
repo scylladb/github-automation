@@ -66,8 +66,8 @@ jobs:
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       details_csv:     ${{ needs.details.outputs.csv }}     # full CSV text
-      transition_name: "In Review"
-      transition_id: "121"
+      transition_name: "Ready For Merge"
+      transition_id: "131"
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
