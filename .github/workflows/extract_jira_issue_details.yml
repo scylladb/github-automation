@@ -14,16 +14,16 @@ on:
     outputs:
       csv:
         description: 'Full CSV content (header + rows)'
-        value: ${{ jobs.build.outputs.csv }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.csv }}
       csv_path:
         description: 'Path to CSV artifact (downloaded filename)'
-        value: ${{ jobs.build.outputs.csv_path }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.csv_path }}
       labels_csv:
         description: 'Deduped CSV of all labels across issues (no header)'
-        value: ${{ jobs.build.outputs.labels_csv }}
+        value: ${{ jobs.build_csv_with_jira_data.outputs.labels_csv }}
 
 jobs:
-  build:
+  build_csv_with_jira_data:
     runs-on: ubuntu-latest
     outputs:
       csv:        ${{ steps.makecsv.outputs.csv }}
@@ -56,6 +56,12 @@ jobs:
           echo "labels_csv=" >> "$GITHUB_OUTPUT"
           printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
           echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
+
+          echo "---------------------------------------------------"
+          echo "Generated CSV (empty-keys short-circuit):"
+          echo "---------------------------------------------------"
+          cat jira-details.csv
+          echo "---------------------------------------------------"
 
       - name: Fetch issues one by one
         if: ${{ steps.validate.outputs.empty_keys != 'true' }}
@@ -107,6 +113,14 @@ jobs:
             deduped=""
           fi
           echo "labels_csv=$deduped" >> "$GITHUB_OUTPUT"
+
+          echo "---------------------------------------------------"
+          echo "Generated CSV (after fetching issues):"
+          echo "Showing first 20 lines:"
+          echo "---------------------------------------------------"
+          head -n 20 jira-details.csv
+          echo "---------------------------------------------------"
+
 
       - name: Collect CSV content
         if: ${{ steps.validate.outputs.empty_keys != 'true' }}
