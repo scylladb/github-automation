@@ -60,7 +60,7 @@ jobs:
   details:
     # UPDATED: wait for both label-adding jobs so labels (including P0)
     # are present when we fetch Jira details.
-    needs: [extract, add_jira_label, add_jira_label_p0_if_release_blocker]
+    needs: [extract]
     uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
     with:
       jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
