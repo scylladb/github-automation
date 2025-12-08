@@ -22,21 +22,38 @@ permissions:
   issues: write
 
 jobs:
-  apply:
+  apply_labels_to_pr:
     runs-on: ubuntu-latest
     steps:
       - name: Prepare labels list (trim, dedupe, ignore empties, compute P* & area/* from Jira)
         id: prepare
         env:
-          LABELS_CSV:  ${{ inputs.labels_csv }}
-          DETAILS_CSV: ${{ inputs.details_csv }}
+          LABELS_CSV:         ${{ inputs.labels_csv }}
+          DETAILS_CSV:        ${{ inputs.details_csv }}
+          NEW_PRIORITY_LABEL: ${{ github.event.label.name }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os, io, csv, re
 
-          labels_csv = os.environ.get("LABELS_CSV", "")
+          pr_number   = os.environ.get("PR_NUMBER", "")
+          labels_csv  = os.environ.get("LABELS_CSV", "")
           details_csv = os.environ.get("DETAILS_CSV", "")
+          new_p_label = (os.environ.get("NEW_PRIORITY_LABEL") or "").strip()
+
+          print("======================================================")
+          print(" Apply Labels to PR — Input Parameters")
+          print("======================================================")
+          print(f"PR Number:       {pr_number}")
+          print(f"labels_csv:      {labels_csv}")
+          print(f"NEW_PRIORITY_LABEL (from event): {new_p_label or '<none>'}")
+          print("details_csv (first 5 lines):")
+          print("------------------------------------------------------")
+          for i, line in enumerate(details_csv.splitlines()):
+              print(line)
+              if i >= 4:
+                  break
+          print("------------------------------------------------------\n")
 
           # 1) Parse labels_csv into a deduped list
           raw_labels = [s.strip() for s in labels_csv.split(",")]
@@ -68,7 +85,7 @@ jobs:
           if details_csv:
               reader = csv.DictReader(io.StringIO(details_csv))
               for row in reader:
-                  # ----- priority → P* -----
+                  # ----- priority → P* from Jira -----
                   prio = (row.get("priority") or "").strip()
                   if prio:
                       key = prio.lower()
@@ -80,29 +97,32 @@ jobs:
                   # ----- scylla_components → area/* labels -----
                   comp_raw = (row.get("scylla_components") or "").strip()
                   if comp_raw:
-                      # components are ";"-separated in the CSV we build
                       for part in comp_raw.split(";"):
                           comp = part.strip()
                           if not comp:
                               continue
-                          # Replace whitespace with underscores
                           safe = re.sub(r"\s+", "_", comp)
                           label = f"area/{safe}"
                           if label not in area_seen:
                               area_seen.add(label)
                               area_labels.append(label)
 
-          # 4) Add computed P* label (if any) at the front
+          # 4) Decide which P* to use
           priority_label = None
           if best_rank is not None:
               priority_label = f"P{best_rank}"
 
+          # If the event added a P* label, override Jira priority with it
+          if new_p_label and re.match(r"(?i)^P[0-4]$", new_p_label):
+              print(f"Overriding Jira priority with PR-added label: {new_p_label}")
+              priority_label = new_p_label.upper()
+
           if priority_label:
-              print(f"Computed priority label from Jira: {priority_label}")
+              print(f"Effective priority label: {priority_label}")
               if priority_label not in labels:
                   labels.insert(0, priority_label)
           else:
-              print("No mappable Jira priority found; not adding P* label.")
+              print("No effective P* priority (from Jira or event); not adding P* label.")
 
           # 5) Append area/* labels (dedup vs other labels)
           for area in area_labels:
@@ -115,6 +135,7 @@ jobs:
               for l in labels:
                   f.write(l + "\n")
           PY
+
 
       - name: Skip if no labels
         run: |
@@ -142,17 +163,36 @@ jobs:
 
           jq -r '.[].name' /tmp/existing_labels.json > existing_labels.txt || true
 
+          # Priority labels we *want* after normalization (from labels.txt)
+          grep -E '^P[0-4]$' labels.txt > desired_p_labels.txt || true
+
+          echo "Desired priority labels:"
+          cat desired_p_labels.txt || true
+          echo "Existing labels on PR:"
+          cat existing_labels.txt || true
+
+          # If we didn't compute any desired P* label, don't touch existing priorities
+          if [ ! -s desired_p_labels.txt ]; then
+            echo "No desired P* labels computed; keeping existing P* labels unchanged."
+            exit 0
+          fi
+
           for p in P0 P1 P2 P3 P4; do
-            if grep -qx "$p" existing_labels.txt 2>/dev/null; then
-              echo "Removing existing label: $p"
-              code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
-                -X DELETE "${ISSUE_API_BASE}/labels/${p}" \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                -H "X-GitHub-Api-Version: 2022-11-28" || true)
-              echo "Delete $p → HTTP ${code}"
+            if grep -qix "$p" existing_labels.txt 2>/dev/null; then
+              if grep -qix "$p" desired_p_labels.txt 2>/dev/null; then
+                echo "Keeping existing priority label: $p (also desired)"
+              else
+                echo "Removing existing priority label not desired anymore: $p"
+                code=$(curl -sS -o /tmp/del_resp.json -w "%{http_code}" \
+                  -X DELETE "${ISSUE_API_BASE}/labels/${p}" \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" || true)
+                echo "Delete $p → HTTP ${code}"
+              fi
             fi
           done
+
 
       - name: Add labels (after priority & area/* normalization)
         env:

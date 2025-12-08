@@ -16,10 +16,10 @@ on:
     outputs:
       jira-keys-json:
         description: "JSON array of Jira keys"
-        value: ${{ jobs.extract.outputs.jira-keys-json }}
+        value: ${{ jobs.extract_jira_keys_from_pr.outputs.jira-keys-json }}
 
 jobs:
-  extract:
+  extract_jira_keys_from_pr:
     runs-on: ubuntu-latest
     outputs:
       jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
@@ -149,4 +149,5 @@ jobs:
             json="[${json}]"
 
             echo "jira-keys-json=$json" >> "$GITHUB_OUTPUT"
+            
           fi
