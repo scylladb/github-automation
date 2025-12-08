@@ -64,7 +64,7 @@ jobs:
                       continue
           
                   # Skip already correct or Done issues
-                  if status == target:
+                  if status.lower() == target.lower():
                       already_ok.append((key, status))
                   elif status.lower() in {"done", "duplicate", "won't fix"}:
                       done_issues.append((key, status))
