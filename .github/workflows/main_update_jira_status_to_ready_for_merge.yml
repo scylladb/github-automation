@@ -45,8 +45,22 @@ jobs:
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
+  # NEW: if the triggering label is 'status/release_blocker',
+  # ALSO add 'P0' as a Jira label for the same issues.
+  add_jira_label_p0_if_release_blocker:
+    needs: [extract]
+    if: ${{ github.event.label.name == 'status/release_blocker' }}
+    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@automation-staging-branch
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+      label:          P0
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
   details:
-    needs: extract
+    # UPDATED: wait for both label-adding jobs so labels (including P0)
+    # are present when we fetch Jira details.
+    needs: [extract, add_jira_label, add_jira_label_p0_if_release_blocker]
     uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
     with:
       jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
