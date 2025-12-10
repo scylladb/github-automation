@@ -77,6 +77,7 @@ jobs:
 
   transition:
     needs: [extract, details]
+    if: ${{ github.event.label.name == 'status/merge_candidate' }}
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@main
     with:
       details_csv:     ${{ needs.details.outputs.csv }}     # full CSV text
