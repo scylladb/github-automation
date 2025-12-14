@@ -2,10 +2,52 @@ name: Sync With Jira - Remove Label
 
 on:
   workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
 
 jobs:
-  noop:
+  extract:
+    name: Extract Jira keys from PR
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  debug:
+    name: Debug data
+    needs: extract
     runs-on: ubuntu-latest
     steps:
-      - name: Print placeholder message
-        run: echo "TBD, working on it"
+      - name: Debug context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+        run: |
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
+          echo "removed_label='${{ github.event.label.name }}'"
+          echo "jira-keys-json='${JIRA_KEYS_JSON}'"
+          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
+          echo "$GITHUB_CONTEXT"
+
+  remove_label_from_jira:
+    name: Remove label/component from Jira issues
+    needs: extract
+    # Only run on label removal AND not for P0–P4 labels
+    if: >
+      github.event.action == 'unlabeled' &&
+      github.event.label.name != 'P0' &&
+      github.event.label.name != 'P1' &&
+      github.event.label.name != 'P2' &&
+      github.event.label.name != 'P3' &&
+      github.event.label.name != 'P4'
+    uses: scylladb/github-automation/.github/workflows/remove_label_from_jira_issue.yml@automation-staging-branch
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+      label:         ${{ github.event.label.name }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
