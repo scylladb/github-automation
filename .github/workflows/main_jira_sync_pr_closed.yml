@@ -51,8 +51,10 @@ jobs:
   add_comment_to_jira:
     name: Add 'PR closed' comment to Jira issues
     needs: extract
-    # Skip entirely if there are no real Jira keys (just the sentinel)
-    if: ${{ needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]' }}
+    # Run only when PR was closed by a successful merge, and when we actually have Jira keys
+    if: >
+      github.event.pull_request.merged == true &&
+      needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     strategy:
       matrix:
         jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
@@ -68,6 +70,8 @@ jobs:
   jira_status_transition:
     name: Transition Jira issues to Done
     needs: [extract, details]
+    # Run only when PR was closed by a successful merge (and we have some Jira keys in details)
+    if: github.event.pull_request.merged == true
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
       details_csv:     ${{ needs.details.outputs.csv }}   # full CSV text
