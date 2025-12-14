@@ -51,3 +51,19 @@ jobs:
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
+
+  details:
+    needs: extract
+    uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  apply_labels_to_pr:
+    needs: [extract, details]
+    uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@automation-staging-branch
+    with:
+      pr_number:  ${{ github.event.pull_request.number }}
+      labels_csv: ${{ needs.details.outputs.labels_csv }}
+      details_csv: ${{ needs.details.outputs.csv }}
