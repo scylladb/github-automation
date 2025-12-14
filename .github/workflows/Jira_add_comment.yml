@@ -37,20 +37,47 @@ jobs:
           fi
 
           echo "Adding comment to Jira issue: $JIRA_KEY"
+          echo "Comment text:"
+          printf '%s\n' "$COMMENT_RAW"
 
-          # Safely JSON-encode the comment text
-          COMMENT_JSON=$(printf '%s' "$COMMENT_RAW" | jq -Rs .)
+          # Build ADF body:
+          # {
+          #   "body": {
+          #     "type": "doc",
+          #     "version": 1,
+          #     "content": [
+          #       {
+          #         "type": "paragraph",
+          #         "content": [
+          #           { "type": "text", "text": "<COMMENT_RAW>" }
+          #         ]
+          #       }
+          #     ]
+          #   }
+          # }
+          PAYLOAD=$(jq -n --arg text "$COMMENT_RAW" \
+            '{body: {type:"doc", version:1, content:[{type:"paragraph", content:[{type:"text", text:$text}]}]}}')
 
-          # Build JSON payload: { "body": "<comment>" }
-          PAYLOAD=$(jq -n --arg body "$COMMENT_RAW" '{body: $body}')
+          echo "Payload to Jira:"
+          echo "$PAYLOAD"
 
           ISSUE_URL="${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment"
 
-          curl -sS --fail \
+          # Call Jira and capture response for debugging
+          HTTP_CODE=$(curl -sS -w "%{http_code}" -o response.json \
             --user "$JIRA_AUTH" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -X POST "$ISSUE_URL" \
-            --data "$PAYLOAD"
+            --data "$PAYLOAD" || echo "000")
 
-          echo "Comment added to $JIRA_KEY"
+          echo "Jira HTTP status: $HTTP_CODE"
+          echo "Jira response body:"
+          cat response.json || true
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Comment added to $JIRA_KEY"
+          else
+            echo "Failed to add comment to $JIRA_KEY (HTTP $HTTP_CODE)"
+            exit 1
+          fi
