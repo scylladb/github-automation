@@ -58,7 +58,7 @@ jobs:
     strategy:
       matrix:
         jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
-    uses: scylladb/github-automation/.github/workflows/Jira_add_comment.yml@automation-staging-branch
+    uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
       comment: >
