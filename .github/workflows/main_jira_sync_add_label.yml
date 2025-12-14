@@ -1,0 +1,88 @@
+name: Sync With Jira - Add Label
+
+on:
+  workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
+
+jobs:
+  extract:
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@main
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+      
+  debug:                         
+    needs: extract               
+    runs-on: ubuntu-latest
+    steps:       
+      - name: Debug data
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: |         
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
+          echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
+          echo "triggering-label='${{ github.event.label.name }}'"
+          label="${{ github.event.label.name }}"
+                    
+          if [ -n "$label" ] && [ "$label" = "status/merge_candidate" ]; then
+            echo "Try to transition Jira issue to 'Ready For Merge'"
+          fi
+          
+          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
+          echo "$GITHUB_CONTEXT"
+
+  add_jira_label:
+    needs: [extract]
+    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@main
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+      label:       ${{ github.event.label.name }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  # if the triggering label is 'status/release_blocker',
+  # ALSO add 'P0' as a Jira label for the same issues.
+  add_jira_label_p0_if_release_blocker:
+    needs: [extract]
+    if: ${{ github.event.label.name == 'status/release_blocker' }}
+    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@main
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+      label:          P0
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  details:
+    # wait for both label-adding jobs so labels (including P0)
+    # are present when we fetch Jira details.
+    needs: [extract]
+    uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@main
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  apply_labels_to_pr:
+    needs: [extract, details]
+    uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@main
+    with:
+      pr_number:  ${{ github.event.pull_request.number }}
+      labels_csv: ${{ needs.details.outputs.labels_csv }}
+      details_csv: ${{ needs.details.outputs.csv }}
+
+  jira_status_transition:
+    needs: [extract, details]
+    if: ${{ github.event.label.name == 'status/merge_candidate' }}
+    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@main
+    with:
+      details_csv:     ${{ needs.details.outputs.csv }}     # full CSV text
+      transition_name: "Ready for Merge"
+      transition_id: "131"
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+  
