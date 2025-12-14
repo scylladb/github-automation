@@ -1,0 +1,11 @@
+name: Sync With Jira - Remove Label
+
+on:
+  workflow_call:
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print placeholder message
+        run: echo "TBD, working on it"
