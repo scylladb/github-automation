@@ -1,0 +1,171 @@
+name: Remove Label from Jira Issues (from jira_keys_json)
+
+on:
+  workflow_call:
+    inputs:
+      jira_keys_json:
+        description: 'JSON array of Jira keys, e.g. ["STAG-1","STAG-2"] or ["__NO_KEYS_FOUND__"]'
+        type: string
+        required: true
+      label:
+        description: "Label that was removed from the PR. For Jira: normal label or area/* (Scylla component)."
+        type: string
+        required: true
+    secrets:
+      jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  remove_labels_from_jira:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://scylladb.atlassian.net
+      SCYLLA_COMPONENTS_FIELD: customfield_10321
+
+    steps:
+      - name: Extract Jira keys from jira_keys_json
+        id: extract
+        shell: bash
+        env:
+          JIRA_KEYS_JSON: ${{ inputs.jira_keys_json }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json, sys, os
+
+          raw = os.environ.get("JIRA_KEYS_JSON", "").strip()
+          print(f"Incoming jira_keys_json: {raw}")
+
+          if (not raw or raw == "[]" or raw == '[""]' or raw == '["__NO_KEYS_FOUND__"]'):
+              print("No usable Jira keys; nothing to update.")
+              open("keys.txt", "w").close()
+              sys.exit(0)
+
+          try:
+              data = json.loads(raw)
+          except json.JSONDecodeError as e:
+              print(f"Invalid JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          if not isinstance(data, list):
+              print("jira_keys_json must be an array", file=sys.stderr)
+              sys.exit(1)
+
+          keys = []
+          for item in data:
+              if isinstance(item, str) and item.strip() and item.strip() != "__NO_KEYS_FOUND__":
+                  keys.append(item.strip())
+
+          uniq = []
+          seen = set()
+          for k in keys:
+              if k not in seen:
+                  uniq.append(k)
+                  seen.add(k)
+
+          with open("keys.txt", "w") as out:
+              for k in uniq:
+                  out.write(k + "\n")
+
+          print(f"Found {len(uniq)} issues.")
+          PY
+
+      - name: Prepare payload(s) and mode (normal label or scylla component)
+        id: prep
+        shell: bash
+        env:
+          TARGET_IN: ${{ inputs.label }}
+          SCYLLA_FIELD: ${{ env.SCYLLA_COMPONENTS_FIELD }}
+        run: |
+          set -euo pipefail
+
+          TARGET="${TARGET_IN}"
+          MODE=""
+
+          echo "Incoming removed label: '${TARGET}'"
+
+          # area/* → Scylla component
+          if [[ "$TARGET" == area/* ]]; then
+            MODE="scylla_component"
+            RAW="${TARGET#area/}"
+            COMPONENT_VALUE="${RAW//_/ }"
+            ESCAPED=$(jq -Rn --arg v "$COMPONENT_VALUE" '$v')
+            printf '{"update":{"%s":[{"remove":{"value":%s}}]}}\n' "$SCYLLA_FIELD" "$ESCAPED" \
+              > payload_scylla.json
+            echo "scylla component remove payload ready"
+          else
+            # Normal Jira label removal
+            MODE="label"
+            jq -n --arg label "$TARGET" \
+              '{update:{labels:[{remove:$label}]}}' > payload_label.json
+            echo "label removal payload ready"
+          fi
+
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply to each issue (Basic auth)
+        id: apply
+        shell: bash
+        env:
+          JIRA_AUTH:     ${{ secrets.jira_auth }}
+          BASE_URL:      ${{ env.BASE_URL }}
+          MODE:          ${{ steps.prep.outputs.mode }}
+          TARGET_LABEL:  ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s keys.txt ]; then
+            echo "No issue keys found; nothing to update."
+            exit 0
+          fi
+
+          echo "Operation mode: ${MODE}"
+
+          if [ "$MODE" = "scylla_component" ]; then
+            PAYLOAD_FILE="payload_scylla.json"
+            ACTION_DESC="Remove Scylla component"
+          else
+            PAYLOAD_FILE="payload_label.json"
+            ACTION_DESC="Remove Jira label"
+          fi
+
+          ok=0; skipped=0; failed=0
+
+          while IFS= read -r key; do
+            [ -n "${key:-}" ] || continue
+
+            ISSUE_URL="${BASE_URL}/rest/api/3/issue/${key}"
+
+            echo "${ACTION_DESC} on ${key} ..."
+            code=$(curl -sS -o resp.json -w "%{http_code}" \
+              -X PUT "${ISSUE_URL}" \
+              --user "$JIRA_AUTH" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data @"${PAYLOAD_FILE}" || echo "000")
+
+            if [[ "$code" == "204" || "$code" == "200" ]]; then
+              echo "OK ${key} (${code})"
+              ok=$((ok+1))
+            elif [[ "$code" == "400" ]]; then
+              echo "SKIP ${key} (${code}) – value may not exist in Jira"
+              skipped=$((skipped+1))
+              head -c 200 resp.json || true
+              echo
+            else
+              echo "FAIL ${key} (${code})"
+              failed=$((failed+1))
+              head -c 400 resp.json || true
+              echo
+            fi
+
+            sleep 0.2
+          done < keys.txt
+
+          echo "Summary: ok=${ok}, skipped=${skipped}, failed=${failed}"
+
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
