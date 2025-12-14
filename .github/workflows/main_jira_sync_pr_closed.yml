@@ -1,11 +1,71 @@
-name: Sync With Jira - PR Closed
+name: Sync with Jira - PR Closed
 
 on:
   workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
 
 jobs:
-  noop:
+  extract:
+    name: Extract Jira keys from PR
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  debug:
+    name: Debug data
+    needs: extract
     runs-on: ubuntu-latest
     steps:
-      - name: Print placeholder message
-        run: echo "TBD, working on it"
+      - name: Debug context
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+        run: |
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
+          echo "jira-keys-json='${JIRA_KEYS_JSON}'"
+          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
+          echo "$GITHUB_CONTEXT"
+
+  add_comment:
+    name: Add 'PR closed' comment to Jira issues
+    needs: extract
+    # Skip entirely if there are no real Jira keys (just the sentinel)
+    if: ${{ needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]' }}
+    strategy:
+      matrix:
+        jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
+    uses: scylladb/github-automation/.github/workflows/Jira_add_comment.yml@automation-staging-branch
+    with:
+      jira_key: ${{ matrix.jira_key }}
+      comment: >
+        Closed via PR "${{ github.event.pull_request.title }}"
+        https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  details:
+    name: Fetch Jira issue details (for transition)
+    needs: extract
+    uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
+    with:
+      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  transition:
+    name: Transition Jira issues to Done
+    needs: [extract, details]
+    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
+    with:
+      details_csv:     ${{ needs.details.outputs.csv }}   # full CSV text
+      transition_name: "Done"
+      transition_id:   "141"
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
