@@ -86,10 +86,3 @@ jobs:
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
   
-  fill_field:
-    needs: [extract, details]
-    uses: scylladb/github-automation/.github/workflows/fill_jira_with_github_data.yml@automation-staging-branch
-    with:
-      details_csv: ${{ needs.details.outputs.csv }}
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
