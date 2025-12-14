@@ -26,58 +26,74 @@ jobs:
       JIRA_AUTH: ${{ secrets.jira_auth }}
 
     steps:
-      - name: Post comment to Jira issue
-        shell: bash
-        run: |
-          set -euo pipefail
+    - name: Post comment to Jira issue
+    shell: bash
+    run: |
+      set -euo pipefail
 
-          if [ -z "$JIRA_KEY" ]; then
-            echo "JIRA_KEY is empty; nothing to do."
-            exit 0
-          fi
+      if [ -z "$JIRA_KEY" ]; then
+        echo "JIRA_KEY is empty; nothing to do."
+        exit 0
+      fi
 
-          echo "Adding comment to Jira issue: $JIRA_KEY"
-          echo "Comment text:"
-          printf '%s\n' "$COMMENT_RAW"
+      # Build title + URL from PR context
+      PR_TITLE="${{ github.event.pull_request.title }}"
+      PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
 
-          # Build ADF body:
-          # {
-          #   "body": {
-          #     "type": "doc",
-          #     "version": 1,
-          #     "content": [
-          #       {
-          #         "type": "paragraph",
-          #         "content": [
-          #           { "type": "text", "text": "<COMMENT_RAW>" }
-          #         ]
-          #       }
-          #     ]
-          #   }
-          # }
-          PAYLOAD=$(jq -n --arg text "$COMMENT_RAW" \
-            '{body: {type:"doc", version:1, content:[{type:"paragraph", content:[{type:"text", text:$text}]}]}}')
-
-          echo "Payload to Jira:"
-          echo "$PAYLOAD"
-
-          ISSUE_URL="${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment"
-
-          # Call Jira and capture response for debugging
-          HTTP_CODE=$(curl -sS -w "%{http_code}" -o response.json \
-            --user "$JIRA_AUTH" \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -X POST "$ISSUE_URL" \
-            --data "$PAYLOAD" || echo "000")
-
-          echo "Jira HTTP status: $HTTP_CODE"
-          echo "Jira response body:"
-          cat response.json || true
-
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            echo "Comment added to $JIRA_KEY"
-          else
-            echo "Failed to add comment to $JIRA_KEY (HTTP $HTTP_CODE)"
-            exit 1
-          fi
+      echo "Adding clickable comment to Jira issue: $JIRA_KEY"
+      echo "PR title: $PR_TITLE"
+      echo "PR URL  : $PR_URL"
+  
+      # ADF:
+      # Closed via PR "<title-as-link>"
+      PAYLOAD=$(jq -n \
+        --arg prefix "Closed via PR " \
+        --arg title "$PR_TITLE" \
+        --arg url "$PR_URL" \
+        '
+        {
+          body: {
+            type: "doc",
+            version: 1,
+            content: [
+              {
+                type: "paragraph",
+                content: [
+                  { "type": "text", "text": $prefix },
+                  {
+                    "type": "text",
+                    "text": ("\"" + $title + "\""),
+                    "marks": [
+                      { "type": "link", "attrs": { "href": $url } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+        ')
+  
+      echo "Payload to Jira:"
+      echo "$PAYLOAD"
+  
+      ISSUE_URL="${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment"
+  
+      HTTP_CODE=$(curl -sS -w "%{http_code}" -o response.json \
+        --user "$JIRA_AUTH" \
+        -H "Accept: application/json" \
+        -H "Content-Type: application/json" \
+        -X POST "$ISSUE_URL" \
+        --data "$PAYLOAD" || echo "000")
+  
+      echo "Jira HTTP status: $HTTP_CODE"
+      echo "Jira response body:"
+      cat response.json || true
+  
+      if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+        echo "Comment added to $JIRA_KEY"
+      else
+        echo "Failed to add comment to $JIRA_KEY (HTTP $HTTP_CODE)"
+        exit 1
+      fi
+  
