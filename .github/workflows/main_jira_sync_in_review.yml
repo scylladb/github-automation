@@ -37,7 +37,7 @@ jobs:
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
-  apply_labels:
+  apply_labels_to_pr:
     needs: [extract, details]
     uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@automation-staging-branch
     with:
