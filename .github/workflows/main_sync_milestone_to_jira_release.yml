@@ -8,7 +8,7 @@ on:
         required: true
         type: string
     secrets:
-      jira_auth:
+      caller_jira_auth:
         description: "Plain 'email:api_token' for Jira Cloud Basic auth"
         required: true
 
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
-      JIRA_AUTH: ${{ secrets.jira_auth }}
+      JIRA_AUTH: ${{ secrets.caller_jira_auth }}
       PROJECT_KEYS: ${{ inputs.jira_project_keys }}
 
     steps:
