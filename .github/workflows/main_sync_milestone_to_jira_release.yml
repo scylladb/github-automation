@@ -1,0 +1,125 @@
+name: Create Jira releases (versions) from GitHub milestone
+
+on:
+  workflow_call:
+    inputs:
+      jira_project_keys:
+        description: "Comma-separated Jira project keys (e.g. STAG,VECTOR,PROJ)"
+        required: true
+        type: string
+    secrets:
+      caller_jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  create_jira_releases:
+    runs-on: ubuntu-latest
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+      PROJECT_KEYS: ${{ inputs.jira_project_keys }}
+
+    steps:
+      - name: Debug milestone input
+        run: |
+          echo "Projects:      '${{ inputs.jira_project_keys }}'"
+          echo "Title:         '${{ github.event.milestone.title }}'"
+          echo "Description:   '${{ github.event.milestone.description }}'"
+          echo "Due on:        '${{ github.event.milestone.due_on }}'"
+
+      - name: Create Jira version in each project (skip if already exists)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JIRA_AUTH:-}" ]; then
+            echo "ERROR: jira_auth secret is not set."
+            exit 1
+          fi
+
+          NAME="${{ github.event.milestone.title }}"
+          DESC="${{ github.event.milestone.description }}"
+          DUE_ON="${{ github.event.milestone.due_on }}"
+
+          # GitHub due_on is ISO 8601; Jira expects YYYY-MM-DD
+          RELEASE_DATE=""
+          if [ -n "${DUE_ON:-}" ]; then
+            RELEASE_DATE="${DUE_ON%%T*}"
+          fi
+
+          echo "Version name:  ${NAME}"
+          echo "Release date:  ${RELEASE_DATE:-<none>}"
+          echo "Projects:      ${PROJECT_KEYS}"
+          echo
+
+          # Split comma-separated keys safely (trim whitespace)
+          IFS=',' read -r -a KEYS <<< "${PROJECT_KEYS}"
+
+          ok=0
+          skipped=0
+          failed=0
+
+          for raw in "${KEYS[@]}"; do
+            PROJECT_KEY="$(echo "$raw" | awk '{$1=$1};1')"  # trim
+            [ -n "$PROJECT_KEY" ] || continue
+
+            echo "======================================================"
+            echo "Creating Jira version in project: ${PROJECT_KEY}"
+            echo "======================================================"
+
+            # Build payload
+            jq -n \
+              --arg name "$NAME" \
+              --arg proj "$PROJECT_KEY" \
+              --arg desc "${DESC:-}" \
+              --arg rdate "${RELEASE_DATE:-}" \
+              '
+              {
+                name: $name,
+                project: $proj
+              }
+              + (if $desc  != "" then {description: $desc} else {} end)
+              + (if $rdate != "" then {releaseDate: $rdate} else {} end)
+              ' > payload.json
+
+            # Attempt create
+            HTTP_CODE=$(curl -sS -o resp.json -w "%{http_code}" \
+              -X POST "${JIRA_BASE_URL}/rest/api/3/version" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data @payload.json || true)
+
+            if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
+              ID=$(jq -r '.id // empty' resp.json)
+              echo "OK: created version in ${PROJECT_KEY} (id=${ID})."
+              ok=$((ok+1))
+              continue
+            fi
+
+            # If already exists: treat as SKIP and move on
+            if [ "$HTTP_CODE" = "400" ] && jq -e '
+                (.errorMessages // []) + ((.errors // {}) | to_entries | map(.value))
+                | map(tostring)
+                | any(test("already exists|exists already|A version with this name already exists"; "i"))
+              ' resp.json > /dev/null 2>&1; then
+              echo "SKIP: version '${NAME}' already exists in ${PROJECT_KEY}."
+              skipped=$((skipped+1))
+              continue
+            fi
+
+            # Other failure -> count as failure but continue to next project
+            echo "FAIL: could not create version in ${PROJECT_KEY} (HTTP ${HTTP_CODE}). Response:"
+            cat resp.json || true
+            echo
+            failed=$((failed+1))
+          done
+
+          echo "======================================================"
+          echo "Summary: ok=${ok} skipped=${skipped} failed=${failed}"
+          echo "======================================================"
+
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
