@@ -1,10 +1,10 @@
-name: Validate PR Commit Emails
+name: validate PR author email
 
 on:
   workflow_call:
 
 jobs:
-  validate-emails:
+  validate_author_email:
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Checkout code
@@ -17,7 +17,7 @@ jobs:
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }}
 
-      - name: Validate commit emails
+      - name: Validate author emails
         id: validate
         run: |
           
@@ -58,7 +58,7 @@ jobs:
             
             if [ -n "$INVALID" ]; then
               INVALID_COUNT=$((INVALID_COUNT + 1))
-              INVALID_COMMITS="${INVALID_COMMITS}"
+              INVALID_COMMITS="${INVALID_COMMITS}
           - **Commit:** \`${commit:0:8}\` - ${COMMIT_MSG}
             **Invalid emails:** ${INVALID}"
             fi
@@ -69,42 +69,40 @@ jobs:
           
           if [ $INVALID_COUNT -gt 0 ]; then
             echo "found_invalid=true" >> $GITHUB_OUTPUT
-            # Save to file for comment
-            cat > "${{ runner.temp }}/invalid_commits.md" <<EOF
+            # Build comment body using heredoc
+            cat >> $GITHUB_OUTPUT <<'EOF'
+          comment_body<<EOFCOMMENT
           ## ⚠️ Non-@scylladb.com Email Addresses Detected
           
-          Found $INVALID_COUNT commit(s) with author or committer emails that don't end with \`@scylladb.com\`.
+          Found commit(s) with author or committer emails that don't end with `@scylladb.com`.
           
           This indicates either:
           - An external contributor (acceptable, but maintainer should be aware)
           - A developer who hasn't configured their git email correctly
           
-          ### Commits with invalid emails:
-          ${INVALID_COMMITS}
-          
           ### For ScyllaDB developers:
           If you're a ScyllaDB employee, please configure your git email globally:
-          \`\`\`bash
+          ```bash
           git config --global user.email "your.name@scylladb.com"
-          \`\`\`
+          ```
           
           If only your most recent commit is invalid, you can amend it:
-          \`\`\`bash
+          ```bash
           git commit --amend --reset-author --no-edit
           git push --force
-          \`\`\`
+          ```
           
           If you have **multiple invalid commits**, you need to rewrite them all:
-          \`\`\`bash
+          ```bash
           git rebase -i <base-commit>
           # Mark each invalid commit as 'edit', then for each:
           git commit --amend --reset-author --no-edit
           git rebase --continue
           # Repeat for each invalid commit
           git push --force
-          \`\`\`
+          ```
+          EOFCOMMENT
           EOF
-            cat /tmp/invalid_commits.md
             exit 1
           else
             echo "found_invalid=false" >> $GITHUB_OUTPUT
@@ -117,7 +115,7 @@ jobs:
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
-          body-path: /tmp/invalid_commits.md
+          body: ${{ steps.validate.outputs.comment_body }}
 
       - name: Set commit status
         if: always()
@@ -131,7 +129,7 @@ jobs:
             if (state === 'success') {
               description = 'All commits have valid @scylladb.com emails';
             } else {
-              description = `Found ${invalid_count} commit(s) with non-@scylladb.com emails`;
+              description = `Found commit(s) with non-@scylladb.com emails`;
             }
             
             await github.rest.repos.createCommitStatus({
