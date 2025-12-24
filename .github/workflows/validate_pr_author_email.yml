@@ -43,6 +43,11 @@ jobs:
             COMMITTER_EMAIL=$(git log -1 --format="%ce" $commit)
             COMMIT_MSG=$(git log -1 --format="%s" $commit)
             
+            # Skip GitHub Actions commits
+            if [[ "$COMMITTER_EMAIL" == "action@github.com" ]]; then
+              continue
+            fi
+            
             INVALID=""
             
             if [[ ! "$AUTHOR_EMAIL" =~ @scylladb\.com$ ]]; then
