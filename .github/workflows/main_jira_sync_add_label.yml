@@ -78,11 +78,26 @@ jobs:
   jira_status_transition:
     needs: [extract, details]
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
-    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
-    with:
-      details_csv:     ${{ needs.details.outputs.csv }}     # full CSV text
-      transition_name: "Ready for Merge"
-      transition_id: "131"
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Jira transition script
+        env:
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: |
+          python scripts/jira_sync_modules.py \
+            --csv-content "${{ needs.details.outputs.csv }}" \
+            --transition-id "131" \
+            --transition-name "Ready for Merge" \
+            --jira-auth "$JIRA_AUTH"
   
