@@ -1,0 +1,237 @@
+name: Backport with Jira Integration (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      event_type:
+        description: 'Type of event: push, labeled, or chain'
+        required: true
+        type: string
+      base_branch:
+        description: 'Base branch reference'
+        required: true
+        type: string
+      commits:
+        description: 'Commit range for push events (before..after)'
+        required: false
+        type: string
+        default: ''
+      pull_request_number:
+        description: 'PR number for labeled/chain events'
+        required: false
+        type: number
+        default: 0
+      head_commit:
+        description: 'HEAD commit for labeled events'
+        required: false
+        type: string
+        default: ''
+      label_name:
+        description: 'Label name for labeled events'
+        required: false
+        type: string
+        default: ''
+      pr_state:
+        description: 'PR state for labeled events'
+        required: false
+        type: string
+        default: ''
+      pr_body:
+        description: 'PR body for chain events'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      gh_token:
+        description: 'GitHub token with repo access'
+        required: true
+      jira_auth:
+        description: 'Jira authentication (user:token format)'
+        required: true
+
+env:
+  DEFAULT_BRANCH: 'master'
+
+jobs:
+  backport:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Dump inputs
+        run: |
+          echo "event_type: ${{ inputs.event_type }}"
+          echo "base_branch: ${{ inputs.base_branch }}"
+          echo "commits: ${{ inputs.commits }}"
+          echo "pull_request_number: ${{ inputs.pull_request_number }}"
+          
+      - name: Checkout shared automation repository
+        uses: actions/checkout@v6
+        with:
+          repository: scylladb/github-automation
+          ref: refactor-backport-jira
+          token: ${{ secrets.gh_token }}
+          path: automation
+          
+      - name: Checkout calling repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.DEFAULT_BRANCH }}
+          token: ${{ secrets.gh_token }}
+          fetch-depth: 0
+          path: repo
+          
+      - name: Set up Git identity
+        run: |
+          git config --global user.name "scylladbbot"
+          git config --global user.email "scylladbbot@scylladb.com"
+          git config --global merge.conflictstyle diff3
+          
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y python3-github python3-git python3-requests
+          
+      - name: Run search_commits.py for push events
+        if: inputs.event_type == 'push'
+        working-directory: automation
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh_token }}
+        run: |
+          python .github/scripts/search_commits.py \
+            --commits "${{ inputs.commits }}" \
+            --repository "${{ github.repository }}" \
+            --ref "${{ inputs.base_branch }}"
+            
+      - name: Run auto-backport-jira.py for push events (promotion to master)
+        if: inputs.event_type == 'push' && inputs.base_branch == format('refs/heads/{0}', env.DEFAULT_BRANCH)
+        working-directory: automation
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          python .github/scripts/auto-backport-jira.py \
+            --repo "${{ github.repository }}" \
+            --base-branch "${{ inputs.base_branch }}" \
+            --commits "${{ inputs.commits }}"
+      
+      - name: Check if push is to a version branch
+        id: check_version_branch
+        if: inputs.event_type == 'push'
+        run: |
+          branch_name="${{ inputs.base_branch }}"
+          # Match branch-X.Y, next-X.Y, or manager-X.Y patterns
+          if [[ "$branch_name" =~ ^refs/heads/(branch|next|manager)-[0-9]+\.[0-9]+$ ]]; then
+            echo "Push to version branch detected: $branch_name"
+            echo "is_version_branch=true" >> $GITHUB_OUTPUT
+            # Extract the version (e.g., 2025.4 from refs/heads/branch-2025.4 or manager-3.4 from refs/heads/manager-3.4)
+            version=$(echo "$branch_name" | sed -E 's/refs\/heads\/(branch|next)-//')
+            # For manager branches, keep the full name (manager-X.Y)
+            if [[ "$branch_name" =~ ^refs/heads/manager- ]]; then
+              version=$(echo "$branch_name" | sed 's/refs\/heads\///')
+            fi
+            echo "version=$version" >> $GITHUB_OUTPUT
+            # Get the branch name without refs/heads/
+            branch_short=$(echo "$branch_name" | sed 's/refs\/heads\///')
+            echo "branch_short=$branch_short" >> $GITHUB_OUTPUT
+          else
+            echo "Not a version branch: $branch_name"
+            echo "is_version_branch=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Process push to version branch (chain backport continuation)
+        if: inputs.event_type == 'push' && steps.check_version_branch.outputs.is_version_branch == 'true'
+        working-directory: automation
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          python .github/scripts/auto-backport-jira.py \
+            --repo "${{ github.repository }}" \
+            --base-branch "${{ inputs.base_branch }}" \
+            --commits "${{ inputs.commits }}" \
+            --promoted-to-branch "${{ steps.check_version_branch.outputs.branch_short }}"
+            
+      - name: Check if label matches backport pattern
+        id: check_label
+        if: inputs.event_type == 'labeled'
+        run: |
+          label_name="${{ inputs.label_name }}"
+          # Match backport/X.Y or backport/manager-X.Y patterns
+          if [[ "$label_name" =~ ^backport/(manager-)?[0-9]+\.[0-9]+$ ]]; then
+            echo "Label matches backport pattern."
+            echo "backport_label=true" >> $GITHUB_OUTPUT
+          else
+            echo "Label does not match the required pattern."
+            echo "backport_label=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Wait for additional labels (debounce)
+        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed'
+        run: |
+          echo "Waiting 30 seconds for additional labels to be added..."
+          sleep 30
+          
+      - name: Check for concurrent runs and skip if not the latest
+        id: check_concurrent
+        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+        run: |
+          # Get all running workflows for this PR
+          runs=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/runs?status=in_progress&event=pull_request_target" \
+            --jq ".workflow_runs[] | select(.name == \"${{ github.workflow }}\") | .id" | sort -n)
+          
+          current_run_id=${{ github.run_id }}
+          latest_run_id=$(echo "$runs" | tail -1)
+          
+          if [ "$current_run_id" != "$latest_run_id" ] && [ -n "$latest_run_id" ]; then
+            echo "A newer workflow run ($latest_run_id) is in progress. Skipping this run ($current_run_id)."
+            echo "should_skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "This is the latest run. Proceeding."
+            echo "should_skip=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Run auto-backport-jira.py when label was added
+        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed' && steps.check_concurrent.outputs.should_skip != 'true'
+        working-directory: automation
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          python .github/scripts/auto-backport-jira.py \
+            --repo "${{ github.repository }}" \
+            --base-branch "${{ inputs.base_branch }}" \
+            --pull-request "${{ inputs.pull_request_number }}" \
+            --head-commit "${{ inputs.head_commit }}" \
+            --label "${{ inputs.label_name }}"
+            
+      - name: Check if this is a backport PR
+        id: check_backport
+        if: inputs.event_type == 'chain'
+        env:
+          PR_BODY: ${{ inputs.pr_body }}
+        run: |
+          # Check if this is a backport PR (has "backport of PR" in body or [Backport X.Y] in title)
+          if echo "$PR_BODY" | grep -qi "backport of PR"; then
+            echo "is_backport_pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_backport_pr=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: Process backport PR merge (update labels and continue chain if needed)
+        if: inputs.event_type == 'chain' && steps.check_backport.outputs.is_backport_pr == 'true'
+        working-directory: automation
+        env:
+          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          JIRA_AUTH: ${{ secrets.jira_auth }}
+        run: |
+          python .github/scripts/auto-backport-jira.py \
+            --repo "${{ github.repository }}" \
+            --base-branch "${{ inputs.base_branch }}" \
+            --chain-backport \
+            --merged-pr "${{ inputs.pull_request_number }}"
