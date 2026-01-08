@@ -3,7 +3,7 @@ Jira synchronization modules for GitHub Actions workflows.
 
 This module provides functions to synchronize GitHub PRs with Jira issues.
 Currently implements:
-- Jira status transitions
+- status_transition: Transition Jira issues to a new status
 """
 
 import argparse
@@ -156,22 +156,25 @@ def transition_issues_from_csv(
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
-        description='Transition Jira issues based on CSV input'
+        description='Jira synchronization modules for GitHub Actions'
+    )
+    parser.add_argument(
+        '--module',
+        required=True,
+        choices=['status_transition'],
+        help='Which module to execute'
     )
     parser.add_argument(
         '--csv-content',
-        required=True,
-        help='CSV content with columns: key, status, done'
+        help='CSV content with columns: key, status, done (required for status_transition)'
     )
     parser.add_argument(
         '--transition-id',
-        required=True,
-        help='Jira transition ID'
+        help='Jira transition ID (required for status_transition)'
     )
     parser.add_argument(
         '--transition-name',
-        required=True,
-        help='Jira transition name (for logging)'
+        help='Jira transition name for logging (required for status_transition)'
     )
     parser.add_argument(
         '--jira-auth',
@@ -186,14 +189,22 @@ def main():
         print("Error: --jira-auth or JIRA_AUTH environment variable is required")
         sys.exit(1)
     
-    exit_code = transition_issues_from_csv(
-        args.csv_content,
-        args.transition_id,
-        args.transition_name,
-        jira_auth
-    )
-    
-    sys.exit(exit_code)
+    # Route to the appropriate module
+    if args.module == 'status_transition':
+        if not args.csv_content or not args.transition_id or not args.transition_name:
+            print("Error: status_transition module requires --csv-content, --transition-id, and --transition-name")
+            sys.exit(1)
+        
+        exit_code = transition_issues_from_csv(
+            args.csv_content,
+            args.transition_id,
+            args.transition_name,
+            jira_auth
+        )
+        sys.exit(exit_code)
+    else:
+        print(f"Error: Unknown module '{args.module}'")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
