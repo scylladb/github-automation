@@ -20,7 +20,7 @@ on:
 
 jobs:
   transition_jira_status:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
 

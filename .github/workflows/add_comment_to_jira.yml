@@ -18,7 +18,7 @@ on:
 
 jobs:
   add_comment:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       JIRA_KEY: ${{ inputs.jira_key }}

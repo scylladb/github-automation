@@ -20,7 +20,7 @@ on:
 
 jobs:
   extract_jira_keys_from_pr:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       jira-keys-json: ${{ steps.process.outputs.jira-keys-json }}
 

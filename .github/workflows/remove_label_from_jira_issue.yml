@@ -18,7 +18,7 @@ on:
 
 jobs:
   remove_labels_from_jira:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     env:
       BASE_URL: https://scylladb.atlassian.net
       SCYLLA_COMPONENTS_FIELD: customfield_10321
