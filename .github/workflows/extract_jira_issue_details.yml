@@ -24,7 +24,7 @@ on:
 
 jobs:
   build_csv_with_jira_data:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     outputs:
       csv:        ${{ steps.makecsv.outputs.csv }}
       csv_path:   ${{ steps.artifacts-out.outputs.csv_path }}

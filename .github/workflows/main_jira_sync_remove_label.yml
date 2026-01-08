@@ -19,7 +19,7 @@ jobs:
   debug:
     name: Debug data
     needs: extract
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - name: Debug context
         env:
