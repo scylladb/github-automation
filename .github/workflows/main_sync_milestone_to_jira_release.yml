@@ -14,7 +14,7 @@ on:
 
 jobs:
   create_jira_releases:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       JIRA_AUTH: ${{ secrets.caller_jira_auth }}
