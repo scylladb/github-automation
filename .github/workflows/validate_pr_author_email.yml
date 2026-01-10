@@ -49,7 +49,7 @@ jobs:
             fi
 
             # Skip GitHub Copilot commits (includes noreply addresses used by Copilot and co-authored commits)
-            if [[ "$COMMITTER_EMAIL" == *"noreply@github.com"* ]] || [[ "$COMMITTER_EMAIL" == "copilot@github.com" ]] || [[ "$AUTHOR_EMAIL" == *"noreply@github.com"* ]]; then
+            if [[ "$COMMITTER_EMAIL" == *"noreply@github.com"* ]] || [[ "$COMMITTER_EMAIL" == "copilot@github.com" ]] || [[ "$COMMITTER_EMAIL" == "notification@github.com" ]] || [[ "$AUTHOR_EMAIL" == *"noreply@github.com"* ]]; then
               continue
             fi
             
