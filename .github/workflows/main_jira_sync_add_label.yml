@@ -95,7 +95,7 @@ jobs:
         env:
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: |
-          python scripts/jira_sync_modules.py \
+          python ../scripts/jira_sync_modules.py \
             --module status_transition \
             --csv-content "${{ needs.details.outputs.csv }}" \
             --transition-id "131" \
