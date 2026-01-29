@@ -1,4 +1,4 @@
-name: Add Comment to Jira Issue
+﻿name: Add Comment to Jira Issue
 
 on:
   workflow_call:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       comment:
-        description: "The comment text to add to the issue (currently unused for PR-closed path)"
+        description: "The comment text to add to the issue"
         required: true
         type: string
     secrets:
@@ -22,7 +22,7 @@ jobs:
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       JIRA_KEY: ${{ inputs.jira_key }}
-      COMMENT_RAW: ${{ inputs.comment }}
+      COMMENT_TEXT: ${{ inputs.comment }}
       JIRA_AUTH: ${{ secrets.jira_auth }}
 
     steps:
@@ -36,20 +36,21 @@ jobs:
             exit 0
           fi
 
-          # Build title + URL from PR context
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          if [ -z "$COMMENT_TEXT" ]; then
+            echo "COMMENT_TEXT is empty; nothing to do."
+            exit 0
+          fi
 
-          echo "Adding clickable comment to Jira issue: $JIRA_KEY"
-          echo "PR title: $PR_TITLE"
-          echo "PR URL  : $PR_URL"
+          echo "Adding comment to Jira issue: $JIRA_KEY"
+          echo "Comment: $COMMENT_TEXT"
 
-          # ADF:
-          # Closed via PR "<title-as-link>"
+          # Build ADF payload with the comment text
+          # If the comment contains a URL, make it clickable
+          PR_URL="https://github.${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+
+          # Simple ADF with plain text comment
           PAYLOAD=$(jq -n \
-            --arg prefix "Closed via PR " \
-            --arg title "$PR_TITLE" \
-            --arg url "$PR_URL" \
+            --arg text "$COMMENT_TEXT" \
             '
             {
               body: {
@@ -59,14 +60,7 @@ jobs:
                   {
                     type: "paragraph",
                     content: [
-                      { "type": "text", "text": $prefix },
-                      {
-                        "type": "text",
-                        "text": ("\"" + $title + "\""),
-                        "marks": [
-                          { "type": "link", "attrs": { "href": $url } }
-                        ]
-                      }
+                      { "type": "text", "text": $text }
                     ]
                   }
                 ]
