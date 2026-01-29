@@ -8,9 +8,19 @@ on:
         required: true
         type: string
       comment:
-        description: "The comment text to add to the issue"
+        description: "The comment text to add to the issue (prefix text before the link)"
         required: true
         type: string
+      link_text:
+        description: "Optional: Text to display as a clickable link"
+        required: false
+        type: string
+        default: ""
+      link_url:
+        description: "Optional: URL for the clickable link"
+        required: false
+        type: string
+        default: ""
     secrets:
       jira_auth:
         description: 'Plain "email:api_token" for Jira Cloud Basic auth'
@@ -23,6 +33,8 @@ jobs:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       JIRA_KEY: ${{ inputs.jira_key }}
       COMMENT_TEXT: ${{ inputs.comment }}
+      LINK_TEXT: ${{ inputs.link_text }}
+      LINK_URL: ${{ inputs.link_url }}
       JIRA_AUTH: ${{ secrets.jira_auth }}
 
     steps:
@@ -43,30 +55,60 @@ jobs:
 
           echo "Adding comment to Jira issue: $JIRA_KEY"
           echo "Comment: $COMMENT_TEXT"
+          echo "Link text: $LINK_TEXT"
+          echo "Link URL: $LINK_URL"
 
-          # Build ADF payload with the comment text
-          # If the comment contains a URL, make it clickable
-          PR_URL="https://github.${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-
-          # Simple ADF with plain text comment
-          PAYLOAD=$(jq -n \
-            --arg text "$COMMENT_TEXT" \
-            '
-            {
-              body: {
-                type: "doc",
-                version: 1,
-                content: [
-                  {
-                    type: "paragraph",
-                    content: [
-                      { "type": "text", "text": $text }
-                    ]
-                  }
-                ]
+          # Build ADF payload - with or without clickable link
+          if [ -n "$LINK_TEXT" ] && [ -n "$LINK_URL" ]; then
+            # Build ADF with clickable link
+            PAYLOAD=$(jq -n \
+              --arg prefix "$COMMENT_TEXT" \
+              --arg linkText "$LINK_TEXT" \
+              --arg linkUrl "$LINK_URL" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $prefix },
+                        {
+                          "type": "text",
+                          "text": $linkText,
+                          "marks": [
+                            { "type": "link", "attrs": { "href": $linkUrl } }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
               }
-            }
-            ')
+              ')
+          else
+            # Build simple ADF with plain text
+            PAYLOAD=$(jq -n \
+              --arg text "$COMMENT_TEXT" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $text }
+                      ]
+                    }
+                  ]
+                }
+              }
+              ')
+          fi
 
           echo "Payload to Jira:"
           echo "$PAYLOAD"

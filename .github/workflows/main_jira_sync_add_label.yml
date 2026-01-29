@@ -123,9 +123,9 @@ jobs:
     uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
-      comment: >
-        Closed via promoted-to-master label on PR "${{ github.event.pull_request.title }}"
-        https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+      comment: "Closed via promoted-to-master label on PR "
+      link_text: ${{ github.event.pull_request.title }}
+      link_url: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
