@@ -1,0 +1,182 @@
+﻿name: Sync With Jira - PR Milestone Set
+
+on:
+  workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
+
+jobs:
+  extract:
+    uses: scylladb/github-automation/.github/workflows/extract_jira_keys.yml@automation-staging-branch
+    with:
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_body:  ${{ github.event.pull_request.body }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  debug:
+    needs: extract
+    runs-on: ubuntu-slim
+    steps:
+      - name: Debug data
+        env:
+          GITHUB_CONTEXT: ${{ toJson(github) }}
+        run: |
+          echo "event_name='${{ github.event_name }}'"
+          echo "action='${{ github.event.action }}'"
+          echo "milestone_title='${{ github.event.pull_request.milestone.title }}'"
+          echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
+          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
+          echo "$GITHUB_CONTEXT"
+
+  update_fix_versions:
+    needs: extract
+    runs-on: ubuntu-slim
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+      MILESTONE_TITLE: ${{ github.event.pull_request.milestone.title }}
+      JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+
+    steps:
+      - name: Update Fix Versions in Jira issues
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JIRA_AUTH:-}" ]; then
+            echo "ERROR: jira_auth secret is not set."
+            exit 1
+          fi
+
+          if [ -z "${MILESTONE_TITLE:-}" ]; then
+            echo "ERROR: No milestone title found."
+            exit 1
+          fi
+
+          echo "Milestone title: ${MILESTONE_TITLE}"
+          echo "Jira keys JSON: ${JIRA_KEYS_JSON}"
+
+          # Parse the JSON array of Jira keys
+          KEYS=$(echo "$JIRA_KEYS_JSON" | jq -r '.[]')
+
+          if [ "$KEYS" = "__NO_KEYS_FOUND__" ] || [ -z "$KEYS" ]; then
+            echo "No valid Jira keys found in PR. Skipping."
+            exit 0
+          fi
+
+          ok=0
+          skipped=0
+          failed=0
+
+          for KEY in $KEYS; do
+            echo "======================================================"
+            echo "Processing Jira issue: ${KEY}"
+            echo "======================================================"
+
+            # Get current issue to check existing Fix Versions
+            ISSUE_RESP=$(curl -sS -w "\n%{http_code}" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=fixVersions")
+
+            HTTP_CODE=$(echo "$ISSUE_RESP" | tail -1)
+            BODY=$(echo "$ISSUE_RESP" | sed '$d')
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "FAIL: Could not fetch issue ${KEY} (HTTP ${HTTP_CODE})"
+              echo "$BODY"
+              failed=$((failed+1))
+              continue
+            fi
+
+            # Check if the milestone version already exists in Fix Versions
+            EXISTING_VERSIONS=$(echo "$BODY" | jq -r '.fields.fixVersions[]?.name // empty')
+            
+            if echo "$EXISTING_VERSIONS" | grep -qx "$MILESTONE_TITLE"; then
+              echo "SKIP: Version '${MILESTONE_TITLE}' already exists in Fix Versions for ${KEY}"
+              skipped=$((skipped+1))
+              continue
+            fi
+
+            # Get the project key from the issue key
+            PROJECT_KEY="${KEY%%-*}"
+
+            # First, ensure the version exists in the project
+            VERSION_CHECK=$(curl -sS -w "\n%{http_code}" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" \
+              "${JIRA_BASE_URL}/rest/api/3/project/${PROJECT_KEY}/versions")
+
+            VC_HTTP=$(echo "$VERSION_CHECK" | tail -1)
+            VC_BODY=$(echo "$VERSION_CHECK" | sed '$d')
+
+            VERSION_EXISTS=false
+            if [ "$VC_HTTP" = "200" ]; then
+              if echo "$VC_BODY" | jq -e ".[] | select(.name == \"$MILESTONE_TITLE\")" > /dev/null 2>&1; then
+                VERSION_EXISTS=true
+              fi
+            fi
+
+            if [ "$VERSION_EXISTS" = "false" ]; then
+              echo "Version '${MILESTONE_TITLE}' does not exist in project ${PROJECT_KEY}. Creating it..."
+              
+              CREATE_RESP=$(curl -sS -w "\n%{http_code}" \
+                -X POST "${JIRA_BASE_URL}/rest/api/3/version" \
+                --user "${JIRA_AUTH}" \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                --data "{\"name\": \"${MILESTONE_TITLE}\", \"project\": \"${PROJECT_KEY}\"}")
+
+              CREATE_HTTP=$(echo "$CREATE_RESP" | tail -1)
+              CREATE_BODY=$(echo "$CREATE_RESP" | sed '$d')
+
+              if [ "$CREATE_HTTP" = "201" ] || [ "$CREATE_HTTP" = "200" ]; then
+                echo "Created version '${MILESTONE_TITLE}' in project ${PROJECT_KEY}"
+              elif [ "$CREATE_HTTP" = "400" ]; then
+                # Might already exist (race condition or case sensitivity)
+                echo "Version might already exist (HTTP 400). Proceeding with update..."
+              else
+                echo "WARNING: Could not create version (HTTP ${CREATE_HTTP}): $CREATE_BODY"
+              fi
+            fi
+
+            # Update the issue's Fix Versions (add the milestone)
+            UPDATE_PAYLOAD=$(jq -n --arg name "$MILESTONE_TITLE" '
+              {
+                "update": {
+                  "fixVersions": [
+                    { "add": { "name": $name } }
+                  ]
+                }
+              }
+            ')
+
+            UPDATE_RESP=$(curl -sS -w "\n%{http_code}" \
+              -X PUT "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data "$UPDATE_PAYLOAD")
+
+            UPDATE_HTTP=$(echo "$UPDATE_RESP" | tail -1)
+            UPDATE_BODY=$(echo "$UPDATE_RESP" | sed '$d')
+
+            if [ "$UPDATE_HTTP" = "204" ] || [ "$UPDATE_HTTP" = "200" ]; then
+              echo "OK: Updated Fix Versions for ${KEY} with '${MILESTONE_TITLE}'"
+              ok=$((ok+1))
+            else
+              echo "FAIL: Could not update Fix Versions for ${KEY} (HTTP ${UPDATE_HTTP})"
+              echo "$UPDATE_BODY"
+              failed=$((failed+1))
+            fi
+          done
+
+          echo "======================================================"
+          echo "Summary: ok=${ok} skipped=${skipped} failed=${failed}"
+          echo "======================================================"
+
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
