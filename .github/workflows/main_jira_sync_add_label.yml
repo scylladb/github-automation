@@ -108,14 +108,14 @@ jobs:
             --jira-auth "$JIRA_AUTH"
 
   # ========================================================================
-  # promoted-to-master label: Close Jira issues (only for scylladb/scylladb)
+  # promoted-to-master label: Close Jira issues (only for scylladb/staging)
   # ========================================================================
   add_comment_to_jira_promoted-to-master:
     name: Add 'Promoted to master' comment to Jira issues
     needs: extract
     if: >
       github.event.label.name == 'promoted-to-master' &&
-      github.repository == 'scylladb/scylladb' &&
+      github.repository == 'scylladb/staging' &&
       needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     strategy:
       matrix:
@@ -134,7 +134,7 @@ jobs:
     needs: [extract, details]
     if: >
       github.event.label.name == 'promoted-to-master' &&
-      github.repository == 'scylladb/scylladb' &&
+      github.repository == 'scylladb/staging' &&
       needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
