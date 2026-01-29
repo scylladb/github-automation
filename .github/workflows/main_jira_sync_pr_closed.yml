@@ -1,4 +1,4 @@
-name: Sync with Jira - PR Closed
+﻿name: Sync with Jira - PR Closed
 
 on:
   workflow_call:
@@ -28,9 +28,9 @@ jobs:
         run: |
           echo "event_name='${{ github.event_name }}'"
           echo "action='${{ github.event.action }}'"
-          echo "jira-keys-json='${JIRA_KEYS_JSON}'"
+          echo "jira-keys-json='\'"
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
-          echo "$GITHUB_CONTEXT"
+          echo "\$GITHUB_CONTEXT"
 
   details:
     needs: extract
@@ -47,7 +47,7 @@ jobs:
       pr_number:  ${{ github.event.pull_request.number }}
       labels_csv: ${{ needs.details.outputs.labels_csv }}
       details_csv: ${{ needs.details.outputs.csv }}
-      
+
   add_comment_to_jira:
     name: Add 'PR closed' comment to Jira issues
     needs: extract
@@ -61,9 +61,9 @@ jobs:
     uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
-      comment: >
-        Closed via PR "${{ github.event.pull_request.title }}"
-        https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+      comment: "Closed via PR "
+      link_text: ${{ github.event.pull_request.title }}
+      link_url: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
@@ -79,4 +79,3 @@ jobs:
       transition_id:   "141"
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-
