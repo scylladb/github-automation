@@ -61,7 +61,7 @@ jobs:
     uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
-      comment: "Closed via PR "
+      comment: "Closed via PR merge "
       link_text: ${{ github.event.pull_request.title }}
       link_url: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
     secrets:
