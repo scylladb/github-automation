@@ -40,7 +40,7 @@ jobs:
       JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
 
     steps:
-      - name: Update Fix Versions in Jira issues
+      - name: Replace Fix Versions in Jira issues
         shell: bash
         run: |
           set -euo pipefail
@@ -74,31 +74,6 @@ jobs:
             echo "======================================================"
             echo "Processing Jira issue: ${KEY}"
             echo "======================================================"
-
-            # Get current issue to check existing Fix Versions
-            ISSUE_RESP=$(curl -sS -w "\n%{http_code}" \
-              --user "${JIRA_AUTH}" \
-              -H "Accept: application/json" \
-              "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}?fields=fixVersions")
-
-            HTTP_CODE=$(echo "$ISSUE_RESP" | tail -1)
-            BODY=$(echo "$ISSUE_RESP" | sed '$d')
-
-            if [ "$HTTP_CODE" != "200" ]; then
-              echo "FAIL: Could not fetch issue ${KEY} (HTTP ${HTTP_CODE})"
-              echo "$BODY"
-              failed=$((failed+1))
-              continue
-            fi
-
-            # Check if the milestone version already exists in Fix Versions
-            EXISTING_VERSIONS=$(echo "$BODY" | jq -r '.fields.fixVersions[]?.name // empty')
-            
-            if echo "$EXISTING_VERSIONS" | grep -qx "$MILESTONE_TITLE"; then
-              echo "SKIP: Version '${MILESTONE_TITLE}' already exists in Fix Versions for ${KEY}"
-              skipped=$((skipped+1))
-              continue
-            fi
 
             # Get the project key from the issue key
             PROJECT_KEY="${KEY%%-*}"
@@ -142,16 +117,18 @@ jobs:
               fi
             fi
 
-            # Update the issue's Fix Versions (add the milestone)
+            # Replace Fix Versions - SET to only the new milestone (removes all existing)
             UPDATE_PAYLOAD=$(jq -n --arg name "$MILESTONE_TITLE" '
               {
-                "update": {
+                "fields": {
                   "fixVersions": [
-                    { "add": { "name": $name } }
+                    { "name": $name }
                   ]
                 }
               }
             ')
+
+            echo "Replacing Fix Versions with: ${MILESTONE_TITLE}"
 
             UPDATE_RESP=$(curl -sS -w "\n%{http_code}" \
               -X PUT "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
@@ -164,7 +141,7 @@ jobs:
             UPDATE_BODY=$(echo "$UPDATE_RESP" | sed '$d')
 
             if [ "$UPDATE_HTTP" = "204" ] || [ "$UPDATE_HTTP" = "200" ]; then
-              echo "OK: Updated Fix Versions for ${KEY} with '${MILESTONE_TITLE}'"
+              echo "OK: Set Fix Versions for ${KEY} to '${MILESTONE_TITLE}'"
               ok=$((ok+1))
             else
               echo "FAIL: Could not update Fix Versions for ${KEY} (HTTP ${UPDATE_HTTP})"
