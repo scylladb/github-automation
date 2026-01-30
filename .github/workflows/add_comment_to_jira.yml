@@ -1,4 +1,4 @@
-name: Add Comment to Jira Issue
+﻿name: Add Comment to Jira Issue
 
 on:
   workflow_call:
@@ -8,9 +8,19 @@ on:
         required: true
         type: string
       comment:
-        description: "The comment text to add to the issue (currently unused for PR-closed path)"
+        description: "The comment text to add to the issue (prefix text before the link)"
         required: true
         type: string
+      link_text:
+        description: "Optional: Text to display as a clickable link"
+        required: false
+        type: string
+        default: ""
+      link_url:
+        description: "Optional: URL for the clickable link"
+        required: false
+        type: string
+        default: ""
     secrets:
       jira_auth:
         description: 'Plain "email:api_token" for Jira Cloud Basic auth'
@@ -22,7 +32,9 @@ jobs:
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       JIRA_KEY: ${{ inputs.jira_key }}
-      COMMENT_RAW: ${{ inputs.comment }}
+      COMMENT_TEXT: ${{ inputs.comment }}
+      LINK_TEXT: ${{ inputs.link_text }}
+      LINK_URL: ${{ inputs.link_url }}
       JIRA_AUTH: ${{ secrets.jira_auth }}
 
     steps:
@@ -36,43 +48,67 @@ jobs:
             exit 0
           fi
 
-          # Build title + URL from PR context
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          if [ -z "$COMMENT_TEXT" ]; then
+            echo "COMMENT_TEXT is empty; nothing to do."
+            exit 0
+          fi
 
-          echo "Adding clickable comment to Jira issue: $JIRA_KEY"
-          echo "PR title: $PR_TITLE"
-          echo "PR URL  : $PR_URL"
+          echo "Adding comment to Jira issue: $JIRA_KEY"
+          echo "Comment: $COMMENT_TEXT"
+          echo "Link text: $LINK_TEXT"
+          echo "Link URL: $LINK_URL"
 
-          # ADF:
-          # Closed via PR "<title-as-link>"
-          PAYLOAD=$(jq -n \
-            --arg prefix "Closed via PR " \
-            --arg title "$PR_TITLE" \
-            --arg url "$PR_URL" \
-            '
-            {
-              body: {
-                type: "doc",
-                version: 1,
-                content: [
-                  {
-                    type: "paragraph",
-                    content: [
-                      { "type": "text", "text": $prefix },
-                      {
-                        "type": "text",
-                        "text": ("\"" + $title + "\""),
-                        "marks": [
-                          { "type": "link", "attrs": { "href": $url } }
-                        ]
-                      }
-                    ]
-                  }
-                ]
+          # Build ADF payload - with or without clickable link
+          if [ -n "$LINK_TEXT" ] && [ -n "$LINK_URL" ]; then
+            # Build ADF with clickable link
+            PAYLOAD=$(jq -n \
+              --arg prefix "$COMMENT_TEXT" \
+              --arg linkText "$LINK_TEXT" \
+              --arg linkUrl "$LINK_URL" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $prefix },
+                        {
+                          "type": "text",
+                          "text": $linkText,
+                          "marks": [
+                            { "type": "link", "attrs": { "href": $linkUrl } }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
               }
-            }
-            ')
+              ')
+          else
+            # Build simple ADF with plain text
+            PAYLOAD=$(jq -n \
+              --arg text "$COMMENT_TEXT" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $text }
+                      ]
+                    }
+                  ]
+                }
+              }
+              ')
+          fi
 
           echo "Payload to Jira:"
           echo "$PAYLOAD"

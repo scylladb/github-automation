@@ -1,4 +1,4 @@
-name: Sync With Jira - Add Label
+﻿name: Sync With Jira - Add Label
 
 on:
   workflow_call:
@@ -14,25 +14,30 @@ jobs:
       pr_body:  ${{ github.event.pull_request.body }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-      
-  debug:                         
-    needs: extract               
+
+  debug:
+    needs: extract
     runs-on: ubuntu-slim
-    steps:       
+    steps:
       - name: Debug data
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: |         
+        run: |
           echo "event_name='${{ github.event_name }}'"
           echo "action='${{ github.event.action }}'"
           echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
           echo "triggering-label='${{ github.event.label.name }}'"
+          echo "repository='${{ github.repository }}'"
           label="${{ github.event.label.name }}"
-                    
+
           if [ -n "$label" ] && [ "$label" = "status/merge_candidate" ]; then
             echo "Try to transition Jira issue to 'Ready For Merge'"
           fi
-          
+
+          if [ -n "$label" ] && [ "$label" = "promoted-to-master" ] && [ "${{ github.repository }}" = "scylladb/scylladb" ]; then
+            echo "Try to close Jira issue (promoted-to-master label added)"
+          fi
+
           echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
           echo "$GITHUB_CONTEXT"
 
@@ -85,4 +90,40 @@ jobs:
       transition_id: "131"
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
-  
+
+  # ========================================================================
+  # promoted-to-master label: Close Jira issues (only for scylladb/scylladb)
+  # ========================================================================
+  add_comment_to_jira_promoted-to-master:
+    name: Add 'Promoted to master' comment to Jira issues
+    needs: extract
+    if: >
+      github.event.label.name == 'promoted-to-master' &&
+      github.repository == 'scylladb/scylladb' &&
+      needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
+    strategy:
+      matrix:
+        jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
+    uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@main
+    with:
+      jira_key: ${{ matrix.jira_key }}
+      comment: "Closed via promoted-to-master label on PR "
+      link_text: ${{ github.event.pull_request.title }}
+      link_url: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}
+
+  jira_status_transition_promoted-to-master:
+    name: Transition Jira issues to Done (promoted-to-master)
+    needs: [extract, details]
+    if: >
+      github.event.label.name == 'promoted-to-master' &&
+      github.repository == 'scylladb/scylladb' &&
+      needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
+    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@main
+    with:
+      details_csv:     ${{ needs.details.outputs.csv }}
+      transition_name: "Done"
+      transition_id:   "141"
+    secrets:
+      jira_auth: ${{ secrets.caller_jira_auth }}

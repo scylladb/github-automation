@@ -47,7 +47,7 @@ jobs:
       pr_number:  ${{ github.event.pull_request.number }}
       labels_csv: ${{ needs.details.outputs.labels_csv }}
       details_csv: ${{ needs.details.outputs.csv }}
-      
+
   add_comment_to_jira:
     name: Add 'PR closed' comment to Jira issues
     needs: extract
@@ -61,9 +61,9 @@ jobs:
     uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@main
     with:
       jira_key: ${{ matrix.jira_key }}
-      comment: >
-        Closed via PR "${{ github.event.pull_request.title }}"
-        https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+      comment: "Closed via PR merge "
+      link_text: ${{ github.event.pull_request.title }}
+      link_url: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
     secrets:
       jira_auth: ${{ secrets.caller_jira_auth }}
 
