@@ -60,6 +60,7 @@ jobs:
               for row in reader:
                   key = get(row, 'key')
                   status = get(row, 'status')
+                  start_date = get(row, 'startdate')
                   if not key:
                       continue
           
@@ -69,13 +70,18 @@ jobs:
                   elif status.lower() in {"done", "duplicate", "won't fix"}:
                       done_issues.append((key, status))
                   else:
-                      to_transition.append((key, status))
+                      to_transition.append((key, status, start_date))
           
           # Write plan files
           def write_list(fname, items):
               with open(fname, 'w', encoding='utf-8') as out:
-                  for k,s in items:
-                      out.write(f"{k}|{s}\n")
+                  for item in items:
+                      if len(item) == 3:
+                          k, s, sd = item
+                          out.write(f"{k}|{s}|{sd}\n")
+                      else:
+                          k, s = item
+                          out.write(f"{k}|{s}\n")
           
           write_list('to_transition.txt', to_transition)
           write_list('already_ok.txt', already_ok)
@@ -125,7 +131,7 @@ jobs:
             exit 1
           fi
 
-          while IFS='|' read -r key current; do
+          while IFS='|' read -r key current start_date; do
             [ -n "${key:-}" ] || continue
             echo "Transitioning ${key} from '${current}' -> '${TARGET}' (id=${TRANSITION_ID})"
 
@@ -139,26 +145,9 @@ jobs:
               fi
             done
 
-            # If transitioning to working state, check and set start date if empty
+            # If transitioning to working state and start date is empty, set it
             if [ "$SET_START_DATE" = true ]; then
-              echo "Checking start date for ${key}..."
-              if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
-                ISSUE_DATA=$(curl -sS --fail -X GET \
-                  -H "Authorization: $JIRA_AUTH" \
-                  -H "Accept: application/json" \
-                  "${BASE}/rest/api/3/issue/${key}?fields=startDate" \
-                  || echo '{}')
-              else
-                ISSUE_DATA=$(curl -sS --fail -X GET \
-                  --user "$JIRA_AUTH" \
-                  -H "Accept: application/json" \
-                  "${BASE}/rest/api/3/issue/${key}?fields=startDate" \
-                  || echo '{}')
-              fi
-
-              START_DATE=$(echo "$ISSUE_DATA" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('fields', {}).get('startDate', ''))" 2>/dev/null || echo "")
-              
-              if [ -z "$START_DATE" ] || [ "$START_DATE" = "null" ]; then
+              if [ -z "$start_date" ] || [ "$start_date" = "null" ]; then
                 TODAY=$(date -u +%Y-%m-%d)
                 echo "Setting start date to ${TODAY} for ${key}"
                 
@@ -181,7 +170,7 @@ jobs:
                 fi
                 sleep 0.2
               else
-                echo "Start date already set for ${key}: ${START_DATE}"
+                echo "Start date already set for ${key}: ${start_date}"
               fi
             fi
 
