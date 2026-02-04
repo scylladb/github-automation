@@ -1,7 +1,0 @@
-﻿## What changed
-- **add_comment_to_jira.yml**: Added optional `link_text` and `link_url` inputs to create clickable links in Jira comments using ADF format
-- **main_jira_sync_add_label.yml**: Updated `promoted-to-master` comment to use clickable PR link
-- **main_jira_sync_pr_closed.yml**: Updated PR closed comment to use clickable PR link
-
-## Why
-When Jira comments include PR references, the PR title now appears as a clickable link instead of plain text URL, improving UX for users viewing Jira issues.
