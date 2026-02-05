@@ -24,6 +24,7 @@ jobs:
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       START_DATE_FIELD: customfield_10015
+      DUE_DATE_FIELD: duedate
 
     steps:
       - name: Write CSV to file
@@ -121,6 +122,7 @@ jobs:
           TRANSITION_ID: ${{ inputs.transition_id }}
           BASE: ${{ env.JIRA_BASE_URL }}
           START_DATE_FIELD: ${{ env.START_DATE_FIELD }}
+          DUE_DATE_FIELD: ${{ env.DUE_DATE_FIELD }}
         run: |
           set -euo pipefail
 
@@ -196,24 +198,28 @@ jobs:
             if [ "$SET_DUE_DATE" = true ]; then
               if [ -z "$due_date" ] || [ "$due_date" = "null" ]; then
                 TODAY=$(date -u +%Y-%m-%d)
-                echo "Setting due date to ${TODAY} for ${key}"
+                echo "Setting due date to ${TODAY} for ${key} (field: ${DUE_DATE_FIELD})"
                 
                 if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
-                  curl -sS --fail -X PUT \
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     -H "Authorization: $JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"duedate\": \"${TODAY}\"}}" \
-                    "${BASE}/rest/api/3/issue/${key}" \
-                    || echo "Warning: Failed to set due date for ${key}" >&2
+                    --data "{\"fields\": {\"${DUE_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
                 else
-                  curl -sS --fail -X PUT \
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     --user "$JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"duedate\": \"${TODAY}\"}}" \
-                    "${BASE}/rest/api/3/issue/${key}" \
-                    || echo "Warning: Failed to set due date for ${key}" >&2
+                    --data "{\"fields\": {\"${DUE_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                fi
+                
+                HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+                if [ "$HTTP_CODE" != "204" ]; then
+                  echo "Warning: Failed to set due date for ${key} (HTTP ${HTTP_CODE})" >&2
+                  echo "$RESPONSE" | head -n-1 >&2
                 fi
                 sleep 0.2
               else
