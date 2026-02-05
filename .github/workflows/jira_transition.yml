@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
+      START_DATE_FIELD: customfield_10015
+      DUE_DATE_FIELD: duedate
 
     steps:
       - name: Write CSV to file
@@ -60,6 +62,8 @@ jobs:
               for row in reader:
                   key = get(row, 'key')
                   status = get(row, 'status')
+                  start_date = get(row, 'startdate')
+                  due_date = get(row, 'duedate')
                   if not key:
                       continue
           
@@ -69,13 +73,18 @@ jobs:
                   elif status.lower() in {"done", "duplicate", "won't fix"}:
                       done_issues.append((key, status))
                   else:
-                      to_transition.append((key, status))
+                      to_transition.append((key, status, start_date, due_date))
           
           # Write plan files
           def write_list(fname, items):
               with open(fname, 'w', encoding='utf-8') as out:
-                  for k,s in items:
-                      out.write(f"{k}|{s}\n")
+                  for item in items:
+                      if len(item) == 4:
+                          k, s, sd, dd = item
+                          out.write(f"{k}|{s}|{sd}|{dd}\n")
+                      else:
+                          k, s = item
+                          out.write(f"{k}|{s}\n")
           
           write_list('to_transition.txt', to_transition)
           write_list('already_ok.txt', already_ok)
@@ -112,6 +121,8 @@ jobs:
           TARGET: ${{ inputs.transition_name }}
           TRANSITION_ID: ${{ inputs.transition_id }}
           BASE: ${{ env.JIRA_BASE_URL }}
+          START_DATE_FIELD: ${{ env.START_DATE_FIELD }}
+          DUE_DATE_FIELD: ${{ env.DUE_DATE_FIELD }}
         run: |
           set -euo pipefail
 
@@ -125,9 +136,95 @@ jobs:
             exit 1
           fi
 
-          while IFS='|' read -r key current; do
+          while IFS='|' read -r key current start_date due_date; do
             [ -n "${key:-}" ] || continue
             echo "Transitioning ${key} from '${current}' -> '${TARGET}' (id=${TRANSITION_ID})"
+
+            # Check if transitioning to a working state and if start date needs to be set
+            WORKING_STATES=("in progress" "in review" "ready for merge")
+            SET_START_DATE=false
+            for state in "${WORKING_STATES[@]}"; do
+              if [[ "${TARGET,,}" == "$state" ]]; then
+                SET_START_DATE=true
+                break
+              fi
+            done
+
+            # If transitioning to working state and start date is empty, set it
+            if [ "$SET_START_DATE" = true ]; then
+              if [ -z "$start_date" ] || [ "$start_date" = "null" ]; then
+                TODAY=$(date -u +%Y-%m-%d)
+                echo "Setting start date to ${TODAY} for ${key} (field: ${START_DATE_FIELD})"
+                
+                if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
+                    -H "Authorization: $JIRA_AUTH" \
+                    -H "Accept: application/json" \
+                    -H "Content-Type: application/json" \
+                    --data "{\"fields\": {\"${START_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                else
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
+                    --user "$JIRA_AUTH" \
+                    -H "Accept: application/json" \
+                    -H "Content-Type: application/json" \
+                    --data "{\"fields\": {\"${START_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                fi
+                
+                HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+                if [ "$HTTP_CODE" != "204" ]; then
+                  echo "Warning: Failed to set start date for ${key} (HTTP ${HTTP_CODE})" >&2
+                  echo "$RESPONSE" | head -n-1 >&2
+                fi
+                sleep 0.2
+              else
+                echo "Start date already set for ${key}: ${start_date}"
+              fi
+            fi
+
+            # Check if transitioning to a closed state and if due date needs to be set
+            CLOSED_STATES=("done" "won't fix")
+            SET_DUE_DATE=false
+            for state in "${CLOSED_STATES[@]}"; do
+              if [[ "${TARGET,,}" == "$state" ]]; then
+                SET_DUE_DATE=true
+                break
+              fi
+            done
+
+            # If transitioning to closed state and due date is empty, set it
+            if [ "$SET_DUE_DATE" = true ]; then
+              if [ -z "$due_date" ] || [ "$due_date" = "null" ]; then
+                TODAY=$(date -u +%Y-%m-%d)
+                echo "Setting due date to ${TODAY} for ${key} (field: ${DUE_DATE_FIELD})"
+                
+                if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
+                    -H "Authorization: $JIRA_AUTH" \
+                    -H "Accept: application/json" \
+                    -H "Content-Type: application/json" \
+                    --data "{\"fields\": {\"${DUE_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                else
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
+                    --user "$JIRA_AUTH" \
+                    -H "Accept: application/json" \
+                    -H "Content-Type: application/json" \
+                    --data "{\"fields\": {\"${DUE_DATE_FIELD}\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                fi
+                
+                HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+                if [ "$HTTP_CODE" != "204" ]; then
+                  echo "Warning: Failed to set due date for ${key} (HTTP ${HTTP_CODE})" >&2
+                  echo "$RESPONSE" | head -n-1 >&2
+                fi
+                sleep 0.2
+              else
+                echo "Due date already set for ${key}: ${due_date}"
+              fi
+            fi
 
             if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
               curl -sS --fail -X POST \
