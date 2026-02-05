@@ -152,22 +152,27 @@ jobs:
                 TODAY=$(date -u +%Y-%m-%d)
                 echo "Setting start date to ${TODAY} for ${key}"
                 
+                # Try with lowercase 'startdate' first (API v3 convention)
                 if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
-                  curl -sS --fail -X PUT \
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     -H "Authorization: $JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"startDate\": \"${TODAY}\"}}" \
-                    "${BASE}/rest/api/3/issue/${key}" \
-                    || echo "Warning: Failed to set start date for ${key}" >&2
+                    --data "{\"fields\": {\"startdate\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
                 else
-                  curl -sS --fail -X PUT \
+                  RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     --user "$JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"startDate\": \"${TODAY}\"}}" \
-                    "${BASE}/rest/api/3/issue/${key}" \
-                    || echo "Warning: Failed to set start date for ${key}" >&2
+                    --data "{\"fields\": {\"startdate\": \"${TODAY}\"}}" \
+                    "${BASE}/rest/api/3/issue/${key}" 2>&1)
+                fi
+                
+                HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+                if [ "$HTTP_CODE" != "204" ]; then
+                  echo "Warning: Failed to set start date for ${key} (HTTP ${HTTP_CODE})" >&2
+                  echo "$RESPONSE" | head -n-1 >&2
                 fi
                 sleep 0.2
               else
