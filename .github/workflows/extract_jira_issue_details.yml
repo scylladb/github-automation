@@ -54,7 +54,7 @@ jobs:
         run: |
           echo "csv=" >> "$GITHUB_OUTPUT"
           echo "labels_csv=" >> "$GITHUB_OUTPUT"
-          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
+          printf "key,status,labels,assignee,priority,fixVersions,scylla_components,startDate,dueDate\n" > jira-details.csv
           echo "csv_path=jira-details.csv" >> "$GITHUB_OUTPUT"
 
           echo "---------------------------------------------------"
@@ -75,7 +75,7 @@ jobs:
           DELIM: ${{ env.DELIM }}
         run: |
           set -euo pipefail
-          printf "key,status,labels,assignee,priority,fixVersions,scylla_components\n" > jira-details.csv
+          printf "key,status,labels,assignee,priority,fixVersions,scylla_components,startDate,dueDate\n" > jira-details.csv
 
           keys=$(echo "$KEYS_JSON" | jq -r '.[]')
           all_labels=()
@@ -86,7 +86,7 @@ jobs:
             resp=$(curl -sS --fail \
               --user "$JIRA_AUTH" \
               -H "Accept: application/json" \
-              "$BASE/rest/api/3/issue/$key?fields=status,labels,assignee,priority,fixVersions,${FIELD_ID}")
+              "$BASE/rest/api/3/issue/$key?fields=status,labels,assignee,priority,fixVersions,${FIELD_ID},startDate,duedate")
 
             status=$(echo "$resp" | jq -r '.fields.status.name // ""')
             assignee=$(echo "$resp" | jq -r '.fields.assignee.displayName // ""')
@@ -97,9 +97,11 @@ jobs:
               (.fields[$f] // [])
               | if type=="array" then (map(.value // "") | join($d)) else (tostring) end
             ')
+            startDate=$(echo "$resp" | jq -r '.fields.startDate // ""')
+            dueDate=$(echo "$resp" | jq -r '.fields.duedate // ""')
 
             # Append line to CSV
-            echo "\"$key\",\"$status\",\"$labels\",\"$assignee\",\"$priority\",\"$fixVersions\",\"$components\"" >> jira-details.csv
+            echo "\"$key\",\"$status\",\"$labels\",\"$assignee\",\"$priority\",\"$fixVersions\",\"$components\",\"$startDate\",\"$dueDate\"" >> jira-details.csv
 
             # Collect labels for aggregation
             mapfile -t lbls < <(echo "$resp" | jq -r '.fields.labels[]?')
