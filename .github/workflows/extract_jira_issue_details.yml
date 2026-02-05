@@ -33,6 +33,8 @@ jobs:
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
       SCYLLA_COMPONENTS_FIELD: customfield_10321
+      START_DATE_FIELD: customfield_10015
+      DUE_DATE_FIELD: duedate
       DELIM: ";"
 
     steps:
@@ -70,6 +72,8 @@ jobs:
         env:
           BASE: ${{ env.JIRA_BASE_URL }}
           FIELD_ID: ${{ env.SCYLLA_COMPONENTS_FIELD }}
+          START_DATE_FIELD: ${{ env.START_DATE_FIELD }}
+          DUE_DATE_FIELD: ${{ env.DUE_DATE_FIELD }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
           KEYS_JSON: ${{ inputs.jira_keys_json }}
           DELIM: ${{ env.DELIM }}
@@ -86,7 +90,7 @@ jobs:
             resp=$(curl -sS --fail \
               --user "$JIRA_AUTH" \
               -H "Accept: application/json" \
-              "$BASE/rest/api/3/issue/$key?fields=status,labels,assignee,priority,fixVersions,${FIELD_ID},startDate,duedate")
+              "$BASE/rest/api/3/issue/$key?fields=status,labels,assignee,priority,fixVersions,${FIELD_ID},${START_DATE_FIELD},${DUE_DATE_FIELD}")
 
             status=$(echo "$resp" | jq -r '.fields.status.name // ""')
             assignee=$(echo "$resp" | jq -r '.fields.assignee.displayName // ""')
@@ -97,8 +101,8 @@ jobs:
               (.fields[$f] // [])
               | if type=="array" then (map(.value // "") | join($d)) else (tostring) end
             ')
-            startDate=$(echo "$resp" | jq -r '.fields.startDate // ""')
-            dueDate=$(echo "$resp" | jq -r '.fields.duedate // ""')
+            startDate=$(echo "$resp" | jq -r --arg f "$START_DATE_FIELD" '.fields[$f] // ""')
+            dueDate=$(echo "$resp" | jq -r --arg f "$DUE_DATE_FIELD" '.fields[$f] // ""')
 
             # Append line to CSV
             echo "\"$key\",\"$status\",\"$labels\",\"$assignee\",\"$priority\",\"$fixVersions\",\"$components\",\"$startDate\",\"$dueDate\"" >> jira-details.csv
