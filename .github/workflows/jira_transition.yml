@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
+      START_DATE_FIELD: customfield_10015
 
     steps:
       - name: Write CSV to file
@@ -119,6 +120,7 @@ jobs:
           TARGET: ${{ inputs.transition_name }}
           TRANSITION_ID: ${{ inputs.transition_id }}
           BASE: ${{ env.JIRA_BASE_URL }}
+          START_DATE_FIELD: ${{ env.START_DATE_FIELD }}
         run: |
           set -euo pipefail
 
@@ -150,22 +152,22 @@ jobs:
             if [ "$SET_START_DATE" = true ]; then
               if [ -z "$start_date" ] || [ "$start_date" = "null" ]; then
                 TODAY=$(date -u +%Y-%m-%d)
-                echo "Setting start date to ${TODAY} for ${key}"
+                echo "Setting start date to ${TODAY} for ${key} (field: ${START_DATE_FIELD})"
                 
-                # Try with lowercase 'startdate' first (API v3 convention)
+                # Use custom field ID for start date
                 if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
                   RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     -H "Authorization: $JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"startdate\": \"${TODAY}\"}}" \
+                    --data "{\"fields\": {\"${START_DATE_FIELD}\": \"${TODAY}\"}}" \
                     "${BASE}/rest/api/3/issue/${key}" 2>&1)
                 else
                   RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     --user "$JIRA_AUTH" \
                     -H "Accept: application/json" \
                     -H "Content-Type: application/json" \
-                    --data "{\"fields\": {\"startdate\": \"${TODAY}\"}}" \
+                    --data "{\"fields\": {\"${START_DATE_FIELD}\": \"${TODAY}\"}}" \
                     "${BASE}/rest/api/3/issue/${key}" 2>&1)
                 fi
                 
