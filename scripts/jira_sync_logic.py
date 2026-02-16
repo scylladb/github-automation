@@ -1,15 +1,22 @@
 ﻿#!/usr/bin/env python3
 """
-Debug and diagnostic logging for the Jira sync add-label workflow.
+Jira sync logic for GitHub Actions workflows.
 
-Replaces the inline 'debug' job that was previously defined in
-main_jira_sync_add_label.yml. Logs GitHub event context, extracted
-Jira keys, and label-specific transition hints.
+Dispatches to the requested action based on the --action CLI argument.
+Currently supports:
+  - debug: Log GitHub event context and label-specific transition hints.
+
+Usage:
+  python3 scripts/jira_sync_logic.py --action debug
 """
 
+import argparse
 import json
 import os
 import sys
+
+
+AVAILABLE_ACTIONS = ['debug']
 
 
 def debug_sync_context():
@@ -44,9 +51,30 @@ def debug_sync_context():
         print("(GITHUB_CONTEXT not set)")
 
 
+ACTION_DISPATCH = {
+    'debug': debug_sync_context,
+}
+
+
 def main():
-    print("=== Jira Sync Debug ===")
-    debug_sync_context()
+    parser = argparse.ArgumentParser(
+        description='Jira sync logic for GitHub Actions workflows'
+    )
+    parser.add_argument(
+        '--action',
+        required=True,
+        choices=AVAILABLE_ACTIONS,
+        help='The action to execute'
+    )
+    args = parser.parse_args()
+
+    handler = ACTION_DISPATCH.get(args.action)
+    if not handler:
+        print(f"Error: Unknown action '{args.action}'")
+        sys.exit(1)
+
+    print(f"=== Jira Sync: {args.action} ===")
+    handler()
     return 0
 
 

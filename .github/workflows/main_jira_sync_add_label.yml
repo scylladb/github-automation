@@ -1,4 +1,4 @@
-﻿name: Sync With Jira - Add Label
+name: Sync With Jira - Add Label
 
 on:
   workflow_call:
@@ -29,7 +29,7 @@ jobs:
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
           JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
           TRIGGERING_LABEL: ${{ github.event.label.name }}
-        run: python3 scripts/jira_sync_logic.py
+        run: python3 scripts/jira_sync_logic.py --action debug
 
   add_jira_label:
     needs: [extract]
