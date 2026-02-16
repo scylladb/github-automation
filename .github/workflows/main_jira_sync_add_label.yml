@@ -19,27 +19,17 @@ jobs:
     needs: extract
     runs-on: ubuntu-slim
     steps:
-      - name: Debug data
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run debug logging script
         env:
           GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: |
-          echo "event_name='${{ github.event_name }}'"
-          echo "action='${{ github.event.action }}'"
-          echo "jira-keys-json='${{ needs.extract.outputs['jira-keys-json'] }}'"
-          echo "triggering-label='${{ github.event.label.name }}'"
-          echo "repository='${{ github.repository }}'"
-          label="${{ github.event.label.name }}"
-
-          if [ -n "$label" ] && [ "$label" = "status/merge_candidate" ]; then
-            echo "Try to transition Jira issue to 'Ready For Merge'"
-          fi
-
-          if [ -n "$label" ] && [ "$label" = "promoted-to-master" ]; then
-            echo "Try to close Jira issue (promoted-to-master label added)"
-          fi
-
-          echo "~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~"
-          echo "$GITHUB_CONTEXT"
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          TRIGGERING_LABEL: ${{ github.event.label.name }}
+        run: python3 scripts/jira_sync_logic.py
 
   add_jira_label:
     needs: [extract]
