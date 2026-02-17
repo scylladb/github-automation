@@ -10,6 +10,7 @@ Currently supports:
   - extract_jira_issue_details: Fetch Jira issue details and produce a CSV.
   - apply_jira_labels_to_pr: Apply Jira-derived labels to a GitHub PR.
   - jira_status_transition: Transition Jira issues to a new status.
+  - add_comment_to_jira: Add a comment to Jira issues.
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
@@ -18,6 +19,7 @@ Usage:
   python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
   python3 scripts/jira_sync_logic.py --action apply_jira_labels_to_pr
   python3 scripts/jira_sync_logic.py --action jira_status_transition
+  python3 scripts/jira_sync_logic.py --action add_comment_to_jira
 
 Environment variables (for extract_jira_keys):
   PR_TITLE   - The pull request title
@@ -42,6 +44,13 @@ Environment variables (for jira_status_transition):
   TRANSITION_ID    - Jira transition ID
   JIRA_AUTH        - Jira auth credential
 
+Environment variables (for add_comment_to_jira):
+  JIRA_KEYS_JSON - JSON array of Jira issue keys
+  COMMENT        - Comment text (prefix before the link)
+  LINK_TEXT      - Optional text for the clickable link
+  LINK_URL       - Optional URL for the clickable link
+  JIRA_AUTH      - Jira auth credential
+
 Environment variables (for add_label_to_jira_issue):
   JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
   LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component, symptom/* for symptom)
@@ -62,7 +71,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -1075,6 +1084,141 @@ def _run_jira_status_transition() -> None:
     jira_status_transition(details_csv, transition_name, transition_id, jira_auth)
 
 
+
+# ---------------------------------------------------------------------------
+# add_comment_to_jira
+# ---------------------------------------------------------------------------
+
+
+def _build_adf_comment(comment: str, link_text: str, link_url: str) -> dict:
+    """Build an Atlassian Document Format (ADF) comment payload.
+
+    If *link_text* and *link_url* are provided the comment text is followed
+    by a clickable link.  Otherwise the comment is rendered as plain text.
+    """
+    if link_text and link_url:
+        content = [
+            {"type": "text", "text": comment},
+            {
+                "type": "text",
+                "text": link_text,
+                "marks": [
+                    {"type": "link", "attrs": {"href": link_url}}
+                ],
+            },
+        ]
+    else:
+        content = [{"type": "text", "text": comment}]
+
+    return {
+        "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": content}
+            ],
+        }
+    }
+
+
+def add_comment_to_jira(
+    jira_keys_json: str,
+    comment: str,
+    jira_auth: str,
+    link_text: str = "",
+    link_url: str = "",
+) -> None:
+    """Add a comment to one or more Jira issues.
+
+    Replicates the logic of add_comment_to_jira.yml in pure Python.
+
+    Parameters
+    ----------
+    jira_keys_json : str
+        JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'.
+    comment : str
+        The comment text (prefix before an optional link).
+    jira_auth : str
+        Jira auth credential "email:api_token".
+    link_text : str, optional
+        Display text for a clickable link appended to the comment.
+    link_url : str, optional
+        URL for the clickable link.
+    """
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        print("No Jira keys to comment on.")
+        return
+
+    if not comment:
+        print("Comment text is empty; nothing to do.")
+        return
+
+    payload = _build_adf_comment(comment, link_text, link_url)
+
+    print(f"Adding comment to {len(keys)} issue(s)")
+    print(f"Comment: {comment}")
+    if link_text:
+        print(f"Link text: {link_text}")
+    if link_url:
+        print(f"Link URL: {link_url}")
+
+    ok = 0
+    skipped = 0
+    failed = 0
+
+    for key in keys:
+        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/comment"
+        print(f"Posting comment on {key} ...")
+
+        code, body_text = _jira_post(url, payload, jira_auth)
+
+        if code in (200, 201):
+            print(f"OK {key} ({code})")
+            ok += 1
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
+            skipped += 1
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if failed > 0:
+        sys.exit(1)
+
+
+def _run_add_comment_to_jira() -> None:
+    """CLI entry-point wrapper for add_comment_to_jira.
+
+    Reads JIRA_KEYS_JSON, COMMENT, LINK_TEXT, LINK_URL, and JIRA_AUTH
+    from environment variables.
+    """
+    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
+    comment = os.environ.get("COMMENT", "")
+    link_text = os.environ.get("LINK_TEXT", "")
+    link_url = os.environ.get("LINK_URL", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not jira_keys_json:
+        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
+        sys.exit(1)
+
+    if not comment:
+        print("Error: COMMENT env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    add_comment_to_jira(jira_keys_json, comment, jira_auth, link_text, link_url)
+
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -1114,6 +1258,7 @@ ACTION_DISPATCH = {
     'extract_jira_issue_details': _run_extract_jira_issue_details,
     'apply_jira_labels_to_pr': _run_apply_jira_labels_to_pr,
     'jira_status_transition': _run_jira_status_transition,
+    'add_comment_to_jira': _run_add_comment_to_jira,
 }
 
 
