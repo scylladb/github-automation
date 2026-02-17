@@ -362,15 +362,22 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
             print(body_text[:200])
             skipped += 1
 
-        elif code == 400 and mode == "scylla_component":
-            print(f"SKIP {key} ({code}) invalid Scylla component option. First 200 chars:")
+        elif mode in ("scylla_component", "symptom") and code not in (200, 204):
+            print(f"WARN {key} ({code}) custom field update failed. First 200 chars:")
             print(body_text[:200])
-            skipped += 1
-
-        elif code == 400 and mode == "symptom":
-            print(f"SKIP {key} ({code}) invalid symptom option. First 200 chars:")
-            print(body_text[:200])
-            skipped += 1
+            print(f"Falling back to adding '{label}' as a plain Jira label on {key} ...")
+            fallback_payload = {"update": {"labels": [{"add": label}]}}
+            fb_code, fb_body = _jira_put(issue_url, fallback_payload, jira_auth)
+            if fb_code in (200, 204):
+                print(f"OK {key} (fallback label, {fb_code})")
+                ok += 1
+            elif fb_code == 400:
+                print(f"SKIP {key} (fallback label, {fb_code}) likely already has the label.")
+                skipped += 1
+            else:
+                print(f"FAIL {key} (fallback label, {fb_code}) First 400 chars:")
+                print(fb_body[:400])
+                failed += 1
 
         else:
             print(f"FAIL {key} ({code}) First 400 chars:")
