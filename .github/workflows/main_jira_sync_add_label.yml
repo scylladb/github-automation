@@ -21,6 +21,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
 
       - name: Run debug logging script
         env:
@@ -77,6 +80,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
 
       - name: Set up Python
         uses: actions/setup-python@v5
