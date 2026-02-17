@@ -645,6 +645,7 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
     3. Parse details_csv to derive the best Jira priority (P*) and area/* labels.
     4. If the triggering event label is P0..P4 it overrides the Jira priority.
     5. Append area/* labels.
+    6. Append symptom/* labels.
     """
     # 1) Parse labels_csv
     raw_labels = [s.strip() for s in labels_csv.split(",")]
@@ -663,6 +664,8 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
     best_rank = None
     area_labels: list[str] = []
     area_seen: set[str] = set()
+    symptom_labels: list[str] = []
+    symptom_seen: set[str] = set()
 
     stripped_csv = details_csv.strip()
     if stripped_csv:
@@ -687,6 +690,18 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
                         area_seen.add(label)
                         area_labels.append(label)
 
+            symp_raw = (row.get("symptoms") or "").strip()
+            if symp_raw:
+                for part in symp_raw.split(";"):
+                    symp = part.strip()
+                    if not symp:
+                        continue
+                    safe = re.sub(r"\s+", "_", symp)
+                    label = f"symptom/{safe}"
+                    if label not in symptom_seen:
+                        symptom_seen.add(label)
+                        symptom_labels.append(label)
+
     # 4) Decide P* label
     priority_label = None
     if best_rank is not None:
@@ -708,6 +723,11 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
     for area in area_labels:
         if area not in labels:
             labels.append(area)
+
+    # 6) Append symptom/* labels
+    for symp in symptom_labels:
+        if symp not in labels:
+            labels.append(symp)
 
     print(f"Final labels to apply: {labels}")
     return labels
