@@ -20,7 +20,7 @@ Environment variables (for extract_jira_keys):
 
 Environment variables (for add_label_to_jira_issue):
   JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
-  LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component)
+  LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component, symptom/* for symptom)
   JIRA_AUTH      - Jira auth credential "<user email>:<api_token>"
 """
 
@@ -48,6 +48,7 @@ KNOWN_PROJECT_PREFIXES = {
 
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
 SCYLLA_COMPONENTS_FIELD = "customfield_10321"
+SYMPTOM_FIELD = "customfield_11120"
 
 # Regex: any JIRA-style key (PROJECT-123) in any text
 _JIRA_KEY_RE = re.compile(r'[A-Z]+-[0-9]+')
@@ -258,7 +259,7 @@ def _determine_mode(label: str) -> tuple[str, str | None, dict | None]:
     """Decide the update mode and build the appropriate JSON payload.
 
     Returns (mode, priority_name_or_none, payload_dict).
-    Modes: "priority", "scylla_component", "label".
+    Modes: "priority", "scylla_component", "symptom", "label".
     """
     label_upper = label.upper()
     print(f"Incoming label: '{label}'")
@@ -278,6 +279,17 @@ def _determine_mode(label: str) -> tuple[str, str | None, dict | None]:
             }
         }
         return "scylla_component", None, payload
+
+    # symptom/* -> add symptom custom field
+    if label.startswith("symptom/"):
+        symptom_value = label[len("symptom/"):].replace("_", " ")
+        print(f"Derived symptom value: '{symptom_value}' from label '{label}'")
+        payload = {
+            "update": {
+                SYMPTOM_FIELD: [{"add": {"value": symptom_value}}]
+            }
+        }
+        return "symptom", None, payload
 
     # Fallback: normal Jira label
     payload = {"update": {"labels": [{"add": label}]}}
@@ -308,8 +320,9 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
 
     Modes:
       - P0..P4           -> sets the issue priority field
-      - area/<component>  -> adds a Scylla component (customfield_10321)
-      - anything else     -> adds a plain Jira label
+      - area/<component>   -> adds a Scylla component (customfield_10321)
+      - symptom/<symptom>  -> adds a symptom (customfield_11120)
+      - anything else      -> adds a plain Jira label
     """
     keys = _parse_jira_keys_json(jira_keys_json)
     if not keys:
@@ -323,6 +336,9 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
     elif mode == "scylla_component":
         action_desc = "Add Scylla component"
         print(f"Will add Scylla component derived from label: {label}")
+    elif mode == "symptom":
+        action_desc = "Add symptom"
+        print(f"Will add symptom derived from label: {label}")
     else:
         action_desc = "Add label"
         print(f"Will add label: {label}")
@@ -348,6 +364,11 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
 
         elif code == 400 and mode == "scylla_component":
             print(f"SKIP {key} ({code}) invalid Scylla component option. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        elif code == 400 and mode == "symptom":
+            print(f"SKIP {key} ({code}) invalid symptom option. First 200 chars:")
             print(body_text[:200])
             skipped += 1
 
