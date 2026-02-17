@@ -82,7 +82,7 @@ jobs:
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
 
-  details:
+  extract_jira_issue_details:
     # wait for both label-adding jobs so labels (including P0)
     # are present when we fetch Jira details.
     needs: [extract]
