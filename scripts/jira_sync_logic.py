@@ -12,7 +12,7 @@ Usage:
   python3 scripts/jira_sync_logic.py --action extract_jira_keys \
       --pr-title "STAG-123 fix something" \
       --pr-body "Fixes: PM-456" \
-      --jira-auth "user@example.com:api_token"
+      --jira-auth "<user email>:<api_token>"
 """
 
 import argparse
