@@ -18,23 +18,13 @@ jobs:
           repository: scylladb/github-automation
           ref: automation-staging-branch
 
-      - name: Save PR title and body
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          printf '%s' "$PR_TITLE" > /tmp/pr_title.txt
-          printf '%s' "$PR_BODY"  > /tmp/pr_body.txt
-
       - name: Extract Jira keys
         id: extract-keys
         env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: |
-          python3 scripts/jira_sync_logic.py --action extract_jira_keys \
-            --pr-title "$(cat /tmp/pr_title.txt)" \
-            --pr-body "$(cat /tmp/pr_body.txt)" \
-            --jira-auth "$JIRA_AUTH"
+        run: python3 scripts/jira_sync_logic.py --action extract_jira_keys
 
   debug:
     needs: extract
