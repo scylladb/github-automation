@@ -9,6 +9,7 @@ Currently supports:
   - add_label_to_jira_issue: Add a label, priority, or Scylla component to Jira issues.
   - extract_jira_issue_details: Fetch Jira issue details and produce a CSV.
   - apply_jira_labels_to_pr: Apply Jira-derived labels to a GitHub PR.
+  - jira_status_transition: Transition Jira issues to a new status.
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
@@ -16,6 +17,7 @@ Usage:
   python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
   python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
   python3 scripts/jira_sync_logic.py --action apply_jira_labels_to_pr
+  python3 scripts/jira_sync_logic.py --action jira_status_transition
 
 Environment variables (for extract_jira_keys):
   PR_TITLE   - The pull request title
@@ -34,6 +36,12 @@ Environment variables (for apply_jira_labels_to_pr):
   OWNER_REPO         - The GitHub repository (owner/repo)
   GITHUB_TOKEN       - GitHub token for PR API calls
 
+Environment variables (for jira_status_transition):
+  DETAILS_CSV      - Full CSV from Jira details
+  TRANSITION_NAME  - Target Jira status name
+  TRANSITION_ID    - Jira transition ID
+  JIRA_AUTH        - Jira auth credential
+
 Environment variables (for add_label_to_jira_issue):
   JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
   LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component, symptom/* for symptom)
@@ -49,11 +57,12 @@ import os
 import re
 import sys
 import time
+from datetime import date, timezone
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -863,6 +872,205 @@ def _run_apply_jira_labels_to_pr() -> None:
 
 
 
+# ---------------------------------------------------------------------------
+# jira_status_transition
+# ---------------------------------------------------------------------------
+
+_WORKING_STATES = {"in progress", "in review", "ready for merge"}
+_CLOSED_STATES = {"done", "won't fix", "duplicate"}
+
+
+def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
+    """POST JSON to a Jira REST endpoint. Returns (http_code, response_body)."""
+    encoded_auth = base64.b64encode(jira_auth.encode()).decode()
+    body = json.dumps(payload).encode()
+
+    req = Request(url, data=body, method="POST")
+    req.add_header("Accept", "application/json")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Basic {encoded_auth}")
+
+    try:
+        with urlopen(req) as resp:
+            return resp.getcode(), resp.read().decode()
+    except HTTPError as exc:
+        return exc.code, exc.read().decode() if exc.fp else str(exc)
+
+
+def _plan_transitions(
+    details_csv: str, transition_name: str,
+) -> tuple[list[tuple[str, str, str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    """Parse the details CSV and categorize issues.
+
+    Returns (to_transition, already_ok, done_issues).
+    Each to_transition item is (key, current_status, start_date, due_date).
+    Each already_ok / done_issues item is (key, current_status).
+    """
+    to_transition: list[tuple[str, str, str, str]] = []
+    already_ok: list[tuple[str, str]] = []
+    done_issues: list[tuple[str, str]] = []
+
+    stripped = details_csv.strip()
+    if not stripped:
+        return to_transition, already_ok, done_issues
+
+    reader = csv.DictReader(io.StringIO(stripped))
+    fieldmap = {(h or "").strip().lower(): h for h in reader.fieldnames or []}
+
+    def get(row: dict, name: str) -> str:
+        h = fieldmap.get(name.lower())
+        return (row.get(h) or "").strip() if h else ""
+
+    for row in reader:
+        key = get(row, "key")
+        status = get(row, "status")
+        start_dt = get(row, "startdate") or get(row, "startDate")
+        due_dt = get(row, "duedate") or get(row, "dueDate")
+        if not key:
+            continue
+
+        if status.lower() == transition_name.lower():
+            already_ok.append((key, status))
+        elif status.lower() in _CLOSED_STATES:
+            done_issues.append((key, status))
+        else:
+            to_transition.append((key, status, start_dt, due_dt))
+
+    return to_transition, already_ok, done_issues
+
+def _set_date_field(key: str, field_id: str, field_label: str, jira_auth: str) -> None:
+    """Set a date field on a Jira issue to today's date (UTC)."""
+    today = date.today().isoformat()
+    print(f"Setting {field_label} to {today} for {key} (field: {field_id})")
+    payload = {"fields": {field_id: today}}
+    code, body_text = _jira_put(f"{JIRA_BASE_URL}/rest/api/3/issue/{key}", payload, jira_auth)
+    if code not in (200, 204):
+        print(f"Warning: Failed to set {field_label} for {key} (HTTP {code})")
+        print(body_text[:200])
+    time.sleep(0.2)
+
+
+def jira_status_transition(
+    details_csv: str,
+    transition_name: str,
+    transition_id: str,
+    jira_auth: str,
+) -> None:
+    """Transition Jira issues to a target status.
+
+    Replicates the logic of jira_transition.yml in pure Python.
+
+    1. Parse the details CSV and categorize issues.
+    2. For issues moving to a working state, set start date if empty.
+    3. For issues moving to a closed state, set due date if empty.
+    4. POST the transition for each issue that needs it.
+    """
+    print("======================================================")
+    print(" Jira Status Transition -- Input Parameters")
+    print("======================================================")
+    print(f"Transition name: {transition_name}")
+    print(f"Transition ID:   {transition_id}")
+    print("details_csv (first 5 lines):")
+    print("------------------------------------------------------")
+    for i, line in enumerate(details_csv.splitlines()):
+        print(line)
+        if i >= 4:
+            break
+    print("------------------------------------------------------\n")
+
+    to_transition, already_ok, done_issues = _plan_transitions(details_csv, transition_name)
+
+    print(f"Target status:           {transition_name}")
+    print(f"Issues already at target: {len(already_ok)}")
+    print(f"Issues in closed state:   {len(done_issues)}")
+    print(f"Issues to transition:     {len(to_transition)}")
+
+    if already_ok:
+        print("----- Already OK (up to 10) -----")
+        for key, status in already_ok[:10]:
+            print(f"  {key} ({status})")
+
+    if done_issues:
+        print("----- Done / closed issues (up to 10) -----")
+        for key, status in done_issues[:10]:
+            print(f"  {key} ({status})")
+
+    if not to_transition:
+        print("No issues require transition. Done.")
+        return
+
+    target_lower = transition_name.lower()
+    is_working = target_lower in _WORKING_STATES
+    is_closed = target_lower in _CLOSED_STATES
+
+    ok = 0
+    failed = 0
+    skipped = 0
+
+    for key, current_status, start_dt, due_dt in to_transition:
+        print(f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})")
+
+        # Set start date for working states if empty
+        if is_working and (not start_dt or start_dt == "null"):
+            _set_date_field(key, START_DATE_FIELD, "start date", jira_auth)
+
+        # Set due date for closed states if empty
+        if is_closed and (not due_dt or due_dt == "null"):
+            _set_date_field(key, DUE_DATE_FIELD, "due date", jira_auth)
+
+        # POST the transition
+        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/transitions"
+        payload = {"transition": {"id": transition_id}}
+        code, body_text = _jira_post(url, payload, jira_auth)
+
+        if code in (200, 204):
+            print(f"OK {key} ({code})")
+            ok += 1
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
+            skipped += 1
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if failed > 0:
+        sys.exit(1)
+
+
+def _run_jira_status_transition() -> None:
+    """CLI entry-point wrapper for jira_status_transition.
+
+    Reads DETAILS_CSV, TRANSITION_NAME, TRANSITION_ID, and JIRA_AUTH
+    from environment variables.
+    """
+    details_csv = os.environ.get("DETAILS_CSV", "")
+    transition_name = os.environ.get("TRANSITION_NAME", "")
+    transition_id = os.environ.get("TRANSITION_ID", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not details_csv:
+        print("Error: DETAILS_CSV env var is not set or empty.")
+        sys.exit(1)
+
+    if not transition_name:
+        print("Error: TRANSITION_NAME env var is not set or empty.")
+        sys.exit(1)
+
+    if not transition_id:
+        print("Error: TRANSITION_ID env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    jira_status_transition(details_csv, transition_name, transition_id, jira_auth)
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -901,6 +1109,7 @@ ACTION_DISPATCH = {
     'add_label_to_jira_issue': _run_add_label_to_jira_issue,
     'extract_jira_issue_details': _run_extract_jira_issue_details,
     'apply_jira_labels_to_pr': _run_apply_jira_labels_to_pr,
+    'jira_status_transition': _run_jira_status_transition,
 }
 
 
