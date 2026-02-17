@@ -29,11 +29,12 @@ from urllib.error import URLError, HTTPError
 AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys']
 
 KNOWN_PROJECT_PREFIXES = {
-    "ANSROLES", "ARGUS", "CLOUD", "CLOUDEVOPS", "CUSTOMER", "CXTOOLS",
-    "DOCTOR", "DRIVER", "DTEST", "FIELDAUTO", "FIELDENG", "ILIAD",
-    "OPERATOR", "PKG", "PKGDASH", "PM", "PUB", "QAINFRA", "QATOOLS",
-    "RELENG", "SCT", "SCYLLADB", "SMI", "STAG", "TOOLS", "UX",
-    "VECTOR", "WEBINSTALL",
+    "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
+    "CUSTOMER", "CXTOOLS", "DOCTOR", "DRIVER", "DTEST",
+    "FIELDAUTO", "FIELDCLOUD", "FIELDCLUS", "FIELDENG", "ILIAD",
+    "OPERATOR", "PKG", "PKGDASH", "PM", "PT", "PUB",
+    "QAINFRA", "QATOOLS", "RELENG", "SCT", "SCYLLADB", "SMI",
+    "STAG", "TOOLS", "UX", "VECTOR", "WEBINSTALL",
 }
 
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
@@ -180,6 +181,9 @@ def _run_extract_jira_keys() -> None:
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
     jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    print(f"PR title: {pr_title}")
+    print(f"PR body: {pr_body}")
 
     if not pr_title:
         print("Warning: PR_TITLE env var is not set or empty.")
