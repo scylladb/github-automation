@@ -7,7 +7,7 @@ on:
         required: true
 
 jobs:
-  extract:
+  extract_jira_keys:
     runs-on: ubuntu-slim
     outputs:
       jira-keys-json: ${{ steps.extract-keys.outputs.jira-keys-json }}
@@ -27,7 +27,7 @@ jobs:
         run: python3 scripts/jira_sync_logic.py --action extract_jira_keys
 
   debug:
-    needs: extract
+    needs: extract_jira_keys
     runs-on: ubuntu-slim
     steps:
       - name: Checkout repository
@@ -46,7 +46,7 @@ jobs:
         run: python3 scripts/jira_sync_logic.py --action debug
 
   add_jira_label:
-    needs: [extract]
+    needs: [extract_jira_keys]
     runs-on: ubuntu-slim
     steps:
       - name: Checkout repository
@@ -65,7 +65,7 @@ jobs:
   # if the triggering label is 'status/release_blocker',
   # ALSO add 'P0' as a Jira label for the same issues.
   add_jira_label_p0_if_release_blocker:
-    needs: [extract]
+    needs: [extract_jira_keys]
     if: ${{ github.event.label.name == 'status/release_blocker' }}
     runs-on: ubuntu-slim
     steps:
@@ -85,7 +85,7 @@ jobs:
   extract_jira_issue_details:
     # wait for both label-adding jobs so labels (including P0)
     # are present when we fetch Jira details.
-    needs: [extract]
+    needs: [extract_jira_keys]
     runs-on: ubuntu-slim
     outputs:
       labels_csv: ${{ steps.extract-details.outputs.labels_csv }}
@@ -105,7 +105,7 @@ jobs:
         run: python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
 
   apply_labels_to_pr:
-    needs: [extract, extract_jira_issue_details]
+    needs: [extract_jira_keys, extract_jira_issue_details]
     runs-on: ubuntu-slim
     permissions:
       contents: read
@@ -130,7 +130,7 @@ jobs:
 
 
   jira_status_transition:
-    needs: [extract, extract_jira_issue_details]
+    needs: [extract_jira_keys, extract_jira_issue_details]
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
     runs-on: ubuntu-slim
     steps:
@@ -164,7 +164,7 @@ jobs:
   # ========================================================================
   add_comment_to_jira_promoted-to-master:
     name: Add 'Promoted to master' comment to Jira issues
-    needs: extract
+    needs: extract_jira_keys
     if: >
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
@@ -183,7 +183,7 @@ jobs:
 
   jira_status_transition_promoted-to-master:
     name: Transition Jira issues to Done (promoted-to-master)
-    needs: [extract, extract_jira_issue_details]
+    needs: [extract_jira_keys, extract_jira_issue_details]
     if: >
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
