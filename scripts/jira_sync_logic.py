@@ -397,6 +397,10 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
                 print(fb_body[:400])
                 failed += 1
 
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue does not exist or no permission. Continuing.")
+            skipped += 1
+
         else:
             print(f"FAIL {key} ({code}) First 400 chars:")
             print(body_text[:400])
