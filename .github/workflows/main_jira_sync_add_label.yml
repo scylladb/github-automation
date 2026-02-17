@@ -86,11 +86,23 @@ jobs:
     # wait for both label-adding jobs so labels (including P0)
     # are present when we fetch Jira details.
     needs: [extract]
-    uses: scylladb/github-automation/.github/workflows/extract_jira_issue_details.yml@automation-staging-branch
-    with:
-      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
+    runs-on: ubuntu-slim
+    outputs:
+      labels_csv: ${{ steps.extract-details.outputs.labels_csv }}
+      csv: ${{ steps.extract-details.outputs.csv }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Extract Jira issue details
+        id: extract-details
+        env:
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
 
   apply_labels_to_pr:
     needs: [extract, details]

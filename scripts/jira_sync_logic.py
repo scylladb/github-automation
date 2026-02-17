@@ -7,16 +7,22 @@ Currently supports:
   - debug: Log GitHub event context and label-specific transition hints.
   - extract_jira_keys: Extract and validate Jira issue keys from PR title/body.
   - add_label_to_jira_issue: Add a label, priority, or Scylla component to Jira issues.
+  - extract_jira_issue_details: Fetch Jira issue details and produce a CSV.
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
   python3 scripts/jira_sync_logic.py --action extract_jira_keys
   python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
+  python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
 
 Environment variables (for extract_jira_keys):
   PR_TITLE   - The pull request title
   PR_BODY    - The pull request body
   JIRA_AUTH  - Jira auth credential "<user email>:<api_token>"
+
+Environment variables (for extract_jira_issue_details):
+  JIRA_KEYS_JSON - JSON array of Jira issue keys
+  JIRA_AUTH       - Jira auth credential "<user email>:<api_token>"
 
 Environment variables (for add_label_to_jira_issue):
   JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
@@ -35,7 +41,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -415,6 +421,174 @@ def _run_add_label_to_jira_issue() -> None:
     add_label_to_jira_issue(jira_keys_json, label, jira_auth)
 
 
+# ---------------------------------------------------------------------------
+# extract_jira_issue_details
+# ---------------------------------------------------------------------------
+
+# CSV columns produced by this action
+_CSV_HEADER = "key,status,labels,assignee,priority,fixVersions,scylla_components,symptoms,startDate,dueDate"
+START_DATE_FIELD = "customfield_10015"
+DUE_DATE_FIELD = "duedate"
+_DETAIL_DELIM = ";"
+
+
+def _jira_get(url: str, jira_auth: str) -> dict | None:
+    """GET JSON from a Jira REST endpoint. Returns parsed JSON or None on failure."""
+    encoded_auth = base64.b64encode(jira_auth.encode()).decode()
+
+    req = Request(url)
+    req.add_header("Accept", "application/json")
+    req.add_header("Authorization", f"Basic {encoded_auth}")
+
+    try:
+        with urlopen(req) as resp:
+            return json.loads(resp.read().decode())
+    except (HTTPError, URLError) as exc:
+        print(f"Warning: GET {url} failed: {exc}")
+        return None
+
+
+def _csv_escape(value: str) -> str:
+    """Wrap a value in double-quotes for CSV, escaping internal quotes."""
+    return '"' + value.replace('"', '""') + '"'
+
+
+def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str]:
+    """Fetch Jira issue details and produce a CSV plus a deduplicated labels string.
+
+    Replicates the logic of extract_jira_issue_details.yml in pure Python.
+
+    Returns (csv_content, labels_csv).
+    """
+    keys = _parse_jira_keys_json(jira_keys_json)
+
+    if not keys:
+        print("---------------------------------------------------")
+        print("Generated CSV (empty-keys short-circuit):")
+        print("---------------------------------------------------")
+        print(_CSV_HEADER)
+        print("---------------------------------------------------")
+        return _CSV_HEADER + "\n", ""
+
+    fields_param = ",".join([
+        "status", "labels", "assignee", "priority", "fixVersions",
+        SCYLLA_COMPONENTS_FIELD, SYMPTOM_FIELD, START_DATE_FIELD, DUE_DATE_FIELD,
+    ])
+
+    csv_lines: list[str] = [_CSV_HEADER]
+    all_labels: list[str] = []
+
+    for key in keys:
+        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields={fields_param}"
+        print(f"Fetching Jira issue: {key}")
+
+        resp = _jira_get(url, jira_auth)
+        if resp is None:
+            print(f"Skipping {key} - fetch failed")
+            continue
+
+        fields = resp.get("fields", {})
+
+        status = (fields.get("status") or {}).get("name", "")
+        assignee = (fields.get("assignee") or {}).get("displayName", "")
+        priority = (fields.get("priority") or {}).get("name", "")
+
+        labels_list = fields.get("labels") or []
+        labels_str = _DETAIL_DELIM.join(labels_list)
+        all_labels.extend(labels_list)
+
+        fix_versions_raw = fields.get("fixVersions") or []
+        fix_versions = _DETAIL_DELIM.join(
+            v.get("name", "") for v in fix_versions_raw
+        )
+
+        components_raw = fields.get(SCYLLA_COMPONENTS_FIELD)
+        if isinstance(components_raw, list):
+            components = _DETAIL_DELIM.join(
+                c.get("value", "") if isinstance(c, dict) else str(c)
+                for c in components_raw
+            )
+        elif components_raw is not None:
+            components = str(components_raw)
+        else:
+            components = ""
+
+        symptoms_raw = fields.get(SYMPTOM_FIELD)
+        if isinstance(symptoms_raw, list):
+            symptoms = _DETAIL_DELIM.join(
+                s.get("value", "") if isinstance(s, dict) else str(s)
+                for s in symptoms_raw
+            )
+        elif symptoms_raw is not None:
+            symptoms = str(symptoms_raw)
+        else:
+            symptoms = ""
+
+        start_date = fields.get(START_DATE_FIELD) or ""
+        due_date = fields.get(DUE_DATE_FIELD) or ""
+
+        row = ",".join([
+            _csv_escape(key),
+            _csv_escape(status),
+            _csv_escape(labels_str),
+            _csv_escape(assignee),
+            _csv_escape(priority),
+            _csv_escape(fix_versions),
+            _csv_escape(components),
+            _csv_escape(symptoms),
+            _csv_escape(start_date),
+            _csv_escape(due_date),
+        ])
+        csv_lines.append(row)
+
+    # Deduplicate labels
+    if all_labels:
+        labels_csv = ",".join(sorted(set(all_labels)))
+    else:
+        labels_csv = ""
+
+    csv_content = "\n".join(csv_lines) + "\n"
+
+    print("---------------------------------------------------")
+    print("Generated CSV (after fetching issues):")
+    print("Showing first 20 lines:")
+    print("---------------------------------------------------")
+    for line in csv_lines[:20]:
+        print(line)
+    print("---------------------------------------------------")
+
+    return csv_content, labels_csv
+
+
+def _run_extract_jira_issue_details() -> None:
+    """CLI entry-point wrapper for extract_jira_issue_details.
+
+    Reads JIRA_KEYS_JSON and JIRA_AUTH from environment variables.
+    Writes labels_csv and csv to GITHUB_OUTPUT.
+    """
+    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not jira_keys_json:
+        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    print(f"labels_csv={labels_csv}")
+
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as f:
+            f.write(f"labels_csv={labels_csv}\n")
+            f.write(f"csv<<EOF\n")
+            f.write(csv_content)
+            f.write("EOF\n")
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -451,6 +625,7 @@ ACTION_DISPATCH = {
     'debug': debug_sync_context,
     'extract_jira_keys': _run_extract_jira_keys,
     'add_label_to_jira_issue': _run_add_label_to_jira_issue,
+    'extract_jira_issue_details': _run_extract_jira_issue_details,
 }
 
 
