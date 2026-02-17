@@ -8,12 +8,14 @@ Currently supports:
   - extract_jira_keys: Extract and validate Jira issue keys from PR title/body.
   - add_label_to_jira_issue: Add a label, priority, or Scylla component to Jira issues.
   - extract_jira_issue_details: Fetch Jira issue details and produce a CSV.
+  - apply_jira_labels_to_pr: Apply Jira-derived labels to a GitHub PR.
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
   python3 scripts/jira_sync_logic.py --action extract_jira_keys
   python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
   python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
+  python3 scripts/jira_sync_logic.py --action apply_jira_labels_to_pr
 
 Environment variables (for extract_jira_keys):
   PR_TITLE   - The pull request title
@@ -24,6 +26,14 @@ Environment variables (for extract_jira_issue_details):
   JIRA_KEYS_JSON - JSON array of Jira issue keys
   JIRA_AUTH       - Jira auth credential "<user email>:<api_token>"
 
+Environment variables (for apply_jira_labels_to_pr):
+  PR_NUMBER          - The PR number
+  LABELS_CSV         - Comma-separated labels string
+  DETAILS_CSV        - Full CSV from Jira details
+  NEW_PRIORITY_LABEL - The label from the triggering event
+  OWNER_REPO         - The GitHub repository (owner/repo)
+  GITHUB_TOKEN       - GitHub token for PR API calls
+
 Environment variables (for add_label_to_jira_issue):
   JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
   LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component, symptom/* for symptom)
@@ -32,6 +42,8 @@ Environment variables (for add_label_to_jira_issue):
 
 import argparse
 import base64
+import csv
+import io
 import json
 import os
 import re
@@ -41,7 +53,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -589,6 +601,248 @@ def _run_extract_jira_issue_details() -> None:
             f.write(csv_content)
             f.write("EOF\n")
 
+
+
+# ---------------------------------------------------------------------------
+# apply_jira_labels_to_pr
+# ---------------------------------------------------------------------------
+
+# Jira priority name -> P* rank mapping
+_PRIORITY_RANK_MAP = {
+    "p0": 0, "highest": 0, "blocker": 0,
+    "p1": 1, "critical": 1, "high": 1,
+    "p2": 2, "medium": 2, "major": 2,
+    "p3": 3, "low": 3, "minor": 3,
+    "p4": 4, "lowest": 4, "trivial": 4,
+}
+
+_GH_API_VERSION = "2022-11-28"
+
+
+def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -> tuple[int, str]:
+    """Make a GitHub REST API request. Returns (http_code, response_body)."""
+    body = json.dumps(payload).encode() if payload else None
+
+    req = Request(url, data=body, method=method)
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Authorization", f"Bearer {gh_token}")
+    req.add_header("X-GitHub-Api-Version", _GH_API_VERSION)
+    if body:
+        req.add_header("Content-Type", "application/json; charset=utf-8")
+
+    try:
+        with urlopen(req) as resp:
+            return resp.getcode(), resp.read().decode()
+    except HTTPError as exc:
+        return exc.code, exc.read().decode() if exc.fp else str(exc)
+
+
+def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) -> list[str]:
+    """Compute the final list of labels to apply to a PR.
+
+    1. Parse labels_csv into a deduped list.
+    2. Strip any existing P0..P4 from that list.
+    3. Parse details_csv to derive the best Jira priority (P*) and area/* labels.
+    4. If the triggering event label is P0..P4 it overrides the Jira priority.
+    5. Append area/* labels.
+    """
+    # 1) Parse labels_csv
+    raw_labels = [s.strip() for s in labels_csv.split(",")]
+    seen: set[str] = set()
+    labels: list[str] = []
+    for s in raw_labels:
+        if s and s not in seen:
+            seen.add(s)
+            labels.append(s)
+
+    # 2) Remove P0..P4 from base list
+    priority_names = {"P0", "P1", "P2", "P3", "P4"}
+    labels = [lb for lb in labels if lb not in priority_names]
+
+    # 3) Parse details CSV for priority + scylla_components
+    best_rank = None
+    area_labels: list[str] = []
+    area_seen: set[str] = set()
+
+    stripped_csv = details_csv.strip()
+    if stripped_csv:
+        reader = csv.DictReader(io.StringIO(stripped_csv))
+        for row in reader:
+            prio = (row.get("priority") or "").strip()
+            if prio:
+                rank = _PRIORITY_RANK_MAP.get(prio.lower())
+                if rank is not None:
+                    if best_rank is None or rank < best_rank:
+                        best_rank = rank
+
+            comp_raw = (row.get("scylla_components") or "").strip()
+            if comp_raw:
+                for part in comp_raw.split(";"):
+                    comp = part.strip()
+                    if not comp:
+                        continue
+                    safe = re.sub(r"\s+", "_", comp)
+                    label = f"area/{safe}"
+                    if label not in area_seen:
+                        area_seen.add(label)
+                        area_labels.append(label)
+
+    # 4) Decide P* label
+    priority_label = None
+    if best_rank is not None:
+        priority_label = f"P{best_rank}"
+
+    new_p = (new_priority_label or "").strip()
+    if new_p and re.match(r"(?i)^P[0-4]$", new_p):
+        print(f"Overriding Jira priority with PR-added label: {new_p}")
+        priority_label = new_p.upper()
+
+    if priority_label:
+        print(f"Effective priority label: {priority_label}")
+        if priority_label not in labels:
+            labels.insert(0, priority_label)
+    else:
+        print("No effective P* priority (from Jira or event); not adding P* label.")
+
+    # 5) Append area/* labels
+    for area in area_labels:
+        if area not in labels:
+            labels.append(area)
+
+    print(f"Final labels to apply: {labels}")
+    return labels
+
+
+def _remove_stale_priority_labels(
+    owner_repo: str,
+    pr_number: int,
+    desired_labels: list[str],
+    gh_token: str,
+) -> None:
+    """Remove P0-P4 labels from a PR that are not in the desired set."""
+    issue_api = f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}"
+
+    desired_p = {lb for lb in desired_labels if re.match(r"^P[0-4]$", lb)}
+    if not desired_p:
+        print("No desired P* labels computed; keeping existing P* labels unchanged.")
+        return
+
+    print(f"Fetching existing labels for PR #{pr_number}...")
+    code, body = _gh_api("GET", f"{issue_api}/labels", gh_token)
+    if code != 200:
+        print(f"Warning: failed to fetch existing labels (HTTP {code})")
+        return
+
+    existing = {item["name"] for item in json.loads(body)}
+    existing_p = {lb for lb in existing if re.match(r"^P[0-4]$", lb)}
+
+    for p in sorted(existing_p):
+        if p in desired_p:
+            print(f"Keeping existing priority label: {p} (also desired)")
+        else:
+            print(f"Removing existing priority label not desired anymore: {p}")
+            del_code, _ = _gh_api("DELETE", f"{issue_api}/labels/{p}", gh_token)
+            print(f"Delete {p} -> HTTP {del_code}")
+
+
+def apply_jira_labels_to_pr(
+    pr_number: int,
+    labels_csv: str,
+    details_csv: str,
+    new_priority_label: str,
+    owner_repo: str,
+    gh_token: str,
+) -> None:
+    """Apply Jira-derived labels to a GitHub PR.
+
+    Replicates the logic of apply_labels_to_pr.yml in pure Python.
+
+    1. Compute the final label set (priority, area/*, plain labels).
+    2. Remove stale P0-P4 labels from the PR.
+    3. Add each computed label to the PR via the GitHub API.
+    """
+    print("======================================================")
+    print(" Apply Labels to PR -- Input Parameters")
+    print("======================================================")
+    print(f"PR Number:       {pr_number}")
+    print(f"labels_csv:      {labels_csv}")
+    print(f"NEW_PRIORITY_LABEL (from event): {new_priority_label or '<none>'}")
+    print("details_csv (first 5 lines):")
+    print("------------------------------------------------------")
+    for i, line in enumerate(details_csv.splitlines()):
+        print(line)
+        if i >= 4:
+            break
+    print("------------------------------------------------------\n")
+
+    labels = _compute_labels(labels_csv, details_csv, new_priority_label)
+
+    if not labels:
+        print("No labels to apply. Skipping.")
+        return
+
+    _remove_stale_priority_labels(owner_repo, pr_number, labels, gh_token)
+
+    issue_api = f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}/labels"
+
+    ok = 0
+    failed = 0
+    for lb in labels:
+        lb = lb.strip()
+        if not lb:
+            continue
+
+        print("----------------------------------------")
+        print(f"Applying label: '{lb}'")
+
+        code, body_text = _gh_api("POST", issue_api, gh_token, {"labels": [lb]})
+
+        if code in (200, 201):
+            print(f"Result: success (HTTP {code}).")
+            ok += 1
+        else:
+            print(f"Result: failed (HTTP {code}). Body (first 200 chars):")
+            print(body_text[:200])
+            failed += 1
+
+    print(f"Summary: ok={ok} failed={failed}")
+
+
+def _run_apply_jira_labels_to_pr() -> None:
+    """CLI entry-point wrapper for apply_jira_labels_to_pr.
+
+    Reads PR_NUMBER, LABELS_CSV, DETAILS_CSV, NEW_PRIORITY_LABEL,
+    OWNER_REPO, and GITHUB_TOKEN from environment variables.
+    """
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    labels_csv = os.environ.get("LABELS_CSV", "")
+    details_csv = os.environ.get("DETAILS_CSV", "")
+    new_priority_label = os.environ.get("NEW_PRIORITY_LABEL", "")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    apply_jira_labels_to_pr(pr_number, labels_csv, details_csv, new_priority_label, owner_repo, gh_token)
+
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -626,6 +880,7 @@ ACTION_DISPATCH = {
     'extract_jira_keys': _run_extract_jira_keys,
     'add_label_to_jira_issue': _run_add_label_to_jira_issue,
     'extract_jira_issue_details': _run_extract_jira_issue_details,
+    'apply_jira_labels_to_pr': _run_apply_jira_labels_to_pr,
 }
 
 
