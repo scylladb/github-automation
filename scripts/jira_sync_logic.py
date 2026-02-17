@@ -6,27 +6,36 @@ Dispatches to the requested action based on the --action CLI argument.
 Currently supports:
   - debug: Log GitHub event context and label-specific transition hints.
   - extract_jira_keys: Extract and validate Jira issue keys from PR title/body.
+  - add_label_to_jira_issue: Add a label, priority, or Scylla component to Jira issues.
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
   python3 scripts/jira_sync_logic.py --action extract_jira_keys
+  python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
 
 Environment variables (for extract_jira_keys):
   PR_TITLE   - The pull request title
   PR_BODY    - The pull request body
   JIRA_AUTH  - Jira auth credential "<user email>:<api_token>"
+
+Environment variables (for add_label_to_jira_issue):
+  JIRA_KEYS_JSON - JSON array of Jira issue keys, e.g. '["STAG-1","STAG-2"]'
+  LABEL          - The label to add (plain label, P0-P4 for priority, area/* for Scylla component, symptom/* for symptom)
+  JIRA_AUTH      - Jira auth credential "<user email>:<api_token>"
 """
 
 import argparse
+import base64
 import json
 import os
 import re
 import sys
+import time
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -38,6 +47,8 @@ KNOWN_PROJECT_PREFIXES = {
 }
 
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
+SCYLLA_COMPONENTS_FIELD = "customfield_10321"
+SYMPTOM_FIELD = "customfield_11120"
 
 # Regex: any JIRA-style key (PROJECT-123) in any text
 _JIRA_KEY_RE = re.compile(r'[A-Z]+-[0-9]+')
@@ -48,6 +59,9 @@ _CLOSING_KEYWORD_RE = re.compile(
     r'\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Z]+-[0-9]+)',
     re.IGNORECASE,
 )
+
+# Priority names recognised as Jira priority values
+_PRIORITY_NAMES = {"P0", "P1", "P2", "P3", "P4"}
 
 
 def _sanitize(text: str) -> str:
@@ -85,7 +99,6 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
     """
     url = f"{JIRA_BASE_URL}/rest/api/3/project/search?maxResults=1000"
 
-    import base64
     encoded = base64.b64encode(jira_auth.encode()).decode()
 
     req = Request(url)
@@ -202,6 +215,199 @@ def _run_extract_jira_keys() -> None:
             f.write(f"jira-keys-json={output}\n")
 
 
+# ---------------------------------------------------------------------------
+# add_label_to_jira_issue
+# ---------------------------------------------------------------------------
+
+def _parse_jira_keys_json(raw: str) -> list[str]:
+    """Parse and deduplicate a JSON array of Jira keys.
+
+    Returns an empty list when the input is empty, sentinel, or invalid.
+    """
+    raw = raw.strip()
+    print(f"Incoming jira_keys_json: {raw}")
+
+    if not raw or raw in ('[]', '[""]', '["__NO_KEYS_FOUND__"]'):
+        print("No usable Jira keys in jira_keys_json; nothing to update.")
+        return []
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: jira_keys_json is not valid JSON: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if not isinstance(data, list):
+        print(f"ERROR: jira_keys_json must be a JSON array; got: {type(data)}", file=sys.stderr)
+        sys.exit(1)
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, str):
+            continue
+        k = item.strip()
+        if k and k != "__NO_KEYS_FOUND__" and k not in seen:
+            seen.add(k)
+            keys.append(k)
+
+    print(f"Found {len(keys)} issue(s).")
+    return keys
+
+
+def _determine_mode(label: str) -> tuple[str, str | None, dict | None]:
+    """Decide the update mode and build the appropriate JSON payload.
+
+    Returns (mode, priority_name_or_none, payload_dict).
+    Modes: "priority", "scylla_component", "symptom", "label".
+    """
+    label_upper = label.upper()
+    print(f"Incoming label: '{label}'")
+
+    # P0..P4 -> set priority field
+    if label_upper in _PRIORITY_NAMES:
+        payload = {"fields": {"priority": {"name": label_upper}}}
+        return "priority", label_upper, payload
+
+    # area/* -> add Scylla component
+    if label.startswith("area/"):
+        component_value = label[len("area/"):].replace("_", " ")
+        print(f"Derived Scylla component value: '{component_value}' from label '{label}'")
+        payload = {
+            "update": {
+                SCYLLA_COMPONENTS_FIELD: [{"add": {"value": component_value}}]
+            }
+        }
+        return "scylla_component", None, payload
+
+    # symptom/* -> add symptom custom field
+    if label.startswith("symptom/"):
+        symptom_value = label[len("symptom/"):].replace("_", " ")
+        print(f"Derived symptom value: '{symptom_value}' from label '{label}'")
+        payload = {
+            "update": {
+                SYMPTOM_FIELD: [{"add": {"value": symptom_value}}]
+            }
+        }
+        return "symptom", None, payload
+
+    # Fallback: normal Jira label
+    payload = {"update": {"labels": [{"add": label}]}}
+    return "label", None, payload
+
+
+def _jira_put(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
+    """PUT JSON to a Jira REST endpoint. Returns (http_code, response_body)."""
+    encoded_auth = base64.b64encode(jira_auth.encode()).decode()
+    body = json.dumps(payload).encode()
+
+    req = Request(url, data=body, method="PUT")
+    req.add_header("Accept", "application/json")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Basic {encoded_auth}")
+
+    try:
+        with urlopen(req) as resp:
+            return resp.getcode(), resp.read().decode()
+    except HTTPError as exc:
+        return exc.code, exc.read().decode() if exc.fp else str(exc)
+
+
+def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> None:
+    """Add a label, priority, or Scylla component to every Jira issue in *jira_keys_json*.
+
+    Replicates the logic of add_label_to_jira_issue.yml in pure Python.
+
+    Modes:
+      - P0..P4           -> sets the issue priority field
+      - area/<component>   -> adds a Scylla component (customfield_10321)
+      - symptom/<symptom>  -> adds a symptom (customfield_11120)
+      - anything else      -> adds a plain Jira label
+    """
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        return
+
+    mode, priority_name, payload = _determine_mode(label)
+
+    if mode == "priority":
+        action_desc = "Set priority"
+        print(f"Will set priority to: {priority_name}")
+    elif mode == "scylla_component":
+        action_desc = "Add Scylla component"
+        print(f"Will add Scylla component derived from label: {label}")
+    elif mode == "symptom":
+        action_desc = "Add symptom"
+        print(f"Will add symptom derived from label: {label}")
+    else:
+        action_desc = "Add label"
+        print(f"Will add label: {label}")
+
+    ok = 0
+    skipped = 0
+    failed = 0
+
+    for key in keys:
+        issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}"
+        print(f"{action_desc} on {key} ...")
+
+        code, body_text = _jira_put(issue_url, payload, jira_auth)
+
+        if code in (200, 204):
+            print(f"OK {key} ({code})")
+            ok += 1
+
+        elif code == 400 and mode == "label":
+            print(f"SKIP {key} ({code}) likely already has the label. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        elif code == 400 and mode == "scylla_component":
+            print(f"SKIP {key} ({code}) invalid Scylla component option. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        elif code == 400 and mode == "symptom":
+            print(f"SKIP {key} ({code}) invalid symptom option. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if failed > 0:
+        sys.exit(1)
+
+
+def _run_add_label_to_jira_issue() -> None:
+    """CLI entry-point wrapper for add_label_to_jira_issue.
+
+    Reads JIRA_KEYS_JSON, LABEL, and JIRA_AUTH from environment variables.
+    """
+    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
+    label = os.environ.get("LABEL", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not jira_keys_json:
+        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
+        sys.exit(1)
+
+    if not label:
+        print("Error: LABEL env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    add_label_to_jira_issue(jira_keys_json, label, jira_auth)
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -237,6 +443,7 @@ def debug_sync_context():
 ACTION_DISPATCH = {
     'debug': debug_sync_context,
     'extract_jira_keys': _run_extract_jira_keys,
+    'add_label_to_jira_issue': _run_add_label_to_jira_issue,
 }
 
 
