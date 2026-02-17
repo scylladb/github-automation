@@ -426,7 +426,7 @@ def _run_add_label_to_jira_issue() -> None:
 # ---------------------------------------------------------------------------
 
 # CSV columns produced by this action
-_CSV_HEADER = "key,status,labels,assignee,priority,fixVersions,scylla_components,startDate,dueDate"
+_CSV_HEADER = "key,status,labels,assignee,priority,fixVersions,scylla_components,symptoms,startDate,dueDate"
 START_DATE_FIELD = "customfield_10015"
 DUE_DATE_FIELD = "duedate"
 _DETAIL_DELIM = ";"
@@ -472,7 +472,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
 
     fields_param = ",".join([
         "status", "labels", "assignee", "priority", "fixVersions",
-        SCYLLA_COMPONENTS_FIELD, START_DATE_FIELD, DUE_DATE_FIELD,
+        SCYLLA_COMPONENTS_FIELD, SYMPTOM_FIELD, START_DATE_FIELD, DUE_DATE_FIELD,
     ])
 
     csv_lines: list[str] = [_CSV_HEADER]
@@ -513,6 +513,17 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         else:
             components = ""
 
+        symptoms_raw = fields.get(SYMPTOM_FIELD)
+        if isinstance(symptoms_raw, list):
+            symptoms = _DETAIL_DELIM.join(
+                s.get("value", "") if isinstance(s, dict) else str(s)
+                for s in symptoms_raw
+            )
+        elif symptoms_raw is not None:
+            symptoms = str(symptoms_raw)
+        else:
+            symptoms = ""
+
         start_date = fields.get(START_DATE_FIELD) or ""
         due_date = fields.get(DUE_DATE_FIELD) or ""
 
@@ -524,6 +535,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
             _csv_escape(priority),
             _csv_escape(fix_versions),
             _csv_escape(components),
+            _csv_escape(symptoms),
             _csv_escape(start_date),
             _csv_escape(due_date),
         ])
