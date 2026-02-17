@@ -9,10 +9,12 @@ Currently supports:
 
 Usage:
   python3 scripts/jira_sync_logic.py --action debug
-  python3 scripts/jira_sync_logic.py --action extract_jira_keys \
-      --pr-title "STAG-123 fix something" \
-      --pr-body "Fixes: PM-456" \
-      --jira-auth "<user email>:<api_token>"
+  python3 scripts/jira_sync_logic.py --action extract_jira_keys
+
+Environment variables (for extract_jira_keys):
+  PR_TITLE   - The pull request title
+  PR_BODY    - The pull request body
+  JIRA_AUTH  - Jira auth credential "<user email>:<api_token>"
 """
 
 import argparse
@@ -170,14 +172,20 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     return result
 
 
-def _run_extract_jira_keys(args: argparse.Namespace) -> None:
-    """CLI entry-point wrapper for extract_jira_keys."""
-    pr_title = args.pr_title or ""
-    pr_body = args.pr_body or ""
-    jira_auth = args.jira_auth or os.environ.get("JIRA_AUTH", "")
+def _run_extract_jira_keys() -> None:
+    """CLI entry-point wrapper for extract_jira_keys.
+
+    Reads PR_TITLE, PR_BODY, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_title:
+        print("Warning: PR_TITLE env var is not set or empty.")
 
     if not jira_auth:
-        print("Warning: No --jira-auth provided and JIRA_AUTH env var not set. "
+        print("Warning: JIRA_AUTH env var is not set. "
               "Jira API fallback for unknown prefixes will be skipped.")
 
     keys = extract_jira_keys(pr_title, pr_body, jira_auth)
@@ -224,7 +232,7 @@ def debug_sync_context():
 
 ACTION_DISPATCH = {
     'debug': debug_sync_context,
-    'extract_jira_keys': None,  # handled separately (needs parsed args)
+    'extract_jira_keys': _run_extract_jira_keys,
 }
 
 
@@ -238,29 +246,9 @@ def main():
         choices=AVAILABLE_ACTIONS,
         help='The action to execute'
     )
-    parser.add_argument(
-        '--pr-title',
-        default=None,
-        help='PR title text (for extract_jira_keys)'
-    )
-    parser.add_argument(
-        '--pr-body',
-        default=None,
-        help='PR body text (for extract_jira_keys)'
-    )
-    parser.add_argument(
-        '--jira-auth',
-        default=None,
-        help='Jira auth credential "email:api_token" (for extract_jira_keys). '
-             'Falls back to JIRA_AUTH env var.'
-    )
     args = parser.parse_args()
 
     print(f"=== Jira Sync: {args.action} ===")
-
-    if args.action == 'extract_jira_keys':
-        _run_extract_jira_keys(args)
-        return 0
 
     handler = ACTION_DISPATCH.get(args.action)
     if not handler:
