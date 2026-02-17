@@ -47,24 +47,40 @@ jobs:
 
   add_jira_label:
     needs: [extract]
-    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@automation-staging-branch
-    with:
-      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
-      label:       ${{ github.event.label.name }}
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Add label to Jira issues
+        env:
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          LABEL: ${{ github.event.label.name }}
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
 
   # if the triggering label is 'status/release_blocker',
   # ALSO add 'P0' as a Jira label for the same issues.
   add_jira_label_p0_if_release_blocker:
     needs: [extract]
     if: ${{ github.event.label.name == 'status/release_blocker' }}
-    uses: scylladb/github-automation/.github/workflows/add_label_to_jira_issue.yml@automation-staging-branch
-    with:
-      jira_keys_json: ${{ needs.extract.outputs['jira-keys-json'] }}
-      label:          P0
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Add P0 priority to Jira issues
+        env:
+          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          LABEL: P0
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
 
   details:
     # wait for both label-adding jobs so labels (including P0)
