@@ -41,7 +41,7 @@ jobs:
           GITHUB_CONTEXT: ${{ toJson(github) }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
           TRIGGERING_LABEL: ${{ github.event.label.name }}
         run: python3 scripts/jira_sync_logic.py --action debug
 
@@ -57,7 +57,7 @@ jobs:
 
       - name: Add label to Jira issues
         env:
-          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
           LABEL: ${{ github.event.label.name }}
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
@@ -77,7 +77,7 @@ jobs:
 
       - name: Add P0 priority to Jira issues
         env:
-          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
           LABEL: P0
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
@@ -100,7 +100,7 @@ jobs:
       - name: Extract Jira issue details
         id: extract-details
         env:
-          JIRA_KEYS_JSON: ${{ needs.extract.outputs['jira-keys-json'] }}
+          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
 
@@ -156,10 +156,10 @@ jobs:
     if: >
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
-      needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
+      needs.extract_jira_keys.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     strategy:
       matrix:
-        jira_key: ${{ fromJson(needs.extract.outputs['jira-keys-json']) }}
+        jira_key: ${{ fromJson(needs.extract_jira_keys.outputs['jira-keys-json']) }}
     uses: scylladb/github-automation/.github/workflows/add_comment_to_jira.yml@automation-staging-branch
     with:
       jira_key: ${{ matrix.jira_key }}
@@ -175,7 +175,7 @@ jobs:
     if: >
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
-      needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
+      needs.extract_jira_keys.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     runs-on: ubuntu-slim
     steps:
       - name: Checkout repository
