@@ -27,10 +27,11 @@ from urllib.error import URLError, HTTPError
 AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys']
 
 KNOWN_PROJECT_PREFIXES = {
-    "RELENG", "CLOUD", "SCYLLADB", "PKG", "PM", "CUSTOMER",
-    "VECTOR", "ANSROLES", "CLOUDEVOPS", "CXTOOLS", "DOCTOR",
-    "FIELDAUTO", "FIELDENG", "ILIAD", "OPERATOR", "PKGDASH",
-    "PUB", "SMI", "WEBINSTALL", "STAG",
+    "ANSROLES", "ARGUS", "CLOUD", "CLOUDEVOPS", "CUSTOMER", "CXTOOLS",
+    "DOCTOR", "DRIVER", "DTEST", "FIELDAUTO", "FIELDENG", "ILIAD",
+    "OPERATOR", "PKG", "PKGDASH", "PM", "PUB", "QAINFRA", "QATOOLS",
+    "RELENG", "SCT", "SCYLLADB", "SMI", "STAG", "TOOLS", "UX",
+    "VECTOR", "WEBINSTALL",
 }
 
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
