@@ -140,25 +140,13 @@ jobs:
           repository: scylladb/github-automation
           ref: automation-staging-branch
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Run Jira transition script
+      - name: Transition Jira issues to Ready for Merge
         env:
+          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
+          TRANSITION_NAME: "Ready for Merge"
+          TRANSITION_ID: "131"
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: |
-          python scripts/jira_sync_modules.py \
-            --module status_transition \
-            --csv-content "${{ needs.extract_jira_issue_details.outputs.csv }}" \
-            --transition-id "131" \
-            --transition-name "Ready for Merge" \
-            --jira-auth "$JIRA_AUTH"
-
+        run: python3 scripts/jira_sync_logic.py --action jira_status_transition
   # ========================================================================
   # promoted-to-master label: Close Jira issues (only for scylladb/staging)
   # ========================================================================
@@ -188,10 +176,18 @@ jobs:
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
       needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
-    uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
-    with:
-      details_csv:     ${{ needs.extract_jira_issue_details.outputs.csv }}
-      transition_name: "Done"
-      transition_id:   "141"
-    secrets:
-      jira_auth: ${{ secrets.caller_jira_auth }}
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Transition Jira issues to Done
+        env:
+          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
+          TRANSITION_NAME: "Done"
+          TRANSITION_ID: "141"
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action jira_status_transition
