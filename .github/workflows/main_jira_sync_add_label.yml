@@ -105,15 +105,32 @@ jobs:
         run: python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
 
   apply_labels_to_pr:
-    needs: [extract, details]
-    uses: scylladb/github-automation/.github/workflows/apply_labels_to_pr.yml@automation-staging-branch
-    with:
-      pr_number:  ${{ github.event.pull_request.number }}
-      labels_csv: ${{ needs.details.outputs.labels_csv }}
-      details_csv: ${{ needs.details.outputs.csv }}
+    needs: [extract, extract_jira_issue_details]
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Apply Jira labels to PR
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELS_CSV: ${{ needs.extract_jira_issue_details.outputs.labels_csv }}
+          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
+          NEW_PRIORITY_LABEL: ${{ github.event.label.name }}
+          OWNER_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/jira_sync_logic.py --action apply_jira_labels_to_pr
+
 
   jira_status_transition:
-    needs: [extract, details]
+    needs: [extract, extract_jira_issue_details]
     if: ${{ github.event.label.name == 'status/merge_candidate' }}
     runs-on: ubuntu-slim
     steps:
@@ -137,7 +154,7 @@ jobs:
         run: |
           python scripts/jira_sync_modules.py \
             --module status_transition \
-            --csv-content "${{ needs.details.outputs.csv }}" \
+            --csv-content "${{ needs.extract_jira_issue_details.outputs.csv }}" \
             --transition-id "131" \
             --transition-name "Ready for Merge" \
             --jira-auth "$JIRA_AUTH"
@@ -166,14 +183,14 @@ jobs:
 
   jira_status_transition_promoted-to-master:
     name: Transition Jira issues to Done (promoted-to-master)
-    needs: [extract, details]
+    needs: [extract, extract_jira_issue_details]
     if: >
       github.event.label.name == 'promoted-to-master' &&
       github.repository == 'scylladb/staging' &&
       needs.extract.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
     uses: scylladb/github-automation/.github/workflows/jira_transition.yml@automation-staging-branch
     with:
-      details_csv:     ${{ needs.details.outputs.csv }}
+      details_csv:     ${{ needs.extract_jira_issue_details.outputs.csv }}
       transition_name: "Done"
       transition_id:   "141"
     secrets:
