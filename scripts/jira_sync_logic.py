@@ -360,7 +360,7 @@ def _jira_put(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
 
 
-def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> None:
+def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
     """Add a label, priority, or Scylla component to every Jira issue in *jira_keys_json*.
 
     Replicates the logic of add_label_to_jira_issue.yml in pure Python.
@@ -373,7 +373,7 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
     """
     keys = _parse_jira_keys_json(jira_keys_json)
     if not keys:
-        return
+        return []
 
     mode, priority_name, payload = _determine_mode(label)
 
@@ -393,6 +393,7 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
     ok = 0
     skipped = 0
     failed = 0
+    not_found_keys: list[str] = []
 
     for key in keys:
         issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}"
@@ -421,14 +422,19 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
             elif fb_code == 400:
                 print(f"SKIP {key} (fallback label, {fb_code}) likely already has the label.")
                 skipped += 1
+            elif fb_code == 404:
+                print(f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing.")
+                skipped += 1
+                not_found_keys.append(key)
             else:
                 print(f"FAIL {key} (fallback label, {fb_code}) First 400 chars:")
                 print(fb_body[:400])
                 failed += 1
 
         elif code == 404:
-            print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
+            print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
             skipped += 1
+            not_found_keys.append(key)
 
         else:
             print(f"FAIL {key} ({code}) First 400 chars:")
@@ -438,8 +444,11 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
         time.sleep(0.2)
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if not_found_keys:
+        print(f"Not-found keys (will be removed from further processing): {not_found_keys}")
     if failed > 0:
         sys.exit(1)
+    return not_found_keys
 
 
 def _run_add_label_to_jira_issue() -> None:
@@ -1276,7 +1285,16 @@ def manage_labeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / add_label_to_jira_issue")
     print("=" * 60)
-    add_label_to_jira_issue(jira_keys_json, triggering_label, jira_auth)
+    not_found = add_label_to_jira_issue(jira_keys_json, triggering_label, jira_auth)
+
+    # Remove issues that were not found (404) from all subsequent steps
+    if not_found:
+        keys = [k for k in keys if k not in not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 3: add P0 when status/release_blocker ---
     if triggering_label == "status/release_blocker":
