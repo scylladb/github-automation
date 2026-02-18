@@ -7,105 +7,7 @@ on:
         required: true
 
 jobs:
-  extract_jira_keys:
-    runs-on: ubuntu-slim
-    outputs:
-      jira-keys-json: ${{ steps.extract-keys.outputs.jira-keys-json }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Extract Jira keys
-        id: extract-keys
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action extract_jira_keys
-
-  debug:
-    needs: extract_jira_keys
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Run debug logging script
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_EVENT_ACTION: ${{ github.event.action }}
-          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
-          TRIGGERING_LABEL: ${{ github.event.label.name }}
-        run: python3 scripts/jira_sync_logic.py --action debug
-
-  add_jira_label:
-    needs: [extract_jira_keys]
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Add label to Jira issues
-        env:
-          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
-          LABEL: ${{ github.event.label.name }}
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
-
-  # if the triggering label is 'status/release_blocker',
-  # ALSO add 'P0' as a Jira label for the same issues.
-  add_jira_label_p0_if_release_blocker:
-    needs: [extract_jira_keys]
-    if: ${{ github.event.label.name == 'status/release_blocker' }}
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Add P0 priority to Jira issues
-        env:
-          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
-          LABEL: P0
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action add_label_to_jira_issue
-
-  extract_jira_issue_details:
-    # wait for both label-adding jobs so labels (including P0)
-    # are present when we fetch Jira details.
-    needs: [extract_jira_keys]
-    runs-on: ubuntu-slim
-    outputs:
-      labels_csv: ${{ steps.extract-details.outputs.labels_csv }}
-      csv: ${{ steps.extract-details.outputs.csv }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Extract Jira issue details
-        id: extract-details
-        env:
-          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action extract_jira_issue_details
-
-  apply_labels_to_pr:
-    needs: [extract_jira_keys, extract_jira_issue_details]
+  manage_labeled_gh_event:
     runs-on: ubuntu-slim
     permissions:
       contents: read
@@ -118,81 +20,13 @@ jobs:
           repository: scylladb/github-automation
           ref: automation-staging-branch
 
-      - name: Apply Jira labels to PR
+      - name: Run label-sync orchestrator
         env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABELS_CSV: ${{ needs.extract_jira_issue_details.outputs.labels_csv }}
-          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
-          NEW_PRIORITY_LABEL: ${{ github.event.label.name }}
+          TRIGGERING_LABEL: ${{ github.event.label.name }}
           OWNER_REPO: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: python3 scripts/jira_sync_logic.py --action apply_jira_labels_to_pr
-
-
-  jira_status_transition:
-    needs: [extract_jira_keys, extract_jira_issue_details]
-    if: ${{ github.event.label.name == 'status/merge_candidate' }}
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Transition Jira issues to Ready for Merge
-        env:
-          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
-          TRANSITION_NAME: "Ready for Merge"
-          TRANSITION_ID: "131"
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action jira_status_transition
-  # ========================================================================
-  # promoted-to-master label: Close Jira issues (only for scylladb/staging)
-  # ========================================================================
-  add_comment_to_jira_promoted-to-master:
-    name: Add 'Promoted to master' comment to Jira issues
-    needs: extract_jira_keys
-    if: >
-      github.event.label.name == 'promoted-to-master' &&
-      github.repository == 'scylladb/staging' &&
-      needs.extract_jira_keys.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Add comment to Jira issues
-        env:
-          JIRA_KEYS_JSON: ${{ needs.extract_jira_keys.outputs['jira-keys-json'] }}
-          COMMENT: "Closed via promoted-to-master label on PR "
-          LINK_TEXT: ${{ github.event.pull_request.title }}
-          LINK_URL: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action add_comment_to_jira
-
-  jira_status_transition_promoted-to-master:
-    name: Transition Jira issues to Done (promoted-to-master)
-    needs: [extract_jira_keys, extract_jira_issue_details]
-    if: >
-      github.event.label.name == 'promoted-to-master' &&
-      github.repository == 'scylladb/staging' &&
-      needs.extract_jira_keys.outputs['jira-keys-json'] != '["__NO_KEYS_FOUND__"]'
-    runs-on: ubuntu-slim
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          repository: scylladb/github-automation
-          ref: automation-staging-branch
-
-      - name: Transition Jira issues to Done
-        env:
-          DETAILS_CSV: ${{ needs.extract_jira_issue_details.outputs.csv }}
-          TRANSITION_NAME: "Done"
-          TRANSITION_ID: "141"
-          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
-        run: python3 scripts/jira_sync_logic.py --action jira_status_transition
+        run: python3 scripts/jira_sync_logic.py --action manage_labeled_gh_event
