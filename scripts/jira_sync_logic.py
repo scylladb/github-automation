@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 jira_sync_logic.py - Top-level orchestrator and CLI dispatcher for Jira sync.
 
@@ -15,7 +15,6 @@ import sys
 import argparse
 
 from jira_sync_modules import (
-    _NO_KEYS,
     AVAILABLE_ACTIONS,
     extract_jira_keys,
     add_label_to_jira_issue,
@@ -30,6 +29,9 @@ from jira_sync_modules import (
     _run_jira_status_transition,
     _run_add_comment_to_jira,
 )
+
+# Sentinel value returned by extract_jira_keys when no keys are found.
+_NO_KEYS = '["__NO_KEYS_FOUND__"]'
 
 def manage_labeled_gh_event(
     pr_title: str,
