@@ -63,8 +63,6 @@ def manage_labeled_gh_event(
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
-    print(f"  gh_token         = {gh_token[:4]}***")
-    print(f"  jira_auth        = {jira_auth[:4]}***")
 
     # --- Step 1: extract jira keys ---
     print("=" * 60)
