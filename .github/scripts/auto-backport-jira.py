@@ -1402,15 +1402,18 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
     merged_version_match = re.search(r'\[Backport ((manager-)?\d+\.\d+)\]', merged_pr.title)
     merged_version = merged_version_match.group(1) if merged_version_match else None
     
-    # Extract original PR to update its labels
-    original_pr = get_original_pr_from_backport(repo, merged_pr)
+    # Trace back to the root original PR (not just the immediate parent) for label updates
+    original_pr = get_root_original_pr(repo, merged_pr)
+    # If get_root_original_pr returned the merged_pr itself, it means we couldn't find the original
+    if original_pr and original_pr.number == merged_pr.number:
+        original_pr = None
 
     # Determine if we should warn about missing Fixes reference (scylladb/scylladb only)
     warn_missing_fixes = False
     if repo_name == "scylladb/scylladb" and original_pr:
         warn_missing_fixes = not has_fixes_reference(original_pr.body)
     
-    # Mark the merged version's label as done on the original PR
+    # Mark the merged version's label as done on the root original PR
     # This changes backport/X.Y-pending -> backport/X.Y-done on the original PR
     if original_pr and merged_version:
         replace_backport_label_with_done(repo, original_pr, merged_version)
@@ -1638,10 +1641,11 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
             except Exception as e:
                 logging.warning(f"Failed to add label to PR #{pr.number}: {e}")
             
-            # Mark backport/X.Y as done on the original PR
+            # Mark backport/X.Y as done on the root original PR
             if version:
-                original_pr = get_original_pr_from_backport(repo, pr)
-                if original_pr:
+                original_pr = get_root_original_pr(repo, pr)
+                # If get_root_original_pr returned the PR itself, it means we couldn't find the original
+                if original_pr and original_pr.number != pr.number:
                     replace_backport_label_with_done(repo, original_pr, version)
                     logging.info(f"Marked backport/{version} as done on original PR #{original_pr.number}")
                 else:
