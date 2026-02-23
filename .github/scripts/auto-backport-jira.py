@@ -1458,21 +1458,30 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
     if not all_jira_keys and main_jira_key:
         all_jira_keys = [main_jira_key]
     
-    # Create Jira sub-issues for ALL parent issues for this version
+    # Look up existing Jira sub-issues (already created by the main PR flow)
+    # Do NOT create new sub-tasks from backport PRs to avoid duplicates
     jira_mapping = {}
     if all_jira_keys:
-        # Get original title for sub-issue naming
-        original_title = extract_original_title(merged_pr.title)
-        
         for parent_jira_key in all_jira_keys:
             if JIRA_USER and JIRA_API_TOKEN:
-                sub_issue_key = create_jira_sub_issue(parent_jira_key, next_version, original_title, assignee_account_id)
-                if sub_issue_key:
-                    jira_mapping[parent_jira_key] = sub_issue_key
-                    logging.info(f"Created sub-issue {sub_issue_key} for {parent_jira_key} version {next_version}")
+                # Resolve actual parent (in case the key is a sub-task, search under grandparent)
+                actual_parent_key = parent_jira_key
+                original_issue = get_jira_issue(parent_jira_key)
+                if original_issue:
+                    grandparent_key = get_parent_key_if_subtask(original_issue)
+                    if grandparent_key:
+                        actual_parent_key = grandparent_key
+
+                existing_key = find_existing_sub_issue(actual_parent_key, next_version)
+                if existing_key:
+                    jira_mapping[parent_jira_key] = existing_key
+                    logging.info(f"Found existing sub-issue {existing_key} for {parent_jira_key} version {next_version}")
+                    if assignee_account_id:
+                        assign_jira_issue(existing_key, assignee_account_id)
                 else:
-                    # Use parent key as fallback
+                    # Sub-issue not found - use parent key as fallback
                     jira_mapping[parent_jira_key] = parent_jira_key
+                    logging.info(f"No existing sub-issue found for {parent_jira_key} version {next_version}, using parent key")
             else:
                 jira_mapping[parent_jira_key] = parent_jira_key
     
