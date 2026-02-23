@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 jira_sync_modules.py - Shared constants, helpers, and action implementations
 for the Jira/GitHub sync workflows.
@@ -27,7 +27,7 @@ import os
 import re
 import sys
 import time
-from datetime import date, timezone
+from datetime import date
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
