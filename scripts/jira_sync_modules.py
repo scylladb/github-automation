@@ -192,6 +192,7 @@ def _run_extract_jira_keys() -> None:
     jira_auth = os.environ.get("JIRA_AUTH", "")
 
     print(f"PR title: {pr_title}")
+    print(f"PR body: {pr_body}")
 
     if not pr_title:
         print("Warning: PR_TITLE env var is not set or empty.")
