@@ -18,7 +18,6 @@ The top-level orchestrator (manage_labeled_gh_event), the CLI dispatcher,
 and main() live in jira_sync_logic.py which imports from this module.
 """
 
-import argparse
 import base64
 import csv
 import io
@@ -193,7 +192,6 @@ def _run_extract_jira_keys() -> None:
     jira_auth = os.environ.get("JIRA_AUTH", "")
 
     print(f"PR title: {pr_title}")
-    print(f"PR body: {pr_body}")
 
     if not pr_title:
         print("Warning: PR_TITLE env var is not set or empty.")
@@ -1188,5 +1186,3 @@ def _run_add_comment_to_jira() -> None:
     add_comment_to_jira(jira_keys_json, comment, jira_auth, link_text, link_url)
 
 
-# Sentinel used by manage_labeled_gh_event
-_NO_KEYS = '["__NO_KEYS_FOUND__"]'
