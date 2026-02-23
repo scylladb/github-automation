@@ -153,14 +153,14 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
         for key in unknown:
             print(f"  {key}")
 
-        api_keys = _fetch_jira_project_keys(jira_auth)
+        jira_project_keys = _fetch_jira_project_keys(jira_auth)
 
-        if api_keys:
-            print(f"Valid Jira project keys from API (first 20): {' '.join(sorted(api_keys)[:20])}")
+        if jira_project_keys:
+            print(f"Valid Jira project keys from API (first 20): {' '.join(sorted(jira_project_keys)[:20])}")
 
         for key in unknown:
             prefix = key.split('-', 1)[0]
-            if prefix in api_keys:
+            if prefix in jira_project_keys:
                 print(f"Accepting {key} via Jira API (valid project prefix '{prefix}').")
                 accepted.append(key)
             else:
