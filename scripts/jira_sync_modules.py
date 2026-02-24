@@ -307,6 +307,9 @@ def _jira_put(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
             return resp.getcode(), resp.read().decode()
     except HTTPError as exc:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
+    except URLError as exc:
+        print(f"Warning: network error - {exc}")
+        return 0, str(exc)
 
 
 def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
@@ -987,6 +990,9 @@ def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
             return resp.getcode(), resp.read().decode()
     except HTTPError as exc:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
+    except URLError as exc:
+        print(f"Warning: network error - {exc}")
+        return 0, str(exc)
 
 
 def _plan_transitions(
@@ -1130,7 +1136,7 @@ def jira_status_transition(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        sys.exit(1)
+        print(f"WARNING: {failed} comment(s) failed. Continuing.")
 
 
 def _run_jira_status_transition() -> None:
@@ -1267,7 +1273,7 @@ def add_comment_to_jira(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        sys.exit(1)
+        print(f"WARNING: {failed} comment(s) failed. Continuing.")
 
 
 def _run_add_comment_to_jira() -> None:
