@@ -432,6 +432,7 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
 
     Modes:
       - area/<component>  -> removes a Scylla component (customfield_10321)
+      - symptom/<symptom> -> removes a Problem Symptom (customfield_11120)
       - anything else     -> removes a plain Jira label
     """
     keys = _parse_jira_keys_json(jira_keys_json)
@@ -450,6 +451,16 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
         }
         action_desc = "Remove Scylla component"
         print(f"Will remove Scylla component: '{component_value}'")
+    elif label.startswith("symptom/"):
+        mode = "symptom"
+        symptom_value = label[len("symptom/"):].replace("_", " ")
+        payload = {
+            "update": {
+                SYMPTOM_FIELD: [{"remove": {"value": symptom_value}}]
+            }
+        }
+        action_desc = "Remove symptom"
+        print(f"Will remove symptom: '{symptom_value}'")
     else:
         mode = "label"
         payload = {"update": {"labels": [{"remove": label}]}}
