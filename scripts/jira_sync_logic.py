@@ -207,6 +207,7 @@ def manage_review_gh_event(
     pr_number: int,
     owner_repo: str,
     gh_token: str,
+    requested_reviewer: str,
     jira_auth: str,
 ) -> None:
     """Orchestrate the "In Review" sync in a single invocation.
@@ -225,6 +226,7 @@ def manage_review_gh_event(
     print(f"  pr_body    = {pr_body!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
+    print(f"  requested_reviewer = {requested_reviewer!r}")
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
@@ -274,6 +276,7 @@ def _run_manage_review_gh_event() -> None:
     pr_number_str = os.environ.get("PR_NUMBER", "")
     owner_repo = os.environ.get("OWNER_REPO", "")
     gh_token = os.environ.get("GITHUB_TOKEN", "")
+    requested_reviewer = os.environ.get("REQUESTED_REVIEWER", "")
     jira_auth = os.environ.get("JIRA_AUTH", "")
 
     if not pr_number_str:
@@ -300,7 +303,7 @@ def _run_manage_review_gh_event() -> None:
 
     manage_review_gh_event(
         pr_title, pr_body, pr_number,
-        owner_repo, gh_token, jira_auth,
+        owner_repo, gh_token, requested_reviewer, jira_auth,
     )
 
 
