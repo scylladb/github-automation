@@ -31,7 +31,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira', 'manage_labeled_gh_event', 'manage_review_gh_event', 'manage_closed_gh_event', 'manage_opened_gh_event']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira', 'manage_labeled_gh_event', 'manage_review_gh_event', 'manage_closed_gh_event', 'manage_opened_gh_event', 'remove_label_from_jira_issue']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -422,6 +422,113 @@ def _run_add_label_to_jira_issue() -> None:
         sys.exit(1)
 
     add_label_to_jira_issue(jira_keys_json, label, jira_auth)
+
+
+
+def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
+    """Remove a label or Scylla component from every Jira issue in *jira_keys_json*.
+
+    Replicates the logic of remove_label_from_jira_issue.yml in pure Python.
+
+    Modes:
+      - area/<component>  -> removes a Scylla component (customfield_10321)
+      - symptom/<symptom> -> removes a Problem Symptom (customfield_11120)
+      - anything else     -> removes a plain Jira label
+    """
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        return []
+
+    print(f"Incoming removed label: '{label}'")
+
+    if label.startswith("area/"):
+        mode = "scylla_component"
+        component_value = label[len("area/"):].replace("_", " ")
+        payload = {
+            "update": {
+                SCYLLA_COMPONENTS_FIELD: [{"remove": {"value": component_value}}]
+            }
+        }
+        action_desc = "Remove Scylla component"
+        print(f"Will remove Scylla component: '{component_value}'")
+    elif label.startswith("symptom/"):
+        mode = "symptom"
+        symptom_value = label[len("symptom/"):].replace("_", " ")
+        payload = {
+            "update": {
+                SYMPTOM_FIELD: [{"remove": {"value": symptom_value}}]
+            }
+        }
+        action_desc = "Remove symptom"
+        print(f"Will remove symptom: '{symptom_value}'")
+    else:
+        mode = "label"
+        payload = {"update": {"labels": [{"remove": label}]}}
+        action_desc = "Remove label"
+        print(f"Will remove label: '{label}'")
+
+    ok = 0
+    skipped = 0
+    failed = 0
+    not_found_keys: list[str] = []
+
+    for key in keys:
+        issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}"
+        print(f"{action_desc} on {key} ...")
+
+        code, body_text = _jira_put(issue_url, payload, jira_auth)
+
+        if code in (200, 204):
+            print(f"OK {key} ({code})")
+            ok += 1
+
+        elif code == 400:
+            print(f"SKIP {key} ({code})  value may not exist in Jira. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
+            skipped += 1
+            not_found_keys.append(key)
+
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if not_found_keys:
+        print(f"Not-found keys (will be removed from further processing): {not_found_keys}")
+    if failed > 0:
+        sys.exit(1)
+    return not_found_keys
+
+
+def _run_remove_label_from_jira_issue() -> None:
+    """CLI entry-point wrapper for remove_label_from_jira_issue.
+
+    Reads JIRA_KEYS_JSON, LABEL, and JIRA_AUTH from environment variables.
+    """
+    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
+    label = os.environ.get("LABEL", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not jira_keys_json:
+        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
+        sys.exit(1)
+
+    if not label:
+        print("Error: LABEL env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    remove_label_from_jira_issue(jira_keys_json, label, jira_auth)
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,8 @@ from jira_sync_modules import (
     _run_apply_jira_labels_to_pr,
     _run_jira_status_transition,
     _run_add_comment_to_jira,
+    remove_label_from_jira_issue,
+    _run_remove_label_from_jira_issue,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
@@ -582,6 +584,7 @@ ACTION_DISPATCH = {
     'manage_review_gh_event': _run_manage_review_gh_event,
     'manage_closed_gh_event': _run_manage_closed_gh_event,
     'manage_opened_gh_event': _run_manage_opened_gh_event,
+    'remove_label_from_jira_issue': _run_remove_label_from_jira_issue,
 }
 
 
