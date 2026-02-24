@@ -31,7 +31,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira', 'manage_labeled_gh_event', 'manage_review_gh_event', 'manage_closed_gh_event']
+AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira', 'manage_labeled_gh_event', 'manage_review_gh_event', 'manage_closed_gh_event', 'manage_opened_gh_event']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
