@@ -106,7 +106,15 @@ def manage_labeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 4 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 5: apply labels to PR ---
     print("\n" + "=" * 60)
@@ -246,7 +254,15 @@ def manage_review_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 3: apply labels to PR ---
     print("\n" + "=" * 60)
@@ -354,7 +370,15 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 3: apply labels to PR ---
     print("\n" + "=" * 60)
@@ -479,7 +503,15 @@ def manage_opened_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 3: apply labels to PR ---
     print("\n" + "=" * 60)
@@ -602,7 +634,15 @@ def manage_unlabeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 3 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 4: apply labels to PR ---
     print("\n" + "=" * 60)

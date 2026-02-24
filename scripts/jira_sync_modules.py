@@ -563,12 +563,13 @@ def _csv_escape(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str]:
+def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str, list[str]]:
     """Fetch Jira issue details and produce a CSV plus a deduplicated labels string.
 
     Replicates the logic of extract_jira_issue_details.yml in pure Python.
 
-    Returns (csv_content, labels_csv).
+    Returns (csv_content, labels_csv, not_found_keys).
+    not_found_keys lists issue keys that returned 404 or other fetch errors.
     """
     keys = _parse_jira_keys_json(jira_keys_json)
 
@@ -578,7 +579,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         print("---------------------------------------------------")
         print(_CSV_HEADER)
         print("---------------------------------------------------")
-        return _CSV_HEADER + "\n", ""
+        return _CSV_HEADER + "\n", "", []
 
     fields_param = ",".join([
         "status", "labels", "assignee", "priority", "fixVersions",
@@ -587,6 +588,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
 
     csv_lines: list[str] = [_CSV_HEADER]
     all_labels: list[str] = []
+    not_found_keys: list[str] = []
 
     for key in keys:
         url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields={fields_param}"
@@ -595,6 +597,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         resp = _jira_get(url, jira_auth)
         if resp is None:
             print(f"Skipping {key} - fetch failed")
+            not_found_keys.append(key)
             continue
 
         fields = resp.get("fields", {})
@@ -667,7 +670,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         print(line)
     print("---------------------------------------------------")
 
-    return csv_content, labels_csv
+    return csv_content, labels_csv, not_found_keys
 
 
 def _run_extract_jira_issue_details() -> None:
@@ -687,7 +690,7 @@ def _run_extract_jira_issue_details() -> None:
         print("Error: JIRA_AUTH env var is not set or empty.")
         sys.exit(1)
 
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     print(f"labels_csv={labels_csv}")
 
