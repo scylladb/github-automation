@@ -26,6 +26,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           OWNER_REPO: ${{ github.repository }}
+          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
           GITHUB_TOKEN: ${{ github.token }}
           JIRA_AUTH: ${{ secrets.caller_jira_auth }}
         run: python3 scripts/jira_sync_logic.py --action manage_review_gh_event
