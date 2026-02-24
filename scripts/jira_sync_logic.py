@@ -2,7 +2,7 @@
 """
 jira_sync_logic.py - Top-level orchestrator and CLI dispatcher for Jira sync.
 
-Contains manage_labeled_gh_event (the main orchestration function),
+Contains manage_labeled_gh_event, manage_review_gh_event (orchestration functions),
 debug_sync_context, the ACTION_DISPATCH table, and main().
 
 All helpers, constants, and individual action implementations live in
@@ -201,6 +201,109 @@ def _run_manage_labeled_gh_event() -> None:
 
 
 
+def manage_review_gh_event(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> None:
+    """Orchestrate the "In Review" sync in a single invocation.
+
+    Replicates the full job graph of main_jira_sync_in_review.yml:
+
+      1.  extract_jira_keys
+      2.  extract_jira_issue_details
+      3.  apply_jira_labels_to_pr
+      4.  jira_status_transition -> "In Review" (id 121)
+    """
+    print("=" * 60)
+    print(" manage_review_gh_event  input parameters")
+    print("=" * 60)
+    print(f"  pr_title   = {pr_title!r}")
+    print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_number  = {pr_number!r}")
+    print(f"  owner_repo = {owner_repo!r}")
+
+    # --- Step 1: extract jira keys ---
+    print("\n" + "=" * 60)
+    print(" Step 1 / extract_jira_keys")
+    print("=" * 60)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    jira_keys_json = json.dumps(keys)
+    print(f"jira-keys-json={jira_keys_json}")
+
+    if jira_keys_json == _NO_KEYS:
+        print("No Jira keys found. Nothing to do.")
+        return
+
+    # --- Step 2: extract issue details ---
+    print("\n" + "=" * 60)
+    print(" Step 2 / extract_jira_issue_details")
+    print("=" * 60)
+    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    # --- Step 3: apply labels to PR ---
+    print("\n" + "=" * 60)
+    print(" Step 3 / apply_jira_labels_to_pr")
+    print("=" * 60)
+    apply_jira_labels_to_pr(
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
+    )
+
+    # --- Step 4: transition to In Review ---
+    print("\n" + "=" * 60)
+    print(" Step 4 / jira_status_transition -> In Review")
+    print("=" * 60)
+    jira_status_transition(csv_content, "In Review", "121", jira_auth)
+
+    print("\n" + "=" * 60)
+    print(" manage_review_gh_event completed successfully")
+    print("=" * 60)
+
+
+def _run_manage_review_gh_event() -> None:
+    """CLI entry-point wrapper for manage_review_gh_event.
+
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO,
+    GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    manage_review_gh_event(
+        pr_title, pr_body, pr_number,
+        owner_repo, gh_token, jira_auth,
+    )
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -242,6 +345,7 @@ ACTION_DISPATCH = {
     'jira_status_transition': _run_jira_status_transition,
     'add_comment_to_jira': _run_add_comment_to_jira,
     'manage_labeled_gh_event': _run_manage_labeled_gh_event,
+    'manage_review_gh_event': _run_manage_review_gh_event,
 }
 
 
