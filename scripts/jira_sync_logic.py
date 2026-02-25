@@ -15,7 +15,6 @@ import sys
 import argparse
 
 from jira_sync_modules import (
-    AVAILABLE_ACTIONS,
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
@@ -759,7 +758,7 @@ def main():
     parser.add_argument(
         '--action',
         required=True,
-        choices=AVAILABLE_ACTIONS,
+        choices=ACTION_DISPATCH.keys(),
         help='The action to execute'
     )
     args = parser.parse_args()
