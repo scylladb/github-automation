@@ -21,14 +21,7 @@ from jira_sync_modules import (
     apply_jira_labels_to_pr,
     jira_status_transition,
     add_comment_to_jira,
-    _run_extract_jira_keys,
-    _run_add_label_to_jira_issue,
-    _run_extract_jira_issue_details,
-    _run_apply_jira_labels_to_pr,
-    _run_jira_status_transition,
-    _run_add_comment_to_jira,
     remove_label_from_jira_issue,
-    _run_remove_label_from_jira_issue,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
@@ -736,17 +729,10 @@ def debug_sync_context():
 
 ACTION_DISPATCH = {
     'debug': debug_sync_context,
-    'extract_jira_keys': _run_extract_jira_keys,
-    'add_label_to_jira_issue': _run_add_label_to_jira_issue,
-    'extract_jira_issue_details': _run_extract_jira_issue_details,
-    'apply_jira_labels_to_pr': _run_apply_jira_labels_to_pr,
-    'jira_status_transition': _run_jira_status_transition,
-    'add_comment_to_jira': _run_add_comment_to_jira,
     'manage_labeled_gh_event': _run_manage_labeled_gh_event,
     'manage_review_gh_event': _run_manage_review_gh_event,
     'manage_closed_gh_event': _run_manage_closed_gh_event,
     'manage_opened_gh_event': _run_manage_opened_gh_event,
-    'remove_label_from_jira_issue': _run_remove_label_from_jira_issue,
     'manage_unlabeled_gh_event': _run_manage_unlabeled_gh_event,
 }
 
