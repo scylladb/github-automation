@@ -1664,6 +1664,103 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
             # Process chain backport (continue to next version if any)
             process_chain_backport(repo, pr, repo_name)
 
+    # Find and close open backport PRs superseded by this push.
+    # This handles the parallel backport case where the promoter cherry-picks the commit
+    # directly to the branch (new SHA), so commit.get_pulls() can't find the backport PR,
+    # and GitHub's "Closes #X" keyword only auto-closes on the default branch.
+    _close_superseded_backport_prs(repo, comparison.commits, branch_name, version, promoted_label, processed_prs, repo_name)
+
+
+def _close_superseded_backport_prs(repo, pushed_commits, branch_name: str, version: str,
+                                   promoted_label: str, already_processed: set, repo_name: str):
+    """
+    Find and close open backport PRs whose commits have been promoted to the branch.
+    Uses commit title matching and 'Closes' references from promoted commit messages.
+    """
+    # Build mappings of promoted commit titles and 'Closes' PR numbers to commit SHAs
+    promoted_titles = {}  # title -> commit sha
+    closes_pr_numbers = {}  # pr_number -> commit sha
+    for commit in pushed_commits:
+        message = commit.commit.message
+        title = message.splitlines()[0].strip()
+        promoted_titles[title] = commit.sha
+        # Extract PR numbers from 'Closes' references (added by promoter)
+        for match in re.finditer(r'Closes\s+(?:[\w-]+/[\w-]+)?#(\d+)', message):
+            closes_pr_numbers[int(match.group(1))] = commit.sha
+
+    # First, try directly via 'Closes' references (most efficient)
+    for pr_number, commit_sha in closes_pr_numbers.items():
+        if pr_number in already_processed:
+            continue
+        try:
+            pr = repo.get_pull(pr_number)
+            if pr.state != 'open':
+                continue
+            if not is_backport_pr(pr.title, pr.body):
+                continue
+            if pr.base.ref != branch_name:
+                continue
+            _close_promoted_backport_pr(repo, pr, branch_name, version, promoted_label, repo_name, commit_sha)
+            already_processed.add(pr_number)
+        except Exception as e:
+            logging.warning(f"Error checking PR #{pr_number} from Closes reference: {e}")
+
+    # Second, search for open backport PRs targeting this branch and match by commit title
+    try:
+        open_pulls = repo.get_pulls(state='open', base=branch_name)
+        for pr in open_pulls:
+            if pr.number in already_processed:
+                continue
+            if not is_backport_pr(pr.title, pr.body):
+                continue
+            # Compare the PR's latest commit title with promoted commit titles
+            try:
+                pr_commits = list(pr.get_commits())
+                if not pr_commits:
+                    continue
+                pr_commit_title = pr_commits[-1].commit.message.splitlines()[0].strip()
+                if pr_commit_title in promoted_titles:
+                    commit_sha = promoted_titles[pr_commit_title]
+                    _close_promoted_backport_pr(repo, pr, branch_name, version, promoted_label, repo_name, commit_sha)
+                    already_processed.add(pr.number)
+            except Exception as e:
+                logging.warning(f"Error checking commits for PR #{pr.number}: {e}")
+    except Exception as e:
+        logging.warning(f"Error searching for open backport PRs on {branch_name}: {e}")
+
+
+def _close_promoted_backport_pr(repo, pr, branch_name: str, version: str,
+                                promoted_label: str, repo_name: str, commit_sha: str):
+    """Close a backport PR that was superseded by a direct promotion to the branch."""
+    logging.info(f"Found superseded backport PR #{pr.number}: {pr.title}")
+
+    try:
+        pr.add_to_labels(promoted_label)
+        logging.info(f"Added '{promoted_label}' label to PR #{pr.number}")
+    except Exception as e:
+        logging.warning(f"Failed to add label to PR #{pr.number}: {e}")
+
+    try:
+        pr.create_issue_comment(
+            f"Closed via {commit_sha}"
+        )
+        pr.edit(state='closed')
+        logging.info(f"Closed superseded backport PR #{pr.number}")
+    except Exception as e:
+        logging.warning(f"Failed to close PR #{pr.number}: {e}")
+
+    # Mark backport/X.Y as done on the root original PR
+    if version:
+        try:
+            original_pr = get_root_original_pr(repo, pr)
+            if original_pr and original_pr.number != pr.number:
+                replace_backport_label_with_done(repo, original_pr, version)
+                logging.info(f"Marked backport/{version} as done on original PR #{original_pr.number}")
+            else:
+                logging.warning(f"Could not find original PR for backport PR #{pr.number}")
+        except Exception as e:
+            logging.warning(f"Error marking backport as done for PR #{pr.number}: {e}")
+
 
 def main():
     args = parse_args()
