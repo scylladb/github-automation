@@ -1045,7 +1045,7 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     elif pr.state == 'closed':
         events = pr.get_issue_events()
         for event in events:
-            if event.event == 'closed':
+            if event.event == 'closed' and event.commit_id:
                 commits.append(event.commit_id)
     return commits
 
