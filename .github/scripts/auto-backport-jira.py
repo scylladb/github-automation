@@ -379,6 +379,16 @@ def get_jira_user_from_github_user(github_user) -> Optional[str]:
         if account_id:
             return account_id
         
+        # Fallback: try firstname.lastname@scylladb.com from the user's display name
+        if github_user.name:
+            name_parts = github_user.name.lower().split()
+            if len(name_parts) >= 2:
+                name_email = f"{'.'.join(name_parts)}@scylladb.com"
+                logging.info(f"Trying name-based email for GitHub user {github_user.login}: {name_email}")
+                account_id = find_jira_user_by_email(name_email)
+                if account_id:
+                    return account_id
+        
         logging.warning(f"Could not find Jira user for GitHub user {github_user.login} by email")
     except Exception as e:
         logging.warning(f"Error getting Jira user from GitHub user: {e}")
