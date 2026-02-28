@@ -1632,14 +1632,39 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
     # Find PRs associated with these commits
     processed_prs = set()
     for commit in comparison.commits:
-        for pr in commit.get_pulls():
+        # Get PRs from GitHub's commit-PR association (works for merged PRs)
+        prs_for_commit = list(commit.get_pulls())
+        seen_in_commit = {pr.number for pr in prs_for_commit}
+
+        # Also find PRs referenced via "Closes #X" in commit messages.
+        # This handles single-commit PRs that are closed (not merged) with a commit event
+        # (e.g., in scylladb/scylladb), which commit.get_pulls() does not return.
+        for match in re.finditer(r'Closes\s+(?:[\w-]+/[\w-]+)?#(\d+)', commit.commit.message):
+            pr_number = int(match.group(1))
+            if pr_number not in seen_in_commit and pr_number not in processed_prs:
+                try:
+                    closed_pr = repo.get_pull(pr_number)
+                    if closed_pr.state == 'closed':
+                        prs_for_commit.append(closed_pr)
+                        logging.info(f"Found closed-with-commit PR #{pr_number} via 'Closes' reference")
+                except Exception as e:
+                    logging.warning(f"Could not fetch PR #{pr_number} from 'Closes' reference: {e}")
+
+        for pr in prs_for_commit:
             if pr.number in processed_prs:
                 continue
             processed_prs.add(pr.number)
             
-            # Check if this is a backport PR
+            # For non-backport (original) PRs on master, add the promoted label
             if not is_backport_pr(pr.title, pr.body):
-                logging.info(f"PR #{pr.number} is not a backport PR, skipping")
+                if branch_name in ('master', 'main'):
+                    try:
+                        pr.add_to_labels(promoted_label)
+                        logging.info(f"Added '{promoted_label}' label to original PR #{pr.number}")
+                    except Exception as e:
+                        logging.warning(f"Failed to add label to original PR #{pr.number}: {e}")
+                else:
+                    logging.info(f"PR #{pr.number} is not a backport PR, skipping")
                 continue
             
             logging.info(f"Found merged backport PR #{pr.number}: {pr.title}")

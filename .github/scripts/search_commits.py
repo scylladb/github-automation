@@ -32,7 +32,7 @@ def main():
     processed_prs = set()
     for commit in commits:
         search_url = f'https://api.github.com/search/issues'
-        query = f"repo:{args.repository} is:pr is:merged sha:{commit.sha}"
+        query = f"repo:{args.repository} is:pr is:closed sha:{commit.sha}"
         params = {
             "q": query,
         }
