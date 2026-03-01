@@ -304,6 +304,8 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
       - symptom/<symptom>  -> adds a symptom (customfield_11120)
       - anything else      -> adds a plain Jira label
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
     if not label:
         print("Error: label is not set or empty.")
         sys.exit(1)
@@ -402,6 +404,8 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
       - symptom/<symptom> -> removes a Problem Symptom (customfield_11120)
       - anything else     -> removes a plain Jira label
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
     if not label:
         print("Error: label is not set or empty.")
         sys.exit(1)
@@ -522,6 +526,8 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
     Returns (csv_content, labels_csv, not_found_keys).
     not_found_keys lists issue keys that returned 404 or other fetch errors.
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
     if not jira_auth:
         print("Error: jira_auth is not set or empty.")
         sys.exit(1)
@@ -1109,6 +1115,8 @@ def add_comment_to_jira(
     link_url : str, optional
         URL for the clickable link.
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
     if not jira_auth:
         print("Error: jira_auth is not set or empty.")
         sys.exit(1)
