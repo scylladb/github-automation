@@ -334,7 +334,7 @@ def manage_closed_gh_event(
       1.  extract_jira_keys
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
-      4.  if merged: add_comment_to_jira ("Closed via PR merge")
+      4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
       5.  if merged: jira_status_transition -> "Done" (id 141)
     """
     print("=" * 60)
@@ -380,12 +380,12 @@ def manage_closed_gh_event(
         pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
-    # --- Step 4: add "PR closed" comment (merged PRs only) ---
+    # --- Step 4: add "PR closed" comment ---
     print("\n" + "=" * 60)
     print(" Step 4 / add_comment_to_jira (PR closed)")
     print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
     if pr_merged:
-        pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
         add_comment_to_jira(
             jira_keys_json,
             "Closed via PR merge ",
@@ -394,7 +394,13 @@ def manage_closed_gh_event(
             link_url=pr_url,
         )
     else:
-        print("SKIPPED: PR was closed without merge")
+        add_comment_to_jira(
+            jira_keys_json,
+            "PR closed without merge ",
+            jira_auth,
+            link_text=pr_title,
+            link_url=pr_url,
+        )
 
     # --- Step 5: transition to Done (merged PRs only) ---
     print("\n" + "=" * 60)
