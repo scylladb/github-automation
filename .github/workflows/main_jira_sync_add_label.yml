@@ -1,4 +1,4 @@
-﻿name: Sync With Jira - Add Label
+name: Sync With Jira - Add Label
 
 on:
   workflow_call:

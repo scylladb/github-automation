@@ -2,7 +2,7 @@
 """
 jira_sync_logic.py - Top-level orchestrator and CLI dispatcher for Jira sync.
 
-Contains manage_labeled_gh_event (the main orchestration function),
+Contains manage_labeled_gh_event, manage_unlabeled_gh_event, manage_review_gh_event (orchestration functions),
 debug_sync_context, the ACTION_DISPATCH table, and main().
 
 All helpers, constants, and individual action implementations live in
@@ -15,19 +15,13 @@ import sys
 import argparse
 
 from jira_sync_modules import (
-    AVAILABLE_ACTIONS,
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
     apply_jira_labels_to_pr,
     jira_status_transition,
     add_comment_to_jira,
-    _run_extract_jira_keys,
-    _run_add_label_to_jira_issue,
-    _run_extract_jira_issue_details,
-    _run_apply_jira_labels_to_pr,
-    _run_jira_status_transition,
-    _run_add_comment_to_jira,
+    remove_label_from_jira_issue,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
@@ -63,7 +57,7 @@ def manage_labeled_gh_event(
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
-
+    
     # --- Step 1: extract jira keys ---
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
@@ -104,7 +98,15 @@ def manage_labeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 4 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
 
     # --- Step 5: apply labels to PR ---
     print("\n" + "=" * 60)
@@ -201,6 +203,498 @@ def _run_manage_labeled_gh_event() -> None:
 
 
 
+def manage_review_gh_event(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    owner_repo: str,
+    gh_token: str,
+    requested_reviewer: str,
+    jira_auth: str,
+) -> None:
+    """Orchestrate the "In Review" sync in a single invocation.
+
+    Replicates the full job graph of main_jira_sync_in_review.yml:
+
+      1.  extract_jira_keys
+      2.  extract_jira_issue_details
+      3.  apply_jira_labels_to_pr
+      4.  jira_status_transition -> "In Review" (id 121)
+    """
+    print("=" * 60)
+    print(" manage_review_gh_event  input parameters")
+    print("=" * 60)
+    print(f"  pr_title   = {pr_title!r}")
+    print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_number  = {pr_number!r}")
+    print(f"  owner_repo = {owner_repo!r}")
+    print(f"  requested_reviewer = {requested_reviewer!r}")
+
+    # --- Step 1: extract jira keys ---
+    print("\n" + "=" * 60)
+    print(" Step 1 / extract_jira_keys")
+    print("=" * 60)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    jira_keys_json = json.dumps(keys)
+    print(f"jira-keys-json={jira_keys_json}")
+
+    if jira_keys_json == _NO_KEYS:
+        print("No Jira keys found. Nothing to do.")
+        return
+
+    # --- Step 2: extract issue details ---
+    print("\n" + "=" * 60)
+    print(" Step 2 / extract_jira_issue_details")
+    print("=" * 60)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
+
+    # --- Step 3: apply labels to PR ---
+    print("\n" + "=" * 60)
+    print(" Step 3 / apply_jira_labels_to_pr")
+    print("=" * 60)
+    apply_jira_labels_to_pr(
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
+    )
+
+    # --- Step 4: transition to In Review ---
+    print("\n" + "=" * 60)
+    print(" Step 4 / jira_status_transition -> In Review")
+    print("=" * 60)
+    jira_status_transition(csv_content, "In Review", "121", jira_auth)
+
+    print("\n" + "=" * 60)
+    print(" manage_review_gh_event completed successfully")
+    print("=" * 60)
+
+
+def _run_manage_review_gh_event() -> None:
+    """CLI entry-point wrapper for manage_review_gh_event.
+
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO,
+    GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    requested_reviewer = os.environ.get("REQUESTED_REVIEWER", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    manage_review_gh_event(
+        pr_title, pr_body, pr_number,
+        owner_repo, gh_token, requested_reviewer, jira_auth,
+    )
+
+
+
+def manage_closed_gh_event(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    pr_merged: bool,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> None:
+    """Orchestrate the "PR Closed" sync in a single invocation.
+
+    Replicates the full job graph of main_jira_sync_pr_closed.yml:
+
+      1.  extract_jira_keys
+      2.  extract_jira_issue_details
+      3.  apply_jira_labels_to_pr
+      4.  if merged: add_comment_to_jira ("Closed via PR merge")
+      5.  if merged: jira_status_transition -> "Done" (id 141)
+    """
+    print("=" * 60)
+    print(" manage_closed_gh_event  input parameters")
+    print("=" * 60)
+    print(f"  pr_title   = {pr_title!r}")
+    print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_number  = {pr_number!r}")
+    print(f"  pr_merged  = {pr_merged!r}")
+    print(f"  owner_repo = {owner_repo!r}")
+
+    # --- Step 1: extract jira keys ---
+    print("\n" + "=" * 60)
+    print(" Step 1 / extract_jira_keys")
+    print("=" * 60)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    jira_keys_json = json.dumps(keys)
+    print(f"jira-keys-json={jira_keys_json}")
+
+    if jira_keys_json == _NO_KEYS:
+        print("No Jira keys found. Nothing to do.")
+        return
+
+    # --- Step 2: extract issue details ---
+    print("\n" + "=" * 60)
+    print(" Step 2 / extract_jira_issue_details")
+    print("=" * 60)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
+
+    # --- Step 3: apply labels to PR ---
+    print("\n" + "=" * 60)
+    print(" Step 3 / apply_jira_labels_to_pr")
+    print("=" * 60)
+    apply_jira_labels_to_pr(
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
+    )
+
+    # --- Step 4: add "PR closed" comment (merged PRs only) ---
+    print("\n" + "=" * 60)
+    print(" Step 4 / add_comment_to_jira (PR closed)")
+    print("=" * 60)
+    if pr_merged:
+        pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+        add_comment_to_jira(
+            jira_keys_json,
+            "Closed via PR merge ",
+            jira_auth,
+            link_text=pr_title,
+            link_url=pr_url,
+        )
+    else:
+        print("SKIPPED: PR was closed without merge")
+
+    # --- Step 5: transition to Done (merged PRs only) ---
+    print("\n" + "=" * 60)
+    print(" Step 5 / jira_status_transition -> Done")
+    print("=" * 60)
+    if pr_merged:
+        jira_status_transition(csv_content, "Done", "141", jira_auth)
+    else:
+        print("SKIPPED: PR was closed without merge")
+
+    print("\n" + "=" * 60)
+    print(" manage_closed_gh_event completed successfully")
+    print("=" * 60)
+
+
+def _run_manage_closed_gh_event() -> None:
+    """CLI entry-point wrapper for manage_closed_gh_event.
+
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, PR_MERGED, OWNER_REPO,
+    GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    pr_merged_str = os.environ.get("PR_MERGED", "false")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    pr_merged = pr_merged_str.lower() == "true"
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    manage_closed_gh_event(
+        pr_title, pr_body, pr_number, pr_merged,
+        owner_repo, gh_token, jira_auth,
+    )
+
+
+def manage_opened_gh_event(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> None:
+    """Orchestrate the "PR Opened" sync in a single invocation.
+
+    Replicates the full job graph of main_jira_sync_pr_opened.yml:
+
+      1.  extract_jira_keys
+      2.  extract_jira_issue_details
+      3.  apply_jira_labels_to_pr
+      4.  jira_status_transition -> "In Progress" (id 111)
+    """
+    print("=" * 60)
+    print(" manage_opened_gh_event  input parameters")
+    print("=" * 60)
+    print(f"  pr_title   = {pr_title!r}")
+    print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_number  = {pr_number!r}")
+    print(f"  owner_repo = {owner_repo!r}")
+
+    # --- Step 1: extract jira keys ---
+    print("\n" + "=" * 60)
+    print(" Step 1 / extract_jira_keys")
+    print("=" * 60)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    jira_keys_json = json.dumps(keys)
+    print(f"jira-keys-json={jira_keys_json}")
+
+    if jira_keys_json == _NO_KEYS:
+        print("No Jira keys found. Nothing to do.")
+        return
+
+    # --- Step 2: extract issue details ---
+    print("\n" + "=" * 60)
+    print(" Step 2 / extract_jira_issue_details")
+    print("=" * 60)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
+
+    # --- Step 3: apply labels to PR ---
+    print("\n" + "=" * 60)
+    print(" Step 3 / apply_jira_labels_to_pr")
+    print("=" * 60)
+    apply_jira_labels_to_pr(
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
+    )
+
+    # --- Step 4: transition to In Progress ---
+    print("\n" + "=" * 60)
+    print(" Step 4 / jira_status_transition -> In Progress")
+    print("=" * 60)
+    jira_status_transition(csv_content, "In Progress", "111", jira_auth)
+
+    print("\n" + "=" * 60)
+    print(" manage_opened_gh_event completed successfully")
+    print("=" * 60)
+
+
+def _run_manage_opened_gh_event() -> None:
+    """CLI entry-point wrapper for manage_opened_gh_event.
+
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO,
+    GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    manage_opened_gh_event(
+        pr_title, pr_body, pr_number,
+        owner_repo, gh_token, jira_auth,
+    )
+
+def manage_unlabeled_gh_event(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    removed_label: str,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> None:
+    """Orchestrate the "PR Unlabeled" sync in a single invocation.
+
+    Replicates the full job graph of main_jira_sync_remove_label.yml:
+
+      1.  extract_jira_keys
+      2.  remove_label_from_jira_issue  (skip P0-P4 labels)
+      3.  extract_jira_issue_details
+      4.  apply_jira_labels_to_pr
+    """
+    print("=" * 60)
+    print(" manage_unlabeled_gh_event  input parameters")
+    print("=" * 60)
+    print(f"  pr_title       = {pr_title!r}")
+    print(f"  pr_body        = {pr_body!r}")
+    print(f"  pr_number      = {pr_number!r}")
+    print(f"  removed_label  = {removed_label!r}")
+    print(f"  owner_repo     = {owner_repo!r}")
+
+    # --- Step 1: extract jira keys ---
+    print("\n" + "=" * 60)
+    print(" Step 1 / extract_jira_keys")
+    print("=" * 60)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    jira_keys_json = json.dumps(keys)
+    print(f"jira-keys-json={jira_keys_json}")
+
+    if jira_keys_json == _NO_KEYS:
+        print("No Jira keys found. Nothing to do.")
+        return
+
+    # --- Step 2: remove label from Jira (skip priority labels) ---
+    print("\n" + "=" * 60)
+    print(" Step 2 / remove_label_from_jira_issue")
+    print("=" * 60)
+    _PRIORITY_LABELS = {"P0", "P1", "P2", "P3", "P4"}
+    if removed_label in _PRIORITY_LABELS:
+        print(f"SKIPPED: removed_label '{removed_label}' is a priority label (P0-P4)")
+    else:
+        not_found = remove_label_from_jira_issue(jira_keys_json, removed_label, jira_auth)
+
+        # Remove issues that were not found (404) from subsequent steps
+        if not_found:
+            keys = [k for k in keys if k not in not_found]
+            jira_keys_json = json.dumps(keys)
+            print(f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}")
+            if not keys:
+                print("All Jira keys were not found. Nothing more to do.")
+                return
+
+    # --- Step 3: extract issue details ---
+    print("\n" + "=" * 60)
+    print(" Step 3 / extract_jira_issue_details")
+    print("=" * 60)
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
+
+    if details_not_found:
+        keys = [k for k in keys if k not in details_not_found]
+        jira_keys_json = json.dumps(keys)
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
+        if not keys:
+            print("All Jira keys were not found. Nothing more to do.")
+            return
+
+    # --- Step 4: apply labels to PR ---
+    print("\n" + "=" * 60)
+    print(" Step 4 / apply_jira_labels_to_pr")
+    print("=" * 60)
+    apply_jira_labels_to_pr(
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
+    )
+
+    print("\n" + "=" * 60)
+    print(" manage_unlabeled_gh_event completed successfully")
+    print("=" * 60)
+
+
+def _run_manage_unlabeled_gh_event() -> None:
+    """CLI entry-point wrapper for manage_unlabeled_gh_event.
+
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, REMOVED_LABEL,
+    OWNER_REPO, GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    """
+    pr_title = os.environ.get("PR_TITLE", "")
+    pr_body = os.environ.get("PR_BODY", "")
+    pr_number_str = os.environ.get("PR_NUMBER", "")
+    removed_label = os.environ.get("REMOVED_LABEL", "")
+    owner_repo = os.environ.get("OWNER_REPO", "")
+    gh_token = os.environ.get("GITHUB_TOKEN", "")
+    jira_auth = os.environ.get("JIRA_AUTH", "")
+
+    if not pr_number_str:
+        print("Error: PR_NUMBER env var is not set or empty.")
+        sys.exit(1)
+
+    try:
+        pr_number = int(pr_number_str)
+    except ValueError:
+        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
+        sys.exit(1)
+
+    if not removed_label:
+        print("Error: REMOVED_LABEL env var is not set or empty.")
+        sys.exit(1)
+
+    if not owner_repo:
+        print("Error: OWNER_REPO env var is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: GITHUB_TOKEN env var is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: JIRA_AUTH env var is not set or empty.")
+        sys.exit(1)
+
+    manage_unlabeled_gh_event(
+        pr_title, pr_body, pr_number, removed_label,
+        owner_repo, gh_token, jira_auth,
+    )
+
+
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
     event_name = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -235,13 +729,11 @@ def debug_sync_context():
 
 ACTION_DISPATCH = {
     'debug': debug_sync_context,
-    'extract_jira_keys': _run_extract_jira_keys,
-    'add_label_to_jira_issue': _run_add_label_to_jira_issue,
-    'extract_jira_issue_details': _run_extract_jira_issue_details,
-    'apply_jira_labels_to_pr': _run_apply_jira_labels_to_pr,
-    'jira_status_transition': _run_jira_status_transition,
-    'add_comment_to_jira': _run_add_comment_to_jira,
     'manage_labeled_gh_event': _run_manage_labeled_gh_event,
+    'manage_review_gh_event': _run_manage_review_gh_event,
+    'manage_closed_gh_event': _run_manage_closed_gh_event,
+    'manage_opened_gh_event': _run_manage_opened_gh_event,
+    'manage_unlabeled_gh_event': _run_manage_unlabeled_gh_event,
 }
 
 
@@ -252,7 +744,7 @@ def main():
     parser.add_argument(
         '--action',
         required=True,
-        choices=AVAILABLE_ACTIONS,
+        choices=ACTION_DISPATCH.keys(),
         help='The action to execute'
     )
     args = parser.parse_args()
