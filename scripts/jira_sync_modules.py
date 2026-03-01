@@ -461,10 +461,31 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
             print(f"OK {key} ({code})")
             ok += 1
 
-        elif code == 400:
-            print(f"SKIP {key} ({code})  value may not exist in Jira. First 200 chars:")
+        elif code == 400 and mode == "label":
+            print(f"SKIP {key} ({code}) value may not exist in Jira. First 200 chars:")
             print(body_text[:200])
             skipped += 1
+
+        elif mode in ("scylla_component", "symptom") and code not in (200, 204):
+            print(f"WARN {key} ({code}) custom field update failed. First 200 chars:")
+            print(body_text[:200])
+            print(f"Falling back to removing '{label}' as a plain Jira label on {key} ...")
+            fallback_payload = {"update": {"labels": [{"remove": label}]}}
+            fb_code, fb_body = _jira_put(issue_url, fallback_payload, jira_auth)
+            if fb_code in (200, 204):
+                print(f"OK {key} (fallback label, {fb_code})")
+                ok += 1
+            elif fb_code == 400:
+                print(f"SKIP {key} (fallback label, {fb_code}) label may not exist.")
+                skipped += 1
+            elif fb_code == 404:
+                print(f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing.")
+                skipped += 1
+                not_found_keys.append(key)
+            else:
+                print(f"FAIL {key} (fallback label, {fb_code}) First 400 chars:")
+                print(fb_body[:400])
+                failed += 1
 
         elif code == 404:
             print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
