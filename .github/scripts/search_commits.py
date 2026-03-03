@@ -42,6 +42,22 @@ def main():
         }
         response = requests.get(search_url, headers=headers, params=params)
         prs = response.json().get("items", [])
+        # Fallback: if the commit message has "Closes" references, include those PRs too
+        # This handles PRs closed by pushing a rebased commit directly (different SHA than the PR's head)
+        found_pr_numbers = {pr["number"] for pr in prs}
+        close_refs = re.findall(
+            rf'Closes\s+(?:{re.escape(args.repository)}#|#)(\d+)',
+            commit.commit.message
+        )
+        for ref in close_refs:
+            pr_num = int(ref)
+            if pr_num not in found_pr_numbers and pr_num not in processed_prs:
+                pr_url = f'https://api.github.com/repos/{args.repository}/pulls/{pr_num}'
+                pr_response = requests.get(pr_url, headers=headers)
+                if pr_response.ok:
+                    pr_data = pr_response.json()
+                    if pr_data.get("state") == "closed":
+                        prs.append(pr_data)
         for pr in prs:
             match = re.findall(r'Parent PR: #(\d+)', pr["body"])
             if match:
