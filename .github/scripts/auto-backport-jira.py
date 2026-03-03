@@ -1163,9 +1163,15 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
             repo_local = Repo.clone_from(repo_url, local_repo_path, branch=backport_base_branch)
             repo_local.git.checkout(b=new_branch_name)
             is_draft = False
+            # Use -x only when cherry-picking from master (direct backport).
+            # Chain backports (branch-N → branch-{N-1}) omit -x to preserve the original cherry-pick marker.
+            is_from_master = (original_pr is None) or (original_pr.number == pr.number)
             for commit in commits:
                 try:
-                    repo_local.git.cherry_pick(commit, '-m1', '-x')
+                    if is_from_master:
+                        repo_local.git.cherry_pick(commit, '-m1', '-x')
+                    else:
+                        repo_local.git.cherry_pick(commit, '-m1')
                 except GitCommandError as e:
                     logging.warning(f'Cherry-pick conflict on commit {commit}: {e}')
                     is_draft = True
