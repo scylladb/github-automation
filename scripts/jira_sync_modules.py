@@ -71,20 +71,23 @@ def _extract_candidate_keys(pr_title: str, pr_body: str) -> list[str]:
 
     Title: any JIRA-style key is accepted.
     Body:  only keys preceded by a closing keyword are accepted.
-    Returns a sorted, deduplicated list.
+    Returns a sorted, deduplicated list.  Keys that appear in both
+    title and body are kept once.
     """
-    candidates: set[str] = set()
-
     title = _sanitize(pr_title)
     body = _sanitize(pr_body)
 
-    # All JIRA keys from title
-    candidates.update(_JIRA_KEY_RE.findall(title))
+    # Collect keys from each source separately
+    title_keys = set(_JIRA_KEY_RE.findall(title))
+    body_keys = set(_CLOSING_KEYWORD_RE.findall(body))
 
-    # Only closing-keyword keys from body
-    candidates.update(_CLOSING_KEYWORD_RE.findall(body))
+    # Log duplicates that appear in both title and body
+    duplicates = title_keys & body_keys
+    if duplicates:
+        print(f"Note: key(s) found in both title and body (deduplicated): "
+              f"{', '.join(sorted(duplicates))}")
 
-    return sorted(candidates)
+    return sorted(title_keys | body_keys)
 
 
 def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
