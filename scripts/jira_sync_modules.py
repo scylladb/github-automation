@@ -1,21 +1,22 @@
 ﻿#!/usr/bin/env python3
 """
-jira_sync_modules.py - Shared constants, helpers, and action implementations
+jira_sync_modules.py - Shared constants, helpers, and action functions
 for the Jira/GitHub sync workflows.
 
 Contains:
   - All imports and shared constants
   - Private HTTP/utility helpers
-  - Six public action functions and their CLI entry-point wrappers:
-      extract_jira_keys / _run_extract_jira_keys
-      add_label_to_jira_issue / _run_add_label_to_jira_issue
-      extract_jira_issue_details / _run_extract_jira_issue_details
-      apply_jira_labels_to_pr / _run_apply_jira_labels_to_pr
-      jira_status_transition / _run_jira_status_transition
-      add_comment_to_jira / _run_add_comment_to_jira
+  - Public action functions:
+      extract_jira_keys
+      add_label_to_jira_issue
+      remove_label_from_jira_issue
+      extract_jira_issue_details
+      apply_jira_labels_to_pr
+      jira_status_transition
+      add_comment_to_jira
 
-The top-level orchestrator (manage_labeled_gh_event), the CLI dispatcher,
-and main() live in jira_sync_logic.py which imports from this module.
+The orchestrator functions and CLI dispatcher live in jira_sync_logic.py
+which imports from this module.
 """
 
 import base64
@@ -31,7 +32,6 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-AVAILABLE_ACTIONS = ['debug', 'extract_jira_keys', 'add_label_to_jira_issue', 'extract_jira_issue_details', 'apply_jira_labels_to_pr', 'jira_status_transition', 'add_comment_to_jira', 'manage_labeled_gh_event']
 
 KNOWN_PROJECT_PREFIXES = {
     "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
@@ -119,6 +119,16 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     3. For remaining keys, query the Jira API and accept valid prefixes.
     4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
     """
+    print(f"PR title: {pr_title}")
+    print(f"PR body: {pr_body}")
+
+    if not pr_title:
+        print("Warning: pr_title is not set or empty.")
+
+    if not jira_auth:
+        print("Warning: jira_auth is not set. "
+              "Jira API fallback for unknown prefixes will be skipped.")
+
     candidates = _extract_candidate_keys(pr_title, pr_body)
 
     if not candidates:
@@ -153,14 +163,14 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
         for key in unknown:
             print(f"  {key}")
 
-        jira_project_keys = _fetch_jira_project_keys(jira_auth)
+        api_keys = _fetch_jira_project_keys(jira_auth)
 
-        if jira_project_keys:
-            print(f"Valid Jira project keys from API (first 20): {' '.join(sorted(jira_project_keys)[:20])}")
+        if api_keys:
+            print(f"Valid Jira project keys from API (first 20): {' '.join(sorted(api_keys)[:20])}")
 
         for key in unknown:
             prefix = key.split('-', 1)[0]
-            if prefix in jira_project_keys:
+            if prefix in api_keys:
                 print(f"Accepting {key} via Jira API (valid project prefix '{prefix}').")
                 accepted.append(key)
             else:
@@ -180,34 +190,6 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
         print(f"  {key}")
 
     return result
-
-
-def _run_extract_jira_keys() -> None:
-    """CLI entry-point wrapper for extract_jira_keys.
-
-    Reads PR_TITLE, PR_BODY, and JIRA_AUTH from environment variables.
-    """
-    pr_title = os.environ.get("PR_TITLE", "")
-    pr_body = os.environ.get("PR_BODY", "")
-    jira_auth = os.environ.get("JIRA_AUTH", "")
-
-    print(f"PR title: {pr_title}")
-
-    if not pr_title:
-        print("Warning: PR_TITLE env var is not set or empty.")
-
-    if not jira_auth:
-        print("Warning: JIRA_AUTH env var is not set. "
-              "Jira API fallback for unknown prefixes will be skipped.")
-
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
-    output = json.dumps(keys)
-    print(f"jira-keys-json={output}")
-
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
-        with open(github_output, "a") as f:
-            f.write(f"jira-keys-json={output}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +288,9 @@ def _jira_put(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
             return resp.getcode(), resp.read().decode()
     except HTTPError as exc:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
+    except URLError as exc:
+        print(f"Warning: network error - {exc}")
+        return 0, str(exc)
 
 
 def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
@@ -319,6 +304,16 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
       - symptom/<symptom>  -> adds a symptom (customfield_11120)
       - anything else      -> adds a plain Jira label
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
+    if not label:
+        print("Error: label is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
     keys = _parse_jira_keys_json(jira_keys_json)
     if not keys:
         return []
@@ -399,28 +394,96 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
     return not_found_keys
 
 
-def _run_add_label_to_jira_issue() -> None:
-    """CLI entry-point wrapper for add_label_to_jira_issue.
+def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
+    """Remove a label or Scylla component from every Jira issue in *jira_keys_json*.
 
-    Reads JIRA_KEYS_JSON, LABEL, and JIRA_AUTH from environment variables.
+    Replicates the logic of remove_label_from_jira_issue.yml in pure Python.
+
+    Modes:
+      - area/<component>  -> removes a Scylla component (customfield_10321)
+      - symptom/<symptom> -> removes a Problem Symptom (customfield_11120)
+      - anything else     -> removes a plain Jira label
     """
-    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
-    label = os.environ.get("LABEL", "")
-    jira_auth = os.environ.get("JIRA_AUTH", "")
-
-    if not jira_keys_json:
-        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
-        sys.exit(1)
+    print(f"jira_keys_json={jira_keys_json}")
 
     if not label:
-        print("Error: LABEL env var is not set or empty.")
+        print("Error: label is not set or empty.")
         sys.exit(1)
 
     if not jira_auth:
-        print("Error: JIRA_AUTH env var is not set or empty.")
+        print("Error: jira_auth is not set or empty.")
         sys.exit(1)
 
-    add_label_to_jira_issue(jira_keys_json, label, jira_auth)
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        return []
+
+    print(f"Incoming removed label: '{label}'")
+
+    if label.startswith("area/"):
+        mode = "scylla_component"
+        component_value = label[len("area/"):].replace("_", " ")
+        payload = {
+            "update": {
+                SCYLLA_COMPONENTS_FIELD: [{"remove": {"value": component_value}}]
+            }
+        }
+        action_desc = "Remove Scylla component"
+        print(f"Will remove Scylla component: '{component_value}'")
+    elif label.startswith("symptom/"):
+        mode = "symptom"
+        symptom_value = label[len("symptom/"):].replace("_", " ")
+        payload = {
+            "update": {
+                SYMPTOM_FIELD: [{"remove": {"value": symptom_value}}]
+            }
+        }
+        action_desc = "Remove symptom"
+        print(f"Will remove symptom: '{symptom_value}'")
+    else:
+        mode = "label"
+        payload = {"update": {"labels": [{"remove": label}]}}
+        action_desc = "Remove label"
+        print(f"Will remove label: '{label}'")
+
+    ok = 0
+    skipped = 0
+    failed = 0
+    not_found_keys: list[str] = []
+
+    for key in keys:
+        issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}"
+        print(f"{action_desc} on {key} ...")
+
+        code, body_text = _jira_put(issue_url, payload, jira_auth)
+
+        if code in (200, 204):
+            print(f"OK {key} ({code})")
+            ok += 1
+
+        elif code == 400:
+            print(f"SKIP {key} ({code})  value may not exist in Jira. First 200 chars:")
+            print(body_text[:200])
+            skipped += 1
+
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
+            skipped += 1
+            not_found_keys.append(key)
+
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if not_found_keys:
+        print(f"Not-found keys (will be removed from further processing): {not_found_keys}")
+    if failed > 0:
+        sys.exit(1)
+    return not_found_keys
 
 
 # ---------------------------------------------------------------------------
@@ -455,13 +518,20 @@ def _csv_escape(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str]:
+def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str, list[str]]:
     """Fetch Jira issue details and produce a CSV plus a deduplicated labels string.
 
     Replicates the logic of extract_jira_issue_details.yml in pure Python.
 
-    Returns (csv_content, labels_csv).
+    Returns (csv_content, labels_csv, not_found_keys).
+    not_found_keys lists issue keys that returned 404 or other fetch errors.
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
     keys = _parse_jira_keys_json(jira_keys_json)
 
     if not keys:
@@ -470,7 +540,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         print("---------------------------------------------------")
         print(_CSV_HEADER)
         print("---------------------------------------------------")
-        return _CSV_HEADER + "\n", ""
+        return _CSV_HEADER + "\n", "", []
 
     fields_param = ",".join([
         "status", "labels", "assignee", "priority", "fixVersions",
@@ -479,6 +549,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
 
     csv_lines: list[str] = [_CSV_HEADER]
     all_labels: list[str] = []
+    not_found_keys: list[str] = []
 
     for key in keys:
         url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields={fields_param}"
@@ -487,6 +558,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         resp = _jira_get(url, jira_auth)
         if resp is None:
             print(f"Skipping {key} - fetch failed")
+            not_found_keys.append(key)
             continue
 
         fields = resp.get("fields", {})
@@ -559,38 +631,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         print(line)
     print("---------------------------------------------------")
 
-    return csv_content, labels_csv
-
-
-def _run_extract_jira_issue_details() -> None:
-    """CLI entry-point wrapper for extract_jira_issue_details.
-
-    Reads JIRA_KEYS_JSON and JIRA_AUTH from environment variables.
-    Writes labels_csv and csv to GITHUB_OUTPUT.
-    """
-    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
-    jira_auth = os.environ.get("JIRA_AUTH", "")
-
-    if not jira_keys_json:
-        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
-        sys.exit(1)
-
-    if not jira_auth:
-        print("Error: JIRA_AUTH env var is not set or empty.")
-        sys.exit(1)
-
-    csv_content, labels_csv = extract_jira_issue_details(jira_keys_json, jira_auth)
-
-    print(f"labels_csv={labels_csv}")
-
-    github_output = os.environ.get("GITHUB_OUTPUT")
-    if github_output:
-        with open(github_output, "a") as f:
-            f.write(f"labels_csv={labels_csv}\n")
-            f.write(f"csv<<EOF\n")
-            f.write(csv_content)
-            f.write("EOF\n")
-
+    return csv_content, labels_csv, not_found_keys
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +812,14 @@ def apply_jira_labels_to_pr(
     2. Remove stale P0-P4 labels from the PR.
     3. Add each computed label to the PR via the GitHub API.
     """
+    if not owner_repo:
+        print("Error: owner_repo is not set or empty.")
+        sys.exit(1)
+
+    if not gh_token:
+        print("Error: gh_token is not set or empty.")
+        sys.exit(1)
+
     print("======================================================")
     print(" Apply Labels to PR -- Input Parameters")
     print("======================================================")
@@ -818,41 +867,6 @@ def apply_jira_labels_to_pr(
     print(f"Summary: ok={ok} failed={failed}")
 
 
-def _run_apply_jira_labels_to_pr() -> None:
-    """CLI entry-point wrapper for apply_jira_labels_to_pr.
-
-    Reads PR_NUMBER, LABELS_CSV, DETAILS_CSV, NEW_PRIORITY_LABEL,
-    OWNER_REPO, and GITHUB_TOKEN from environment variables.
-    """
-    pr_number_str = os.environ.get("PR_NUMBER", "")
-    labels_csv = os.environ.get("LABELS_CSV", "")
-    details_csv = os.environ.get("DETAILS_CSV", "")
-    new_priority_label = os.environ.get("NEW_PRIORITY_LABEL", "")
-    owner_repo = os.environ.get("OWNER_REPO", "")
-    gh_token = os.environ.get("GITHUB_TOKEN", "")
-
-    if not pr_number_str:
-        print("Error: PR_NUMBER env var is not set or empty.")
-        sys.exit(1)
-
-    try:
-        pr_number = int(pr_number_str)
-    except ValueError:
-        print(f"Error: PR_NUMBER '{pr_number_str}' is not a valid integer.")
-        sys.exit(1)
-
-    if not owner_repo:
-        print("Error: OWNER_REPO env var is not set or empty.")
-        sys.exit(1)
-
-    if not gh_token:
-        print("Error: GITHUB_TOKEN env var is not set or empty.")
-        sys.exit(1)
-
-    apply_jira_labels_to_pr(pr_number, labels_csv, details_csv, new_priority_label, owner_repo, gh_token)
-
-
-
 # ---------------------------------------------------------------------------
 # jira_status_transition
 # ---------------------------------------------------------------------------
@@ -876,6 +890,9 @@ def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
             return resp.getcode(), resp.read().decode()
     except HTTPError as exc:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
+    except URLError as exc:
+        print(f"Warning: network error - {exc}")
+        return 0, str(exc)
 
 
 def _plan_transitions(
@@ -946,6 +963,22 @@ def jira_status_transition(
     3. For issues moving to a closed state, set due date if empty.
     4. POST the transition for each issue that needs it.
     """
+    if not details_csv:
+        print("Error: details_csv is not set or empty.")
+        sys.exit(1)
+
+    if not transition_name:
+        print("Error: transition_name is not set or empty.")
+        sys.exit(1)
+
+    if not transition_id:
+        print("Error: transition_id is not set or empty.")
+        sys.exit(1)
+
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
     print("======================================================")
     print(" Jira Status Transition -- Input Parameters")
     print("======================================================")
@@ -1019,38 +1052,7 @@ def jira_status_transition(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        sys.exit(1)
-
-
-def _run_jira_status_transition() -> None:
-    """CLI entry-point wrapper for jira_status_transition.
-
-    Reads DETAILS_CSV, TRANSITION_NAME, TRANSITION_ID, and JIRA_AUTH
-    from environment variables.
-    """
-    details_csv = os.environ.get("DETAILS_CSV", "")
-    transition_name = os.environ.get("TRANSITION_NAME", "")
-    transition_id = os.environ.get("TRANSITION_ID", "")
-    jira_auth = os.environ.get("JIRA_AUTH", "")
-
-    if not details_csv:
-        print("Error: DETAILS_CSV env var is not set or empty.")
-        sys.exit(1)
-
-    if not transition_name:
-        print("Error: TRANSITION_NAME env var is not set or empty.")
-        sys.exit(1)
-
-    if not transition_id:
-        print("Error: TRANSITION_ID env var is not set or empty.")
-        sys.exit(1)
-
-    if not jira_auth:
-        print("Error: JIRA_AUTH env var is not set or empty.")
-        sys.exit(1)
-
-    jira_status_transition(details_csv, transition_name, transition_id, jira_auth)
-
+        print(f"WARNING: {failed} transition(s) failed. Continuing.")
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1115,12 @@ def add_comment_to_jira(
     link_url : str, optional
         URL for the clickable link.
     """
+    print(f"jira_keys_json={jira_keys_json}")
+
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
     keys = _parse_jira_keys_json(jira_keys_json)
     if not keys:
         print("No Jira keys to comment on.")
@@ -1156,33 +1164,6 @@ def add_comment_to_jira(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        sys.exit(1)
-
-
-def _run_add_comment_to_jira() -> None:
-    """CLI entry-point wrapper for add_comment_to_jira.
-
-    Reads JIRA_KEYS_JSON, COMMENT, LINK_TEXT, LINK_URL, and JIRA_AUTH
-    from environment variables.
-    """
-    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
-    comment = os.environ.get("COMMENT", "")
-    link_text = os.environ.get("LINK_TEXT", "")
-    link_url = os.environ.get("LINK_URL", "")
-    jira_auth = os.environ.get("JIRA_AUTH", "")
-
-    if not jira_keys_json:
-        print("Error: JIRA_KEYS_JSON env var is not set or empty.")
-        sys.exit(1)
-
-    if not comment:
-        print("Error: COMMENT env var is not set or empty.")
-        sys.exit(1)
-
-    if not jira_auth:
-        print("Error: JIRA_AUTH env var is not set or empty.")
-        sys.exit(1)
-
-    add_comment_to_jira(jira_keys_json, comment, jira_auth, link_text, link_url)
+        print(f"WARNING: {failed} comment(s) failed. Continuing.")
 
 
