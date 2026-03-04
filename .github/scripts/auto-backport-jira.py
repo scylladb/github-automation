@@ -1032,31 +1032,48 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
 
 def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     commits = []
+    logging.info(f"get_pr_commits: PR #{pr.number} state={pr.state}, merged={pr.merged}, "
+                 f"merge_commit_sha={pr.merge_commit_sha}, stable_branch={stable_branch}, "
+                 f"start_commit={start_commit}")
     if pr.merged:
         merge_commit = repo.get_commit(pr.merge_commit_sha)
         if len(merge_commit.parents) > 1:  # Check if this merge commit includes multiple commits
             commits.append(pr.merge_commit_sha)
         else:
             if start_commit:
-                promoted_commits = repo.compare(start_commit, stable_branch).commits
+                promoted_commits = list(repo.compare(start_commit, stable_branch).commits)
             else:
-                promoted_commits = repo.get_commits(sha=stable_branch)
-            for commit in pr.get_commits():
-                for promoted_commit in promoted_commits:
-                    commit_title = commit.commit.message.splitlines()[0]
-                    # In Scylla-pkg and scylla-dtest, for example,
-                    # we don't create a merge commit for a PR with multiple commits,
-                    # according to the GitHub API, the last commit will be the merge commit,
-                    # which is not what we need when backporting (we need all the commits).
-                    # So here, we are validating the correct SHA for each commit so we can cherry-pick
-                    if promoted_commit.commit.message.startswith(commit_title):
-                        commits.append(promoted_commit.sha)
+                promoted_commits = list(repo.get_commits(sha=stable_branch))
+            
+            if not promoted_commits:
+                # If compare returns no commits (e.g., start_commit IS the branch tip),
+                # fall back to using the merge_commit_sha directly.
+                # This handles squash merges where head_commit == merge_commit_sha.
+                logging.info(f"No promoted commits found between {start_commit} and {stable_branch}, "
+                             f"using merge_commit_sha {pr.merge_commit_sha} directly")
+                commits.append(pr.merge_commit_sha)
+            else:
+                for commit in pr.get_commits():
+                    for promoted_commit in promoted_commits:
+                        commit_title = commit.commit.message.splitlines()[0]
+                        # In Scylla-pkg and scylla-dtest, for example,
+                        # we don't create a merge commit for a PR with multiple commits,
+                        # according to the GitHub API, the last commit will be the merge commit,
+                        # which is not what we need when backporting (we need all the commits).
+                        # So here, we are validating the correct SHA for each commit so we can cherry-pick
+                        if promoted_commit.commit.message.startswith(commit_title):
+                            commits.append(promoted_commit.sha)
 
-    elif pr.state == 'closed':
+    # For non-merged closed PRs, or as a fallback when the merged path found no commits,
+    # look for the commit SHA from the close event. This handles PRs closed by direct push
+    # (e.g., in scylladb/scylladb where commits are pushed directly to the branch).
+    if not commits and pr.state == 'closed':
         events = pr.get_issue_events()
         for event in events:
-            if event.event == 'closed' and event.commit_id:
+            if event.event == 'referenced' and event.commit_id:
                 commits.append(event.commit_id)
+                logging.info(f"Found close event commit for PR #{pr.number}: {event.commit_id}")
+                return commits
     return commits
 
 
@@ -1144,6 +1161,7 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
         remaining_backport_labels: List of backport/X.Y labels to add for chain continuation
     """
     # Check if commits are already in the target branch
+    logging.info(f"Backporting commits {commits} to {backport_base_branch} for version {version}")
     for commit in commits:
         if is_commit_in_branch(repo, commit, backport_base_branch):
             logging.info(f"Commit {commit} already in {backport_base_branch}, skipping backport for version {version}")
@@ -1374,7 +1392,6 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     # Create backport PR for highest version
     target_branch = get_branch_name(repo_name, highest_version)
     logging.info(f"Creating backport PR for version {highest_version} to branch {target_branch}")
-    
     backport_pr = backport(repo, pr, highest_version, commits, target_branch, pr_body=pr_body, 
                            jira_failed=jira_failed, original_pr=pr, 
                            remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes)
@@ -1891,6 +1908,12 @@ def main():
             
         commits = get_pr_commits(repo, pr, stable_branch, start_commit)
         logging.info(f"Found PR #{pr.number} with commit {commits} and the following labels: {backport_labels}")
+        
+        if not commits:
+            logging.warning(f"No commits found for PR #{pr.number}, skipping backport. "
+                            f"This may happen if the merge commit SHA could not be resolved "
+                            f"against the stable branch '{stable_branch}'.")
+            continue
         
         # Extract Jira key from PR body
         main_jira_key = extract_jira_key_from_pr_body(pr.body)
