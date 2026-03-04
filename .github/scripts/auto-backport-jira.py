@@ -1168,10 +1168,16 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
             is_from_master = (original_pr is None) or (original_pr.number == pr.number)
             for commit in commits:
                 try:
+                    # Only use -m1 for merge commits (multiple parents).
+                    # Non-merge commits (e.g. from closed-but-not-merged PRs) don't need -m1.
+                    commit_obj = repo.get_commit(commit)
+                    is_merge_commit = len(commit_obj.parents) > 1
+                    cherry_pick_args = [commit]
+                    if is_merge_commit:
+                        cherry_pick_args.append('-m1')
                     if is_from_master:
-                        repo_local.git.cherry_pick(commit, '-m1', '-x')
-                    else:
-                        repo_local.git.cherry_pick(commit, '-m1')
+                        cherry_pick_args.append('-x')
+                    repo_local.git.cherry_pick(*cherry_pick_args)
                 except GitCommandError as e:
                     logging.warning(f'Cherry-pick conflict on commit {commit}: {e}')
                     is_draft = True
