@@ -617,7 +617,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
 
     # Deduplicate labels
     if all_labels:
-        labels_csv = ",".join(sorted(set(all_labels)))
+        labels_csv = _DETAIL_DELIM.join(sorted(set(all_labels)))
     else:
         labels_csv = ""
 
@@ -679,7 +679,7 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
     6. Append symptom/* labels.
     """
     # 1) Parse labels_csv
-    raw_labels = [s.strip() for s in labels_csv.split(",")]
+    raw_labels = [s.strip() for s in labels_csv.split(_DETAIL_DELIM)]
     seen: set[str] = set()
     labels: list[str] = []
     for s in raw_labels:
