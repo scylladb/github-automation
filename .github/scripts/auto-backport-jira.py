@@ -1510,8 +1510,17 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
             else:
                 jira_mapping[parent_jira_key] = parent_jira_key
     
-    # Get commits from the merged PR
-    commits = [merged_pr.merge_commit_sha] if merged_pr.merge_commit_sha else []
+    # Get commits from the merged/closed PR
+    if merged_pr.merged:
+        commits = [merged_pr.merge_commit_sha] if merged_pr.merge_commit_sha else []
+    else:
+        # For PRs closed by direct push (not merged through GitHub UI),
+        # get the actual commit SHA from the close event
+        commits = get_pr_commits(repo, merged_pr, merged_pr.base.ref)
+    
+    if not commits:
+        logging.warning(f"No commits found for PR #{merged_pr.number}, skipping chain backport")
+        return
     
     # Build remaining backport labels for the NEW backport PR (exclude the one we're processing)
     remaining_backport_labels = [f"backport/{v}" for v in remaining_versions[1:]]
