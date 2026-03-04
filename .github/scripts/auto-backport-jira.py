@@ -854,6 +854,38 @@ def extract_original_title(pr_title: str) -> str:
 # PR body generation
 # ============================================================================
 
+def strip_cherry_pick_info(body: str) -> str:
+    """
+    Strip existing cherry-pick markers and Parent PR references from a PR body.
+    This prevents stacking of cherry-pick info when doing chain backports.
+    
+    Removes lines like:
+    - (cherry picked from commit <sha>)
+    Parent PR: #1234
+    """
+    if not body:
+        return body
+    
+    # Remove cherry-pick lines and Parent PR lines
+    lines = body.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip cherry-pick marker lines
+        if re.match(r'^-?\s*\(?cherry picked from commit [0-9a-f]+\)?$', stripped):
+            continue
+        # Skip Parent PR reference lines
+        if re.match(r'^Parent PR:\s*#\d+$', stripped):
+            continue
+        cleaned_lines.append(line)
+    
+    # Remove trailing blank lines that were left after stripping
+    while cleaned_lines and cleaned_lines[-1].strip() == '':
+        cleaned_lines.pop()
+    
+    return '\n'.join(cleaned_lines)
+
+
 def replace_fixes_in_body(original_body: str, jira_mapping: Dict[str, str]) -> str:
     """
     Replace Fixes references in PR body with new Jira keys based on mapping.
@@ -902,7 +934,10 @@ def generate_backport_pr_body(
     
     # Add original PR body with modified Fixes references
     if original_pr_body:
-        modified_body = replace_fixes_in_body(original_pr_body, jira_mapping)
+        # Strip any existing cherry-pick markers and Parent PR lines to prevent
+        # stacking in chain backports (e.g., master -> 2026.1 -> 2025.4)
+        clean_body = strip_cherry_pick_info(original_pr_body)
+        modified_body = replace_fixes_in_body(clean_body, jira_mapping)
         body += modified_body
         # Ensure there's spacing before cherry-pick info
         if not body.endswith('\n\n'):
