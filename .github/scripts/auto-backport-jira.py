@@ -1792,6 +1792,9 @@ def _close_promoted_backport_pr(repo, pr, branch_name: str, version: str,
         except Exception as e:
             logging.warning(f"Error marking backport as done for PR #{pr.number}: {e}")
 
+    # Continue chain backport to remaining versions
+    process_chain_backport(repo, pr, repo_name)
+
 
 def main():
     args = parse_args()
