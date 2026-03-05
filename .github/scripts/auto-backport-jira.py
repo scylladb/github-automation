@@ -1897,9 +1897,29 @@ def main():
     if args.commits:
         start_commit, end_commit = args.commits.split('..')
         commits = repo.compare(start_commit, end_commit).commits
+        seen_pr_numbers = set()
         for commit in commits:
             for pr in commit.get_pulls():
-                closed_prs.append(pr)
+                if pr.number not in seen_pr_numbers:
+                    closed_prs.append(pr)
+                    seen_pr_numbers.add(pr.number)
+
+            # Also find PRs referenced via "Closes #X" in commit messages.
+            # This handles PRs that are closed by direct push (not merged via
+            # GitHub UI), e.g. in scylladb/scylladb where PRs target 'next'
+            # and commits are promoted to master with a different flow.
+            # commit.get_pulls() does not return such non-merged PRs.
+            for match in re.finditer(r'Closes\s+(?:[\w-]+/[\w-]+)?#(\d+)', commit.commit.message):
+                pr_number = int(match.group(1))
+                if pr_number not in seen_pr_numbers:
+                    try:
+                        closed_pr = repo.get_pull(pr_number)
+                        if closed_pr.state == 'closed':
+                            closed_prs.append(closed_pr)
+                            seen_pr_numbers.add(pr_number)
+                            logging.info(f"Found closed-with-commit PR #{pr_number} via 'Closes' reference")
+                    except Exception as e:
+                        logging.warning(f"Could not fetch PR #{pr_number} from 'Closes' reference: {e}")
     if args.pull_request:
         start_commit = args.head_commit
         pr = repo.get_pull(args.pull_request)
