@@ -14,6 +14,7 @@ on:
 
 jobs:
   create_jira_releases:
+    if: github.event.action == 'created'
     runs-on: ubuntu-slim
     env:
       JIRA_BASE_URL: https://scylladb.atlassian.net
@@ -114,6 +115,108 @@ jobs:
             cat resp.json || true
             echo
             failed=$((failed+1))
+          done
+
+          echo "======================================================"
+          echo "Summary: ok=${ok} skipped=${skipped} failed=${failed}"
+          echo "======================================================"
+
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
+
+  release_jira_releases:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-slim
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+      PROJECT_KEYS: ${{ inputs.jira_project_keys }}
+
+    steps:
+      - name: Debug milestone input
+        run: |
+          echo "Projects:      '${{ inputs.jira_project_keys }}'"
+          echo "Title:         '${{ github.event.milestone.title }}'"
+          echo "Action:        '${{ github.event.action }}'"
+
+      - name: Release Jira version in each project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${JIRA_AUTH:-}" ]; then
+            echo "ERROR: jira_auth secret is not set."
+            exit 1
+          fi
+
+          NAME="${{ github.event.milestone.title }}"
+          TODAY="$(date -u +%Y-%m-%d)"
+
+          echo "Version name:  ${NAME}"
+          echo "Release date:  ${TODAY}"
+          echo "Projects:      ${PROJECT_KEYS}"
+          echo
+
+          # Split comma-separated keys safely (trim whitespace)
+          IFS=',' read -r -a KEYS <<< "${PROJECT_KEYS}"
+
+          ok=0
+          skipped=0
+          failed=0
+
+          for raw in "${KEYS[@]}"; do
+            PROJECT_KEY="$(echo "$raw" | awk '{$1=$1};1')"  # trim
+            [ -n "$PROJECT_KEY" ] || continue
+
+            echo "======================================================"
+            echo "Releasing Jira version in project: ${PROJECT_KEY}"
+            echo "======================================================"
+
+            # Find the version ID by name
+            HTTP_CODE=$(curl -sS -o versions.json -w "%{http_code}" \
+              "${JIRA_BASE_URL}/rest/api/3/project/${PROJECT_KEY}/versions" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" || true)
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "FAIL: could not list versions in ${PROJECT_KEY} (HTTP ${HTTP_CODE}). Response:"
+              cat versions.json || true
+              echo
+              failed=$((failed+1))
+              continue
+            fi
+
+            VERSION_ID=$(jq -r --arg name "$NAME" \
+              '.[] | select(.name == $name) | .id' versions.json | head -1)
+
+            if [ -z "$VERSION_ID" ]; then
+              echo "SKIP: version '${NAME}' not found in ${PROJECT_KEY}."
+              skipped=$((skipped+1))
+              continue
+            fi
+
+            # Mark the version as released
+            jq -n \
+              --arg rdate "${TODAY}" \
+              '{"released": true, "releaseDate": $rdate}' > release_payload.json
+
+            HTTP_CODE=$(curl -sS -o release_resp.json -w "%{http_code}" \
+              -X PUT "${JIRA_BASE_URL}/rest/api/3/version/${VERSION_ID}" \
+              --user "${JIRA_AUTH}" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              --data @release_payload.json || true)
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "OK: released version '${NAME}' in ${PROJECT_KEY} (id=${VERSION_ID})."
+              ok=$((ok+1))
+            else
+              echo "FAIL: could not release version in ${PROJECT_KEY} (HTTP ${HTTP_CODE}). Response:"
+              cat release_resp.json || true
+              echo
+              failed=$((failed+1))
+            fi
           done
 
           echo "======================================================"
