@@ -91,7 +91,7 @@ jobs:
           - A developer who hasn't configured their git email correctly
           
           ### For ScyllaDB developers:
-          If you're a ScyllaDB employee, please configure your git email globally:
+          If you're a ScyllaDB associate, please configure your git email globally:
           ```bash
           git config --global user.email "your.name@scylladb.com"
           ```

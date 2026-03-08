@@ -1,4 +1,4 @@
-name: Close issues created by Scylla employees
+name: Close issues created by Scylla associates
 
 on:
   issues:
@@ -38,7 +38,7 @@ jobs:
             const repo = context.repo.repo;
             const issue_number = issue.number;
 
-            const body = "This issue is closed automatically. Scylla employees should use Jira to manage issues.\nPlease move this issue to Jira https://scylladb.atlassian.net/jira/software/c/projects/SCYLLADB/list";
+            const body = "This issue is closed automatically. Scylla associates should use Jira to manage issues.\nPlease move this issue to Jira https://scylladb.atlassian.net/jira/software/c/projects/SCYLLADB/list";
 
             // Add the comment
             await github.rest.issues.createComment({
