@@ -46,7 +46,7 @@ def manage_labeled_gh_event(
       4.  extract_jira_issue_details
       5.  apply_jira_labels_to_pr
       6.  if label is status/merge_candidate  -> transition to Ready for Merge
-      7.  if label is promoted-to-master AND repo is scylladb/staging:
+      7.  if label starts with promoted-to-:
             a. add comment  b. transition to Done
     """
     print("=" * 60)
@@ -125,31 +125,31 @@ def manage_labeled_gh_event(
     else:
         print(f"SKIPPED: triggering_label is '{triggering_label}', not 'status/merge_candidate'")
 
-    # --- Step 7: promoted-to-master (scylladb/staging only) ---
+    # --- Step 7: promoted-to-* label ---
     print("\n" + "=" * 60)
-    print(" Step 7a / add_comment_to_jira (promoted-to-master)")
+    print(" Step 7a / add_comment_to_jira (promoted-to-*)")
     print("=" * 60)
-    if triggering_label == "promoted-to-master" and owner_repo == "scylladb/staging":
+    if triggering_label.startswith("promoted-to-"):
         pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
         add_comment_to_jira(
             jira_keys_json,
-            "Closed via promoted-to-master label on PR ",
+            f"Closed via {triggering_label} label on PR ",
             jira_auth,
             link_text=pr_title,
             link_url=pr_url,
         )
     else:
-        print(f"SKIPPED: triggering_label is '{triggering_label}' and owner_repo is '{owner_repo}'"
-              f" (requires 'promoted-to-master' on 'scylladb/staging')")
+        print(f"SKIPPED: triggering_label is '{triggering_label}'"
+              f" (requires label starting with 'promoted-to-')")
 
     print("\n" + "=" * 60)
     print(" Step 7b / jira_status_transition -> Done")
     print("=" * 60)
-    if triggering_label == "promoted-to-master" and owner_repo == "scylladb/staging":
+    if triggering_label.startswith("promoted-to-"):
         jira_status_transition(csv_content, "Done", "141", jira_auth)
     else:
-        print(f"SKIPPED: triggering_label is '{triggering_label}' and owner_repo is '{owner_repo}'"
-              f" (requires 'promoted-to-master' on 'scylladb/staging')")
+        print(f"SKIPPED: triggering_label is '{triggering_label}'"
+              f" (requires label starting with 'promoted-to-')")
 
     print("\n" + "=" * 60)
     print(" manage_labeled_gh_event completed successfully")
@@ -713,8 +713,8 @@ def debug_sync_context():
     if label == 'status/merge_candidate':
         print("Try to transition Jira issue to 'Ready For Merge'")
 
-    if label == 'promoted-to-master':
-        print("Try to close Jira issue (promoted-to-master label added)")
+    if label.startswith('promoted-to-'):
+        print(f"Try to close Jira issue ({label} label added)")
 
     print("~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~")
     if github_context:
