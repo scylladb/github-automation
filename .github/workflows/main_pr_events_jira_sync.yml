@@ -16,6 +16,7 @@ on:
 
 jobs:
   jira-sync:
+    name: "Jira Sync - ${{ inputs.caller_action }}"
     runs-on: ubuntu-slim
     permissions:
       contents: read
