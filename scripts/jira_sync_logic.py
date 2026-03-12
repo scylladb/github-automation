@@ -747,6 +747,7 @@ ACTION_DISPATCH = {
 # and have the script resolve the correct handler automatically.
 EVENT_ACTION_MAP = {
     'opened': 'manage_opened_gh_event',
+    'edited': 'manage_opened_gh_event',
     'ready_for_review': 'manage_review_gh_event',
     'review_requested': 'manage_review_gh_event',
     'labeled': 'manage_labeled_gh_event',
