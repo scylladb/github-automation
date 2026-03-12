@@ -54,6 +54,7 @@ def manage_labeled_gh_event(
     print("=" * 60)
     print(f"  pr_title        = {pr_title!r}")
     print(f"  pr_body          = {pr_body!r}")
+    print(f"  pr_event      = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
@@ -226,6 +227,7 @@ def manage_review_gh_event(
     print("=" * 60)
     print(f"  pr_title   = {pr_title!r}")
     print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_event      = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
     print(f"  requested_reviewer = {requested_reviewer!r}")
@@ -342,6 +344,7 @@ def manage_closed_gh_event(
     print("=" * 60)
     print(f"  pr_title   = {pr_title!r}")
     print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_event      = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  pr_merged  = {pr_merged!r}")
     print(f"  owner_repo = {owner_repo!r}")
@@ -482,6 +485,7 @@ def manage_opened_gh_event(
     print("=" * 60)
     print(f"  pr_title   = {pr_title!r}")
     print(f"  pr_body    = {pr_body!r}")
+    print(f"  pr_event      = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
 
@@ -593,6 +597,7 @@ def manage_unlabeled_gh_event(
     print("=" * 60)
     print(f"  pr_title       = {pr_title!r}")
     print(f"  pr_body        = {pr_body!r}")
+    print(f"  pr_event      = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number      = {pr_number!r}")
     print(f"  removed_label  = {removed_label!r}")
     print(f"  owner_repo     = {owner_repo!r}")
@@ -783,6 +788,7 @@ def main():
 
     action = _resolve_action(args.action)
     print(f"=== Jira Sync: {action} (raw input: {args.action}) ===")
+    os.environ['CALLER_ACTION'] = args.action
 
     handler = ACTION_DISPATCH.get(action)
     if not handler:
