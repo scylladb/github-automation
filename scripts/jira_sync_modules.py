@@ -1046,8 +1046,8 @@ def jira_status_transition(
         # Guard: do not regress issues that are further along in the workflow
         _FORBIDDEN_TRANSITIONS = {
             ('in review', 'in progress'),
-            ('ready to merge', 'in progress'),
-            ('ready to merge', 'in review'),
+            ('ready for merge', 'in progress'),
+            ('ready for merge', 'in review'),
             ('done', 'done'),
         }
         if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
