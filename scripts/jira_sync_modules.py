@@ -1043,9 +1043,15 @@ def jira_status_transition(
     skipped = 0
 
     for key, current_status, start_dt, due_dt in to_transition:
-        # Guard: do not regress from 'In Review' back to 'In Progress'
-        if current_status.lower() == 'in review' and target_lower == 'in progress':
-            print(f"SKIP {key}: refusing to move from 'In Review' back to 'In Progress'")
+        # Guard: do not regress issues that are further along in the workflow
+        _FORBIDDEN_TRANSITIONS = {
+            ('in review', 'in progress'),
+            ('ready to merge', 'in progress'),
+            ('ready to merge', 'in review'),
+            ('done', 'done'),
+        }
+        if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
+            print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
             skipped += 1
             continue
         print(f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})")
