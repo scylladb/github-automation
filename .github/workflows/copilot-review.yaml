@@ -1,0 +1,116 @@
+name: AI Code Review
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Pull request number to review'
+        required: true
+        type: number
+      tool:
+        description: 'AI CLI tool to use: copilot or opencode'
+        required: false
+        type: string
+        default: 'copilot'
+      model:
+        description: 'AI model (default depends on tool: claude-sonnet-4 for copilot, github-copilot/claude-sonnet-4 for opencode)'
+        required: false
+        type: string
+        default: ''
+      additional_instructions:
+        description: 'Additional review instructions (max 1000 chars)'
+        required: false
+        type: string
+        default: ''
+      comment_id:
+        description: 'Issue comment ID for emoji reactions (0 to skip reactions)'
+        required: false
+        type: number
+        default: 0
+      inline_review:
+        description: 'Post findings as inline PR review comments on specific lines'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      COPILOT_TOKEN:
+        description: 'Fine-grained PAT with Copilot Requests permission (required for copilot tool)'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ai-review-${{ github.repository }}-pr-${{ inputs.pr_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: AI Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout automation scripts
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          path: .automation
+          sparse-checkout: .github/scripts/copilot-review.py
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        if: inputs.tool == 'copilot'
+        uses: actions/setup-node@v4
+
+      - name: Install Copilot CLI
+        if: inputs.tool == 'copilot'
+        run: npm install -g @github/copilot
+
+      - name: Install OpenCode CLI
+        if: inputs.tool == 'opencode'
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run review
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_REPO: ${{ github.repository }}
+          REVIEW_INSTRUCTIONS: ${{ inputs.additional_instructions }}
+          REVIEW_TOOL: ${{ inputs.tool }}
+          REVIEW_MODEL: ${{ inputs.model }}
+          REVIEW_INLINE: ${{ inputs.inline_review }}
+          REVIEW_PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEW_COMMENT_ID: ${{ inputs.comment_id }}
+          REVIEW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REVIEW_RUN_ID: ${{ github.run_id }}
+        run: |
+          args=(
+            --repo "$REVIEW_REPO"
+            --pr-number "$REVIEW_PR_NUMBER"
+            --tool "$REVIEW_TOOL"
+            --additional-instructions "$REVIEW_INSTRUCTIONS"
+            --comment-id "$REVIEW_COMMENT_ID"
+            --run-url "$REVIEW_RUN_URL"
+            --run-id "$REVIEW_RUN_ID"
+          )
+
+          if [ -n "$REVIEW_MODEL" ]; then
+            args+=(--model "$REVIEW_MODEL")
+          fi
+
+          if [ "$REVIEW_INLINE" = "true" ]; then
+            args+=(--inline-review)
+          fi
+
+          python3 .automation/.github/scripts/copilot-review.py "${args[@]}"
+
+      - name: Upload review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-review-PR${{ inputs.pr_number }}
+          path: /tmp/copilot-review/
+          retention-days: 30
