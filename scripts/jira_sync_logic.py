@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 jira_sync_logic.py - Top-level orchestrator and CLI dispatcher for Jira sync.
 
@@ -742,6 +742,32 @@ ACTION_DISPATCH = {
     'manage_unlabeled_gh_event': _run_manage_unlabeled_gh_event,
 }
 
+# Map GitHub event actions to orchestrator function names.
+# This allows the consolidated workflow to pass the raw github.event.action
+# and have the script resolve the correct handler automatically.
+EVENT_ACTION_MAP = {
+    'opened': 'manage_opened_gh_event',
+    'ready_for_review': 'manage_review_gh_event',
+    'review_requested': 'manage_review_gh_event',
+    'labeled': 'manage_labeled_gh_event',
+    'unlabeled': 'manage_unlabeled_gh_event',
+    'closed': 'manage_closed_gh_event',
+}
+
+
+def _resolve_action(raw_action: str) -> str:
+    """Resolve a raw --action value to an ACTION_DISPATCH key.
+
+    Accepts either a direct ACTION_DISPATCH key (e.g. manage_labeled_gh_event)
+    or a GitHub event action (e.g. labeled, closed, opened).
+    """
+    if raw_action in ACTION_DISPATCH:
+        return raw_action
+    resolved = EVENT_ACTION_MAP.get(raw_action)
+    if resolved:
+        return resolved
+    return raw_action
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -750,16 +776,17 @@ def main():
     parser.add_argument(
         '--action',
         required=True,
-        choices=ACTION_DISPATCH.keys(),
-        help='The action to execute'
+        help='The action to execute (orchestrator name or GitHub event action)'
     )
     args = parser.parse_args()
 
-    print(f"=== Jira Sync: {args.action} ===")
+    action = _resolve_action(args.action)
+    print(f"=== Jira Sync: {action} (raw input: {args.action}) ===")
 
-    handler = ACTION_DISPATCH.get(args.action)
+    handler = ACTION_DISPATCH.get(action)
     if not handler:
-        print(f"Error: Unknown action '{args.action}'")
+        valid = ', '.join(list(ACTION_DISPATCH.keys()) + list(EVENT_ACTION_MAP.keys()))
+        print(f"Error: Unknown action '{args.action}'. Valid values: {valid}")
         sys.exit(1)
 
     handler()

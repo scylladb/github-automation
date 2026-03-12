@@ -1,0 +1,43 @@
+name: Sync Jira from PR Events
+
+on:
+  workflow_call:
+    inputs:
+      caller_action:
+        description: >
+          The GitHub event action that triggered this workflow (e.g. opened,
+          labeled, unlabeled, closed, ready_for_review, review_requested).
+          The Python script maps this to the correct orchestrator function.
+        required: true
+        type: string
+    secrets:
+      caller_jira_auth:
+        required: true
+
+jobs:
+  jira-sync:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Run Jira sync orchestrator
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER_REPO: ${{ github.repository }}
+          TRIGGERING_LABEL: ${{ github.event.label.name }}
+          REMOVED_LABEL: ${{ github.event.label.name }}
+          REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          GITHUB_TOKEN: ${{ github.token }}
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action ${{ inputs.caller_action }}
