@@ -1043,6 +1043,11 @@ def jira_status_transition(
     skipped = 0
 
     for key, current_status, start_dt, due_dt in to_transition:
+        # Guard: do not regress from 'In Review' back to 'In Progress'
+        if current_status.lower() == 'in review' and target_lower == 'in progress':
+            print(f"SKIP {key}: refusing to move from 'In Review' back to 'In Progress'")
+            skipped += 1
+            continue
         print(f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})")
 
         # Set start date for working states if empty
