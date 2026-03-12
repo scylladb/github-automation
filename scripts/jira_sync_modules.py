@@ -65,23 +65,19 @@ def _sanitize(text: str) -> str:
     return text.replace('\r', '').replace('`', ' ')
 
 
-def _extract_candidate_keys(pr_title: str, pr_body: str) -> list[str]:
+def _extract_candidate_keys(pr_body: str) -> list[str]:
     """
-    Extract candidate Jira keys from PR title and body.
+    Extract candidate Jira keys from the PR body.
 
-    Title: any JIRA-style key is accepted.
-    Body:  only keys preceded by a closing keyword are accepted.
+    Only keys preceded by a closing keyword (Fixes, Closes, Resolves, etc.)
+    are accepted. Bare key mentions are ignored.
     Returns a sorted, deduplicated list.
     """
     candidates: set[str] = set()
 
-    title = _sanitize(pr_title)
     body = _sanitize(pr_body)
 
-    # All JIRA keys from title
-    candidates.update(_JIRA_KEY_RE.findall(title))
-
-    # Only closing-keyword keys from body
+    # Closing-keyword keys from body (Fixes, Closes, Resolves, etc.)
     candidates.update(_CLOSING_KEYWORD_RE.findall(body))
 
     return sorted(candidates)
@@ -114,25 +110,21 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     """
     Replicate the extract_jira_keys.yml logic in pure Python.
 
-    1. Extract candidate JIRA keys from the PR title and body.
+    1. Extract candidate JIRA keys from the PR body (title is ignored).
     2. Accept keys whose project prefix is in the hard-coded set.
     3. For remaining keys, query the Jira API and accept valid prefixes.
     4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
     """
-    print(f"PR title: {pr_title}")
     print(f"PR body: {pr_body}")
-
-    if not pr_title:
-        print("Warning: pr_title is not set or empty.")
 
     if not jira_auth:
         print("Warning: jira_auth is not set. "
               "Jira API fallback for unknown prefixes will be skipped.")
 
-    candidates = _extract_candidate_keys(pr_title, pr_body)
+    candidates = _extract_candidate_keys(pr_body)
 
     if not candidates:
-        print("No Jira-like keys found in PR title or body")
+        print("No Jira-like keys found in PR body")
         return ["__NO_KEYS_FOUND__"]
 
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
