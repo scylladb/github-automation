@@ -588,7 +588,39 @@ def create_jira_sub_issue(parent_key: str, version: str, original_title: str, as
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Backporting of {parent_key} (sub-task of {actual_parent_key}) to version {version}"
+                            "text": "Backporting of "
+                        },
+                        {
+                            "type": "text",
+                            "text": parent_key,
+                            "marks": [
+                                {
+                                    "type": "link",
+                                    "attrs": {
+                                        "href": f"{JIRA_BASE_URL}/browse/{parent_key}"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "text": " (sub-task of "
+                        },
+                        {
+                            "type": "text",
+                            "text": actual_parent_key,
+                            "marks": [
+                                {
+                                    "type": "link",
+                                    "attrs": {
+                                        "href": f"{JIRA_BASE_URL}/browse/{actual_parent_key}"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "text": f") to version {version}"
                         }
                     ]
                 }
@@ -604,7 +636,23 @@ def create_jira_sub_issue(parent_key: str, version: str, original_title: str, as
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Backporting of {parent_key} to version {version}"
+                            "text": "Backporting of "
+                        },
+                        {
+                            "type": "text",
+                            "text": parent_key,
+                            "marks": [
+                                {
+                                    "type": "link",
+                                    "attrs": {
+                                        "href": f"{JIRA_BASE_URL}/browse/{parent_key}"
+                                    }
+                                }
+                            ]
+                        },
+                        {
+                            "type": "text",
+                            "text": f" to version {version}"
                         }
                     ]
                 }
