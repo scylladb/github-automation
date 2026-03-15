@@ -36,7 +36,22 @@ jobs:
           
           INVALID_COMMITS=""
           INVALID_COUNT=0
-          
+
+          # Load known external contributors from the allow-list file.
+          # Lines starting with '#' and blank lines are ignored.
+          ALLOWED_EMAILS_FILE="${GITHUB_WORKSPACE}/.github/workflows/allowed_emails.txt"
+          mapfile -t ALLOWED_EMAILS < <(grep -v '^\s*#' "$ALLOWED_EMAILS_FILE" | grep -v '^\s*$')
+
+          is_allowed_email() {
+            local email="$1"
+            for allowed in "${ALLOWED_EMAILS[@]}"; do
+              if [[ "$email" == "$allowed" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
           # Check each commit's author and committer emails
           while IFS= read -r commit; do
             AUTHOR_EMAIL=$(git log -1 --format="%ae" $commit)
@@ -54,12 +69,14 @@ jobs:
             fi
             
             INVALID=""
-            
-            if [[ ! "$AUTHOR_EMAIL" =~ @scylladb\.com$ ]]; then
+
+            # Check author email
+            if [[ ! "$AUTHOR_EMAIL" =~ @scylladb\.com$ ]] && ! is_allowed_email "$AUTHOR_EMAIL"; then
               INVALID="${INVALID}Author: $AUTHOR_EMAIL"
             fi
-            
-            if [[ ! "$COMMITTER_EMAIL" =~ @scylladb\.com$ ]]; then
+
+            # Check committer email
+            if [[ ! "$COMMITTER_EMAIL" =~ @scylladb\.com$ ]] && ! is_allowed_email "$COMMITTER_EMAIL"; then
               if [ -n "$INVALID" ]; then
                 INVALID="${INVALID}, "
               fi
