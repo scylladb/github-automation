@@ -1076,7 +1076,7 @@ def jira_status_transition(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        print(f"WARNING: {failed} comment(s) failed. Continuing.")
+        print(f"WARNING: {failed} transition(s) failed. Continuing.")
 
 
 # ---------------------------------------------------------------------------
