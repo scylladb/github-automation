@@ -115,6 +115,7 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     3. For remaining keys, query the Jira API and accept valid prefixes.
     4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
     """
+    print(f"PR title: {pr_title}")
     print(f"PR body: {pr_body}")
 
     if not jira_auth:
