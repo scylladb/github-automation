@@ -59,6 +59,16 @@ jobs:
           sparse-checkout: .github/scripts/copilot-review.py
           sparse-checkout-cone-mode: false
 
+      - name: Validate Copilot token
+        if: inputs.tool == 'copilot'
+        run: |
+          if [ -z "$COPILOT_GITHUB_TOKEN" ]; then
+            echo "::error::COPILOT_TOKEN secret is required when tool=copilot but was not provided"
+            exit 1
+          fi
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+
       - name: Setup Node.js
         if: inputs.tool == 'copilot'
         uses: actions/setup-node@v4

@@ -140,9 +140,9 @@ def validate_repo(repo):
         sys.exit(1)
 
 
-def run_cmd(cmd, check=True, capture=True):
+def run_cmd(cmd, check=True, capture=True, cwd=None):
     """Run a command and return stripped stdout."""
-    result = subprocess.run(cmd, capture_output=capture, text=True, check=check)
+    result = subprocess.run(cmd, capture_output=capture, text=True, check=check, cwd=cwd)
     return result.stdout.strip() if capture else ""
 
 
@@ -189,11 +189,15 @@ def _is_in_repo(repo):
 
 
 def ensure_repo_checkout(repo, pr_number, base_ref, head_sha, output_dir):
-    """Ensure we're in a git checkout of the target repo with the PR checked out.
+    """Ensure a git checkout of the target repo with the PR checked out exists.
 
     If already in the right repo, just fetch the base branch.
     Otherwise, clone the repo and checkout the PR head.
     Returns the working directory path.
+
+    Uses explicit ``cwd=`` arguments for all subprocess calls instead of
+    ``os.chdir()`` to avoid mutating global process state.  If a step fails
+    mid-way the caller's working directory is unaffected.
     """
     if _is_in_repo(repo):
         try:
@@ -212,15 +216,15 @@ def ensure_repo_checkout(repo, pr_number, base_ref, head_sha, output_dir):
          "--filter=blob:none", "--no-checkout"],
         capture=False,
     )
-    os.chdir(work_dir)
 
     print(f"Fetching PR #{pr_number} and base branch {base_ref}...")
     run_cmd(
         ["git", "fetch", "origin",
          f"pull/{pr_number}/head:pr-head", base_ref],
         capture=False,
+        cwd=work_dir,
     )
-    run_cmd(["git", "checkout", "pr-head"], capture=False)
+    run_cmd(["git", "checkout", "pr-head"], capture=False, cwd=work_dir)
 
     return work_dir
 
@@ -229,11 +233,11 @@ def ensure_repo_checkout(repo, pr_number, base_ref, head_sha, output_dir):
 # Context gathering
 # ---------------------------------------------------------------------------
 
-def gather_context(base_ref):
+def gather_context(base_ref, work_dir=None):
     """Gather changed file list from the git working tree."""
     try:
         diff_ref = f"origin/{base_ref}...HEAD"
-        changed = run_cmd(["git", "diff", "--name-only", diff_ref])
+        changed = run_cmd(["git", "diff", "--name-only", diff_ref], cwd=work_dir)
     except subprocess.CalledProcessError:
         print(
             "WARNING: git diff failed — are you in a PR checkout with base fetched?",
@@ -331,8 +335,11 @@ def build_prompt(args, context):
 # AI CLI tool runners
 # ---------------------------------------------------------------------------
 
-def _build_copilot_cmd(prompt_text, model, max_continues):
+def _build_copilot_cmd(prompt_text, model, max_continues, work_dir):
     """Build the copilot CLI command."""
+    # Restrict file-read operations to the repo working directory to prevent
+    # the agent from reading sensitive paths like /proc/self/environ on the runner.
+    repo_glob = f"{work_dir}/*"
     return [
         "copilot",
         "-p", prompt_text,
@@ -345,10 +352,10 @@ def _build_copilot_cmd(prompt_text, model, max_continues):
         "--allow-tool", "shell(git log:*)",
         "--allow-tool", "shell(git show:*)",
         "--allow-tool", "shell(git status:*)",
-        "--allow-tool", "shell(gh pr view:*)",
-        "--allow-tool", "shell(cat:*)",
-        "--allow-tool", "shell(ls:*)",
-        "--allow-tool", "shell(head:*)",
+        "--allow-tool", f"shell(gh pr view:*)",
+        "--allow-tool", f"shell(cat:{repo_glob})",
+        "--allow-tool", f"shell(ls:{repo_glob})",
+        "--allow-tool", f"shell(head:{repo_glob})",
         "--allow-tool", "shell(wc:*)",
         "--allow-tool", "read",
         "--deny-tool", "write",
@@ -363,32 +370,36 @@ def _build_opencode_cmd(prompt_text, model):
     ]
 
 
-# Permissions for opencode: read-only git/file inspection, no edits, no web.
-OPENCODE_PERMISSION = json.dumps({
-    "bash": {
-        "*": "deny",
-        "git diff *": "allow",
-        "git log *": "allow",
-        "git show *": "allow",
-        "git status *": "allow",
-        "cat *": "allow",
-        "ls *": "allow",
-        "head *": "allow",
-        "wc *": "allow",
-        "gh pr view *": "allow",
-    },
-    "edit": "deny",
-    "webfetch": "deny",
-})
+def _build_opencode_permission(work_dir):
+    """Build OpenCode permission config restricting file-read to work_dir."""
+    # Restrict cat/ls/head to the repo working directory to prevent reading
+    # sensitive files such as /proc/self/environ on the runner.
+    repo_glob = f"{work_dir}/*"
+    return json.dumps({
+        "bash": {
+            "*": "deny",
+            "git diff *": "allow",
+            "git log *": "allow",
+            "git show *": "allow",
+            "git status *": "allow",
+            f"cat {repo_glob}": "allow",
+            f"ls {repo_glob}": "allow",
+            f"head {repo_glob}": "allow",
+            "wc *": "allow",
+            "gh pr view *": "allow",
+        },
+        "edit": "deny",
+        "webfetch": "deny",
+    })
 
 
-def run_review(prompt_file, model, output_file, max_continues, tool, timeout):
+def run_review(prompt_file, model, output_file, max_continues, tool, timeout, work_dir):
     """Invoke the selected AI CLI tool to produce a code review."""
     with open(prompt_file) as f:
         prompt_text = f.read()
 
     if tool == "copilot":
-        cmd = _build_copilot_cmd(prompt_text, model, max_continues)
+        cmd = _build_copilot_cmd(prompt_text, model, max_continues, work_dir)
     elif tool == "opencode":
         cmd = _build_opencode_cmd(prompt_text, model)
     else:
@@ -398,16 +409,18 @@ def run_review(prompt_file, model, output_file, max_continues, tool, timeout):
     print(f"This may take several minutes as {tool} examines each changed file.")
     start = time.time()
 
-    # stderr inherits the terminal so progress is visible in real-time;
-    # only stdout (the final review) is captured to the output file.
+    # stdout (the final review) is captured to the output file.
+    # stderr is captured separately so it can be included in error diagnostics;
+    # it is also printed immediately after the run so progress is not lost.
     env = None
     if tool == "opencode":
-        env = {**os.environ, "OPENCODE_PERMISSION": OPENCODE_PERMISSION}
+        env = {**os.environ, "OPENCODE_PERMISSION": _build_opencode_permission(work_dir)}
 
     with open(output_file, "w") as out:
         try:
             result = subprocess.run(
-                cmd, stdout=out, text=True, timeout=timeout, env=env,
+                cmd, stdout=out, stderr=subprocess.PIPE, text=True,
+                timeout=timeout, env=env, cwd=work_dir,
             )
         except subprocess.TimeoutExpired:
             elapsed = time.time() - start
@@ -417,9 +430,15 @@ def run_review(prompt_file, model, output_file, max_continues, tool, timeout):
 
     elapsed = time.time() - start
 
+    # Always surface stderr so CI logs retain tool progress/warnings.
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+
     if result.returncode != 0:
+        stderr_snippet = (result.stderr or "")[-2000:].strip()
+        detail = f"\nstderr: {stderr_snippet}" if stderr_snippet else ""
         raise RuntimeError(
-            f"{tool} exited with code {result.returncode} after {elapsed:.0f}s"
+            f"{tool} exited with code {result.returncode} after {elapsed:.0f}s{detail}"
         )
 
     size = os.path.getsize(output_file)
@@ -459,6 +478,11 @@ def prepare_comment(review_text, model, pr_number, run_url, run_id, tool, head_s
 
     if len(review_text) > MAX_COMMENT_LENGTH:
         truncated = review_text[:MAX_COMMENT_LENGTH]
+        # Avoid cutting in the middle of a multi-byte character or markdown
+        # table row: snap back to the last newline if it is reasonably close.
+        last_nl = truncated.rfind("\n")
+        if last_nl > MAX_COMMENT_LENGTH * 0.8:
+            truncated = truncated[:last_nl]
         footer = f"\n\n---\n\n> ⚠️ **Review truncated** ({len(review_text)} chars)."
         if run_url:
             footer += (
@@ -771,16 +795,19 @@ def _fetch_diff_lines(repo, pr_number):
     """
     diff_lines = {}  # path -> sorted list of valid line numbers
     try:
+        # Use --jq '.[]' to flatten paginated JSON arrays into JSON lines,
+        # avoiding the invalid concatenated-array output from --paginate alone.
         raw = run_cmd([
             "gh", "api",
             f"repos/{repo}/pulls/{pr_number}/files",
             "--paginate",
+            "--jq", ".[]",
         ])
     except (subprocess.CalledProcessError, FileNotFoundError):
         return diff_lines
 
     try:
-        files = json.loads(raw)
+        files = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError:
         return diff_lines
 
@@ -841,14 +868,17 @@ def _dismiss_pending_reviews(repo, pr_number):
 
     GitHub only allows one pending review per user per PR.  If a
     previous run failed mid-flight, a stale pending review can block
-    the next attempt.
+    the next attempt.  Only the authenticated user's own pending reviews
+    are deleted; draft reviews by other users are left untouched.
     """
     owner, name = repo.split("/", 1)
     try:
+        current_user = run_cmd(["gh", "api", "user", "--jq", ".login"]).strip()
         raw = run_cmd([
             "gh", "api",
             f"repos/{owner}/{name}/pulls/{pr_number}/reviews",
-            "--jq", '.[] | select(.state == "PENDING") | .id',
+            "--jq",
+            f'.[] | select(.state == "PENDING" and .user.login == "{current_user}") | .id',
         ])
         for review_id in raw.strip().splitlines():
             review_id = review_id.strip()
@@ -894,9 +924,12 @@ def post_inline_review(repo, pr_number, head_sha, findings, model, tool):
             snapped = _snap_to_diff(f, diff_lines)
             if snapped is not None:
                 if snapped != f["line"]:
+                    original_line = f["line"]
                     logging.debug("Snapped %s:%d -> %d (nearest diff line)",
-                                  f["path"], f["line"], snapped)
-                    f = dict(f, line=snapped)
+                                  f["path"], original_line, snapped)
+                    # Annotate so readers know the original AI-reported line.
+                    new_body = f["body"] + f"\n\n*(originally reported on line {original_line})*"
+                    f = dict(f, line=snapped, body=new_body)
                 validated.append(f)
             else:
                 print(f"Dropped finding on {f['path']}:{f['line']} "
@@ -989,6 +1022,7 @@ def main():
         return 1
 
     # Ensure we're in the right repo checkout
+    work_dir = os.getcwd()
     if args.repo:
         work_dir = ensure_repo_checkout(
             args.repo, args.pr_number, args.base_ref, head_sha, args.output_dir
@@ -996,7 +1030,7 @@ def main():
         print(f"Working directory: {work_dir}")
 
     # ---- Gather context ----
-    context = gather_context(args.base_ref)
+    context = gather_context(args.base_ref, work_dir=work_dir)
     n_files = len([l for l in context["changed"].splitlines() if l])
     print(f"Changed files: {n_files}")
 
@@ -1016,7 +1050,7 @@ def main():
     # ---- Run review ----
     review_file = os.path.join(args.output_dir, "review_raw.md")
     try:
-        run_review(prompt_file, args.model, review_file, args.max_continues, args.tool, args.timeout)
+        run_review(prompt_file, args.model, review_file, args.max_continues, args.tool, args.timeout, work_dir)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         if args.comment_id and not args.dry_run:
@@ -1082,6 +1116,12 @@ def main():
                 args.repo, args.pr_number, head_sha,
                 inline_findings, args.model, args.tool,
             )
+        elif args.inline_review and not inline_findings:
+            # --inline-review was requested but the AI produced no parseable
+            # findings table.  Fall back to posting the full review as a PR
+            # comment so the output is not silently lost.
+            print("No inline findings parsed; falling back to full PR comment")
+            post_review(args.repo, args.pr_number, comment_file)
         else:
             post_review(args.repo, args.pr_number, comment_file)
 
