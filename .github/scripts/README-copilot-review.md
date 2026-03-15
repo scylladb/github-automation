@@ -12,7 +12,26 @@ Posts findings as PR comments (summary or inline on specific lines).
 - **Line correction** — cross-references AI-reported line numbers against the actual file to fix off-by-few errors
 - **Guideline-aware** — the AI tool automatically discovers `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md` from the target repo
 - **Reusable workflow** — `copilot-review.yaml` can be called from any repository via `workflow_call`
-- **Security** — treats all PR content as untrusted; validates model names; caps user instructions at 1000 chars
+- **Security** — treats all PR content as untrusted; validates model names; caps user instructions at 1000 chars; restricts agent file-read access to the repo working directory
+
+## Security Considerations
+
+### Prompt injection
+
+The AI agent reviews untrusted code from the PR diff.  A malicious PR could
+contain text designed to hijack the agent's behavior ("ignore previous
+instructions…").  The following mitigations are applied:
+
+- All diff content is framed as untrusted input in the system prompt.
+- User-supplied `--additional-instructions` are capped at 1000 characters and
+  wrapped with a disclaimer that limits their scope to review formatting/focus.
+- The agent's shell access is restricted to read-only git/file operations inside
+  the repo working directory (sensitive paths like `/proc/self/environ` are not
+  accessible via the configured allow-list).
+
+**Residual risk:** these mitigations reduce but do not eliminate the risk of a
+sufficiently crafted prompt-injection attack.  Review the AI-generated findings
+before acting on them, especially when the PR author is not trusted.
 
 ## Quick Start
 
