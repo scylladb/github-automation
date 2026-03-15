@@ -1,0 +1,33 @@
+# Known external contributors whose non-scylladb.com emails are accepted.
+# Add one email per line. Lines starting with '#' and blank lines are ignored.
+
+# Documentation contributors
+david@techdocs.studio
+hi@davidgarcia.dev
+julien@richard-foy.fr
+
+# Student contributors (ZPP)
+stanislaw.kalewski@gmail.com
+korczptr@gmail.com
+dalikam748@gmail.com
+adam.karaczewski@gmail.com
+jkwiatkowski987@gmail.com
+marszalekhania5@gmail.com
+p.halat@student.uw.edu.pl
+js.janowski@student.uw.edu.pl
+m.birecki@student.uw.edu.pl
+w.kasjaniuk@student.uw.edu.pl
+l.gorny@student.uw.edu.pl
+pm448375@students.mimuw.edu.pl
+mp.szopa@student.uw.edu.pl
+w.formanski@student.uw.edu.pl
+mj.bilski@student.uw.edu.pl
+jg.czyszczon@student.uw.edu.pl
+pm.czajkowsk@student.uw.edu.pl
+p.ziemkiewic@student.uw.edu.pl
+j.graczyk4@student.uw.edu.pl
+k.pasinski@student.uw.edu.pl
+marcinsz.pv@gmail.com
+mjbilski@gmail.com
+czyszczon.kuba@gmail.com
+witekformanski@gmail.com
