@@ -65,23 +65,19 @@ def _sanitize(text: str) -> str:
     return text.replace('\r', '').replace('`', ' ')
 
 
-def _extract_candidate_keys(pr_title: str, pr_body: str) -> list[str]:
+def _extract_candidate_keys(pr_body: str) -> list[str]:
     """
-    Extract candidate Jira keys from PR title and body.
+    Extract candidate Jira keys from the PR body.
 
-    Title: any JIRA-style key is accepted.
-    Body:  only keys preceded by a closing keyword are accepted.
+    Only keys preceded by a closing keyword (Fixes, Closes, Resolves, etc.)
+    are accepted. Bare key mentions are ignored.
     Returns a sorted, deduplicated list.
     """
     candidates: set[str] = set()
 
-    title = _sanitize(pr_title)
     body = _sanitize(pr_body)
 
-    # All JIRA keys from title
-    candidates.update(_JIRA_KEY_RE.findall(title))
-
-    # Only closing-keyword keys from body
+    # Closing-keyword keys from body (Fixes, Closes, Resolves, etc.)
     candidates.update(_CLOSING_KEYWORD_RE.findall(body))
 
     return sorted(candidates)
@@ -114,7 +110,7 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     """
     Replicate the extract_jira_keys.yml logic in pure Python.
 
-    1. Extract candidate JIRA keys from the PR title and body.
+    1. Extract candidate JIRA keys from the PR body (title is ignored).
     2. Accept keys whose project prefix is in the hard-coded set.
     3. For remaining keys, query the Jira API and accept valid prefixes.
     4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
@@ -122,17 +118,14 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
     print(f"PR title: {pr_title}")
     print(f"PR body: {pr_body}")
 
-    if not pr_title:
-        print("Warning: pr_title is not set or empty.")
-
     if not jira_auth:
         print("Warning: jira_auth is not set. "
               "Jira API fallback for unknown prefixes will be skipped.")
 
-    candidates = _extract_candidate_keys(pr_title, pr_body)
+    candidates = _extract_candidate_keys(pr_body)
 
     if not candidates:
-        print("No Jira-like keys found in PR title or body")
+        print("No Jira-like keys found in PR body")
         return ["__NO_KEYS_FOUND__"]
 
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
@@ -461,10 +454,31 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
             print(f"OK {key} ({code})")
             ok += 1
 
-        elif code == 400:
-            print(f"SKIP {key} ({code})  value may not exist in Jira. First 200 chars:")
+        elif code == 400 and mode == "label":
+            print(f"SKIP {key} ({code}) value may not exist in Jira. First 200 chars:")
             print(body_text[:200])
             skipped += 1
+
+        elif mode in ("scylla_component", "symptom") and code not in (200, 204):
+            print(f"WARN {key} ({code}) custom field update failed. First 200 chars:")
+            print(body_text[:200])
+            print(f"Falling back to removing '{label}' as a plain Jira label on {key} ...")
+            fallback_payload = {"update": {"labels": [{"remove": label}]}}
+            fb_code, fb_body = _jira_put(issue_url, fallback_payload, jira_auth)
+            if fb_code in (200, 204):
+                print(f"OK {key} (fallback label, {fb_code})")
+                ok += 1
+            elif fb_code == 400:
+                print(f"SKIP {key} (fallback label, {fb_code}) label may not exist.")
+                skipped += 1
+            elif fb_code == 404:
+                print(f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing.")
+                skipped += 1
+                not_found_keys.append(key)
+            else:
+                print(f"FAIL {key} (fallback label, {fb_code}) First 400 chars:")
+                print(fb_body[:400])
+                failed += 1
 
         elif code == 404:
             print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
@@ -1022,6 +1036,17 @@ def jira_status_transition(
     skipped = 0
 
     for key, current_status, start_dt, due_dt in to_transition:
+        # Guard: do not regress issues that are further along in the workflow
+        _FORBIDDEN_TRANSITIONS = {
+            ('in review', 'in progress'),
+            ('ready for merge', 'in progress'),
+            ('ready for merge', 'in review'),
+            ('done', 'done'),
+        }
+        if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
+            print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
+            skipped += 1
+            continue
         print(f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})")
 
         # Set start date for working states if empty
