@@ -27,6 +27,7 @@ Usage:
 """
 
 import argparse
+import base64
 import json
 import logging
 import os
@@ -216,6 +217,17 @@ def ensure_repo_checkout(repo, pr_number, base_ref, head_sha, output_dir):
          "--filter=blob:none", "--no-checkout"],
         capture=False,
     )
+
+    # Configure git credentials in the cloned repo so that subsequent
+    # raw ``git fetch`` commands can authenticate.  ``gh repo clone``
+    # does not always persist credentials in CI environments.
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
+    if gh_token:
+        run_cmd(
+            ["git", "config", "http.https://github.com/.extraheader",
+             f"AUTHORIZATION: basic {base64.b64encode(f'x-access-token:{gh_token}'.encode()).decode()}"],
+            cwd=work_dir,
+        )
 
     print(f"Fetching PR #{pr_number} and base branch {base_ref}...")
     run_cmd(
@@ -772,7 +784,7 @@ def _fetch_existing_review_lines(repo, pr_number):
         raw = run_cmd([
             "gh", "api",
             f"repos/{repo}/pulls/{pr_number}/comments",
-            "--paginate", "--jq", '.[] | "\(.path)\t\(.line)"',
+            "--paginate", "--jq", '.[] | "\\(.path)\t\\(.line)"',
         ])
         for entry in raw.splitlines():
             parts = entry.split("\t", 1)
