@@ -1064,7 +1064,7 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
         if is_draft:
             labels_to_add.append("conflicts")
             pr_comment = f"@{assign_to_pr.user.login} - This PR has conflicts, therefore it was moved to `draft` \n"
-            pr_comment += "Please resolve them and mark this PR as ready for review"
+            pr_comment += "Please resolve them and mark this PR as ready for review by removing the conflicts label"
             backport_pr.create_issue_comment(pr_comment)
         
         # Note: promoted-to-<branch> label is NOT added here.
