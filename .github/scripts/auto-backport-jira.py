@@ -476,9 +476,9 @@ def find_existing_sub_issue(parent_key: str, version: str) -> Optional[str]:
     try:
         # Search for sub-tasks of the parent with the backport title pattern
         # JQL: parent = PROJ-123 AND summary ~ "Backport 2025.4" AND issuetype = Sub-task
+        # Uses POST /search/jql (GET /search was deprecated by Atlassian and returns 410 Gone)
         jql = f'parent = {parent_key} AND summary ~ "Backport {version}" AND issuetype = Sub-task'
-        encoded_jql = requests.utils.quote(jql)
-        result = jira_api_request("GET", f"search?jql={encoded_jql}&maxResults=10")
+        result = jira_api_request("POST", "search/jql", data={"jql": jql, "maxResults": 10})
         
         if result and result.get("issues"):
             # Check for exact version match to avoid matching 2025.4 when looking for 2025.40
