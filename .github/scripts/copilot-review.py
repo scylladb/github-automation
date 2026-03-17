@@ -112,6 +112,11 @@ def parse_args():
         default=50,
         help="Max autopilot continuation steps (default: 50)",
     )
+    parser.add_argument(
+        "--skip-verification",
+        action="store_true",
+        help="Skip the second-pass verification of findings (post raw findings)",
+    )
     return parser.parse_args()
 
 
@@ -470,6 +475,183 @@ def run_review(prompt_file, model, output_file, max_continues, tool, timeout, wo
 
 
 # ---------------------------------------------------------------------------
+# Verification — second AI pass to filter false positives
+# ---------------------------------------------------------------------------
+
+VERIFICATION_CONTEXT_LINES = 20  # Lines of context around each finding
+
+
+def _read_file_context(file_path, line_num, context_lines=VERIFICATION_CONTEXT_LINES):
+    """Read lines around a finding from the actual file on disk."""
+    try:
+        with open(file_path, "r") as f:
+            all_lines = f.readlines()
+    except OSError:
+        return ""
+    start = max(0, line_num - context_lines - 1)
+    end = min(len(all_lines), line_num + context_lines)
+    numbered = []
+    for i in range(start, end):
+        marker = " >>>" if i == line_num - 1 else "    "
+        numbered.append(f"{marker} {i + 1:4d}: {all_lines[i].rstrip()}")
+    return "\n".join(numbered)
+
+
+def _build_verification_prompt(findings, base_ref, work_dir):
+    """Build a prompt that asks the AI to validate each finding."""
+    sections = []
+    for i, f in enumerate(findings, 1):
+        file_path = f["path"]
+        abs_path = os.path.join(work_dir, file_path) if work_dir else file_path
+        code_context = _read_file_context(abs_path, f["line"])
+
+        # Get the diff for just this file
+        try:
+            file_diff = run_cmd(
+                ["git", "diff", f"origin/{base_ref}...HEAD", "--", file_path],
+                cwd=work_dir,
+            )
+        except subprocess.CalledProcessError:
+            file_diff = "(diff unavailable)"
+
+        sections.append(
+            f"### Finding {i}\n"
+            f"**File:** `{file_path}` **Line:** {f['line']}\n"
+            f"**Reported issue:** {f['body']}\n\n"
+            f"**File diff:**\n```\n{file_diff}\n```\n\n"
+            f"**Code context (>>> marks the reported line):**\n```\n{code_context}\n```"
+        )
+
+    findings_block = "\n\n---\n\n".join(sections)
+
+    prompt = f"""\
+You are a senior code reviewer performing a SECOND-PASS VERIFICATION of
+AI-generated code review findings.  Your job is to determine whether each
+finding below is a genuine issue or a false positive.
+
+For EACH finding, respond with EXACTLY one JSON object per line (JSON Lines
+format).  No other text, no markdown fences, no explanation outside the JSON.
+
+Each JSON object must have these fields:
+  - "finding": the finding number (integer)
+  - "verdict": "valid" or "false_positive"
+  - "reason": a brief explanation (one sentence)
+
+A finding is a FALSE POSITIVE if:
+- It misunderstands the language semantics (e.g. claiming an import is needed
+  when the language auto-imports it, or misreading regex/string escaping rules)
+- The "bug" it describes is actually correct, intentional behaviour
+- It is a pure style/formatting nit with no functional impact
+- The suggested fix would break the code or is wrong
+- The issue described does not actually exist in the code shown
+
+A finding is VALID if:
+- It identifies a real bug, logic error, or security vulnerability
+- The code would actually fail or misbehave as described
+- The risk described is genuine and the suggested fix is correct
+
+Be STRICT: when in doubt, mark as false_positive.  It is much worse to post
+a wrong finding on a developer's PR than to miss a minor issue.
+
+Here are the findings to verify:
+
+{findings_block}
+
+Remember: output ONLY JSON Lines, one object per finding, nothing else.
+"""
+    return prompt
+
+
+def _parse_verification_output(raw_output):
+    """Parse the JSON Lines verification output into a dict of finding# -> verdict."""
+    verdicts = {}
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+            num = obj.get("finding")
+            verdict = obj.get("verdict", "").lower()
+            reason = obj.get("reason", "")
+            if isinstance(num, int) and verdict in ("valid", "false_positive"):
+                verdicts[num] = {"verdict": verdict, "reason": reason}
+        except (json.JSONDecodeError, AttributeError):
+            continue
+    return verdicts
+
+
+def verify_findings(findings, base_ref, model, tool, timeout, max_continues, work_dir, output_dir):
+    """Run a second AI pass to validate findings.  Returns filtered list."""
+    if not findings:
+        return findings, {}
+
+    prompt_text = _build_verification_prompt(findings, base_ref, work_dir)
+    prompt_file = os.path.join(output_dir, "verification_prompt.txt")
+    with open(prompt_file, "w") as f:
+        f.write(prompt_text)
+
+    output_file = os.path.join(output_dir, "verification_raw.txt")
+    print(f"Running verification pass ({tool}, model={model})...")
+    start = time.time()
+
+    if tool == "copilot":
+        cmd = _build_copilot_cmd(prompt_text, model, max_continues, work_dir)
+    elif tool == "opencode":
+        cmd = _build_opencode_cmd(prompt_text, model)
+    else:
+        raise ValueError(f"Unknown tool: {tool}")
+
+    env = None
+    if tool == "opencode":
+        env = {**os.environ, "OPENCODE_PERMISSION": _build_opencode_permission(work_dir)}
+
+    with open(output_file, "w") as out:
+        try:
+            result = subprocess.run(
+                cmd, stdout=out, stderr=subprocess.PIPE, text=True,
+                timeout=timeout, env=env, cwd=work_dir,
+            )
+        except subprocess.TimeoutExpired:
+            print("WARNING: Verification timed out, posting unverified findings",
+                  file=sys.stderr)
+            return findings, {}
+
+    elapsed = time.time() - start
+
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+
+    if result.returncode != 0:
+        print(f"WARNING: Verification failed (exit {result.returncode}), "
+              f"posting unverified findings", file=sys.stderr)
+        return findings, {}
+
+    raw_output = read_file(output_file)
+    # Strip ANSI escapes from verification output too
+    raw_output = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", raw_output)
+    verdicts = _parse_verification_output(raw_output)
+
+    if not verdicts:
+        print(f"WARNING: Could not parse verification output ({elapsed:.0f}s), "
+              f"posting unverified findings", file=sys.stderr)
+        return findings, {}
+
+    verified = []
+    for i, f in enumerate(findings, 1):
+        v = verdicts.get(i)
+        if v and v["verdict"] == "false_positive":
+            print(f"  Filtered finding #{i} ({f['path']}:{f['line']}): "
+                  f"false positive — {v['reason']}")
+        else:
+            verified.append(f)
+
+    print(f"Verification complete ({elapsed:.0f}s): "
+          f"{len(verified)}/{len(findings)} findings confirmed")
+    return verified, verdicts
+
+
+# ---------------------------------------------------------------------------
 # Comment / reactions
 # ---------------------------------------------------------------------------
 
@@ -619,6 +801,55 @@ def format_terminal_table(findings):
         lines.append(fmt_row(row))
     lines.append(sep)
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Review text rewriting — remove false-positive rows after verification
+# ---------------------------------------------------------------------------
+
+def _strip_false_positive_rows(review_text, verdicts):
+    """Remove table rows corresponding to false-positive findings from the review.
+
+    ``verdicts`` maps 1-based finding numbers to {"verdict": ..., "reason": ...}.
+    We identify data rows by the TABLE_ROW_RE pattern and remove those whose
+    finding number was marked false_positive.  The row numbering in the table
+    starts at 1 and increments for each data row encountered.
+    """
+    if not verdicts:
+        return review_text
+
+    fp_nums = {n for n, v in verdicts.items() if v["verdict"] == "false_positive"}
+    if not fp_nums:
+        return review_text
+
+    out_lines = []
+    row_index = 0
+    for line in review_text.splitlines():
+        if TABLE_ROW_RE.match(line.strip()):
+            row_index += 1
+            if row_index in fp_nums:
+                continue  # drop this row
+        out_lines.append(line)
+
+    # Renumber surviving rows so the table stays 1, 2, 3, ...
+    renumbered = []
+    new_num = 0
+    for line in out_lines:
+        stripped = line.strip()
+        if TABLE_ROW_RE.match(stripped):
+            new_num += 1
+            # Replace leading "| <old#> |" with "| <new#> |"
+            line = re.sub(r"^\|\s*\d+\s*\|", f"| {new_num} |", stripped)
+        renumbered.append(line)
+
+    # If all findings were removed, update the assessment
+    result = "\n".join(renumbered)
+    if new_num == 0:
+        result = result.replace(
+            "\u26a0\ufe0f Request Changes",
+            "\u2705 Looks Good (all findings were false positives)",
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +1333,18 @@ def main():
     if inline_findings:
         print(f"Parsed {len(inline_findings)} inline finding(s) from table")
 
+    # ---- Verify findings (second AI pass) ----
+    verdicts = {}
+    if inline_findings and not args.skip_verification:
+        inline_findings, verdicts = verify_findings(
+            inline_findings, args.base_ref, args.model, args.tool,
+            args.timeout, args.max_continues, work_dir, args.output_dir,
+        )
+        if verdicts:
+            review_text = _strip_false_positive_rows(review_text, verdicts)
+    elif inline_findings and args.skip_verification:
+        print("Skipping verification (--skip-verification)")
+
     # ---- Prepare output ----
     comment_text = prepare_comment(
         review_text, args.model, args.pr_number, args.run_url, args.run_id, args.tool,
@@ -1129,6 +1372,10 @@ def main():
         if inline_findings:
             print(f"\n--- Inline findings ({len(inline_findings)}) ---\n")
             print(format_terminal_table(inline_findings))
+        if verdicts:
+            fp_count = sum(1 for v in verdicts.values() if v["verdict"] == "false_positive")
+            valid_count = sum(1 for v in verdicts.values() if v["verdict"] == "valid")
+            print(f"\n--- Verification: {valid_count} valid, {fp_count} false positive(s) filtered ---\n")
         return 0
 
     # ---- Post comment ----
