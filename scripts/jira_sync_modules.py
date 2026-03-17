@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 jira_sync_modules.py - Shared constants, helpers, and action functions
 for the Jira/GitHub sync workflows.
@@ -47,12 +47,12 @@ SCYLLA_COMPONENTS_FIELD = "customfield_10321"
 SYMPTOM_FIELD = "customfield_11120"
 
 # Regex: any JIRA-style key (PROJECT-123) in any text
-_JIRA_KEY_RE = re.compile(r'[A-Z]+-[0-9]+')
+_JIRA_KEY_RE = re.compile(r'[A-Za-z]+-[0-9]+')
 
 # Regex: closing keywords followed by a Jira key (optionally as a browse URL)
 _CLOSING_KEYWORD_RE = re.compile(
     r'(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
-    r'\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Z]+-[0-9]+)',
+    r'\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Za-z]+-[0-9]+)',
     re.IGNORECASE,
 )
 
@@ -78,7 +78,7 @@ def _extract_candidate_keys(pr_body: str) -> list[str]:
     body = _sanitize(pr_body)
 
     # Closing-keyword keys from body (Fixes, Closes, Resolves, etc.)
-    candidates.update(_CLOSING_KEYWORD_RE.findall(body))
+    candidates.update(k.upper() for k in _CLOSING_KEYWORD_RE.findall(body))
 
     return sorted(candidates)
 
