@@ -27,6 +27,13 @@ from jira_sync_modules import (
 # Sentinel value returned by extract_jira_keys when no keys are found.
 _NO_KEYS = '["__NO_KEYS_FOUND__"]'
 
+# Labels that should be ignored by the labeled/unlabeled event handlers.
+# When a PR label event fires for one of these labels the automation
+# skips all Jira sync steps and exits early.
+_EXCLUDED_LABELS: set[str] = {
+    "status/ci_in_progress",
+}
+
 def manage_labeled_gh_event(
     pr_title: str,
     pr_body: str,
@@ -59,6 +66,12 @@ def manage_labeled_gh_event(
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
     
+    # --- Early exit: excluded labels ---
+    if triggering_label in _EXCLUDED_LABELS:
+        print(f"SKIPPED: triggering_label '{triggering_label}' is in the exclusion list. "
+              "No Jira sync will be performed.")
+        return
+
     # --- Step 1: extract jira keys ---
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
@@ -601,6 +614,12 @@ def manage_unlabeled_gh_event(
     print(f"  pr_number      = {pr_number!r}")
     print(f"  removed_label  = {removed_label!r}")
     print(f"  owner_repo     = {owner_repo!r}")
+
+    # --- Early exit: excluded labels ---
+    if removed_label in _EXCLUDED_LABELS:
+        print(f"SKIPPED: removed_label '{removed_label}' is in the exclusion list. "
+              "No Jira sync will be performed.")
+        return
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
