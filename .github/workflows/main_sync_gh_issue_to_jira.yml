@@ -1,0 +1,47 @@
+name: Sync GitHub Issue to Jira
+
+on:
+  workflow_call:
+    inputs:
+      jira_project_key:
+        description: "Jira project key (e.g. MONITOR)"
+        required: true
+        type: string
+    secrets:
+      caller_jira_auth:
+        description: "Plain 'email:api_token' for Jira Cloud Basic auth"
+        required: true
+
+jobs:
+  sync-issue-to-jira:
+    if: github.event.action == 'opened'
+    name: "Create Jira issue from GH #${{ github.event.issue.number }}"
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout automation repo
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: main
+
+      - name: Create Jira issue and cross-link
+        env:
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+          JIRA_PROJECT_KEY: ${{ inputs.jira_project_key }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_HTML_URL: ${{ github.event.issue.html_url }}
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+          ISSUE_TYPE: ${{ github.event.issue.type.name || '' }}
+          ISSUE_MILESTONE: ${{ github.event.issue.milestone.title || '' }}
+          GH_ASSIGNEE_LOGIN: ${{ github.event.issue.assignee.login || '' }}
+          GH_ASSIGNEE_NAME: ${{ github.event.issue.assignee.name || github.event.issue.assignee.login || '' }}
+          GH_REPORTER_LOGIN: ${{ github.event.issue.user.login || '' }}
+          GH_REPORTER_NAME: ${{ github.event.issue.user.name || github.event.issue.user.login || '' }}
+        run: python3 scripts/create_jira_issue_from_gh_issue.py
