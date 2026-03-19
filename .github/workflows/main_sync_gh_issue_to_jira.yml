@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: scylladb/github-automation
-          ref: main
+          ref: automation-staging-branch
 
       - name: Create Jira issue and cross-link
         env:
