@@ -9,23 +9,15 @@ a corresponding Jira issue in the configured project, including:
   - Clickable cross-links in both the Jira description footer and
     the GitHub issue body footer
   - Markdown-to-ADF conversion for the issue description
-  - Inline image migration (download from GitHub, upload as Jira attachments,
-    embed as mediaSingle ADF nodes)
 
 Reuses HTTP helpers from jira_sync_modules to avoid code duplication.
 """
 
-import base64
-import hashlib
 import json
 import os
 import re
 import sys
-import tempfile
-import time
-from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler
-from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 
 from jira_sync_modules import (
     _jira_get,
@@ -38,15 +30,6 @@ from jira_sync_modules import (
 # Constants
 # ---------------------------------------------------------------------------
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
-
-GITHUB_DOMAINS = [
-    "github.com",
-    "user-images.githubusercontent.com",
-    "raw.githubusercontent.com",
-    "avatars.githubusercontent.com",
-    "camo.githubusercontent.com",
-    "media.githubusercontent.com",
-]
 
 # ---------------------------------------------------------------------------
 # Environment
@@ -68,320 +51,6 @@ OWNER_REPO = os.environ.get("OWNER_REPO", "")
 # Assignee / reporter (GitHub login + display name)
 GH_ASSIGNEE_NAME = os.environ.get("GH_ASSIGNEE_NAME", "")
 GH_REPORTER_NAME = os.environ.get("GH_REPORTER_NAME", "")
-
-
-# ---------------------------------------------------------------------------
-# Image helpers (download, upload, embed)
-# ---------------------------------------------------------------------------
-
-def _download_image(url: str) -> tuple[str | None, str | None]:
-    """Download an image from *url* to a temp file.
-
-    Uses GITHUB_TOKEN for authenticated access to private GitHub URLs.
-    Returns (local_path, filename) or (None, None) on failure.
-    """
-    parsed = urlparse(url)
-    req = Request(url, method="GET")
-    if any(d in parsed.netloc for d in GITHUB_DOMAINS) and GITHUB_TOKEN:
-        req.add_header("Authorization", f"Bearer {GITHUB_TOKEN}")
-    try:
-        with urlopen(req) as resp:
-            data = resp.read()
-        filename = os.path.basename(parsed.path) or "image.png"
-        ext = os.path.splitext(filename)[1] or ".png"
-        fd, temp_path = tempfile.mkstemp(suffix=ext)
-        with os.fdopen(fd, "wb") as out:
-            out.write(data)
-        return temp_path, filename
-    except (HTTPError, URLError, OSError) as exc:
-        print(f"WARNING: Failed to download image {url}: {exc}")
-        return None, None
-
-
-def _upload_attachment(issue_key: str, local_path: str, filename: str) -> dict | None:
-    """Upload a file to a Jira issue as an attachment (multipart/form-data).
-
-    Returns the first attachment metadata dict from Jira, or None on failure.
-    """
-    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/attachments"
-    encoded_auth = base64.b64encode(JIRA_AUTH.encode()).decode()
-
-    boundary = "----JiraAttachmentBoundary"
-    with open(local_path, "rb") as fh:
-        file_data = fh.read()
-
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: application/octet-stream\r\n\r\n"
-    ).encode() + file_data + f"\r\n--{boundary}--\r\n".encode()
-
-    req = Request(url, data=body, method="POST")
-    req.add_header("Authorization", f"Basic {encoded_auth}")
-    req.add_header("X-Atlassian-Token", "no-check")
-    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-
-    try:
-        with urlopen(req) as resp:
-            attachments = json.loads(resp.read().decode())
-            if attachments and isinstance(attachments, list):
-                print(f"  Attachment uploaded: id={attachments[0].get('id')}, filename={attachments[0].get('filename')}")
-                return attachments[0]
-    except HTTPError as exc:
-        body_text = exc.read().decode() if exc.fp else str(exc)
-        print(f"WARNING: Attachment upload failed for {filename} (HTTP {exc.code}): {body_text}")
-    except URLError as exc:
-        print(f"WARNING: Attachment upload network error for {filename}: {exc}")
-    return None
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    """HTTP handler that captures the redirect URL instead of following it."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(newurl, code, msg, headers, fp)
-
-
-def _get_media_uuid(attachment_id: str) -> str | None:
-    """Follow the Jira attachment content redirect to extract the media UUID."""
-    url = f"{JIRA_BASE_URL}/rest/api/3/attachment/content/{attachment_id}"
-    encoded_auth = base64.b64encode(JIRA_AUTH.encode()).decode()
-
-    req = Request(url, method="GET")
-    req.add_header("Authorization", f"Basic {encoded_auth}")
-    req.add_header("Accept", "application/json")
-
-    opener = build_opener(_NoRedirect)
-    try:
-        opener.open(req)
-    except HTTPError as exc:
-        if exc.code in (301, 302, 303, 307, 308):
-            location = exc.headers.get("Location", "") if exc.headers else ""
-            if not location:
-                location = str(exc.url) if hasattr(exc, "url") else ""
-            if not location:
-                # HTTPError first arg is the redirect URL
-                location = exc.filename if hasattr(exc, "filename") else ""
-        else:
-            print(f"WARNING: Unexpected HTTP {exc.code} getting media UUID for {attachment_id}")
-            return None
-    except URLError as exc:
-        print(f"WARNING: Network error getting media UUID for {attachment_id}: {exc}")
-        return None
-    else:
-        # No redirect - unusual
-        print(f"WARNING: No redirect for attachment {attachment_id}")
-        return None
-
-    if location:
-        print(f"  Redirect location for attachment {attachment_id}: {location[:120]}...")
-        # Try to extract UUID from the redirect URL
-        uuid_match = re.search(r"/file/([a-f0-9-]{36})/", location)
-        if uuid_match:
-            return uuid_match.group(1)
-        uuid_match = re.search(
-            r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
-            location,
-        )
-        if uuid_match:
-            return uuid_match.group(1)
-        print(f"WARNING: Could not extract UUID from redirect URL")
-
-    return None
-
-
-def _replace_images_with_placeholders(text: str) -> tuple[str, list[dict]]:
-    """Replace ``![alt](url)`` and ``<img>`` tags with unique placeholders.
-
-    Each placeholder is placed on its own line (surrounded by blank lines) so
-    that ADF conversion always generates a dedicated paragraph node that can
-    be swapped for a mediaSingle node later.
-
-    Returns (new_text, images_list).
-    """
-    md_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-    html_pattern = re.compile(
-        r'<img [^>]*src=["\']([^"\']+)["\'][^>]*?(?:alt=["\']([^"\']*)["\'])?[^>]*?>',
-        re.IGNORECASE,
-    )
-    matches: list[tuple[int, int, str, str]] = []  # (start, end, alt, url)
-    for m in md_pattern.finditer(text):
-        matches.append((m.start(), m.end(), m.group(1), m.group(2)))
-    for m in html_pattern.finditer(text):
-        matches.append((m.start(), m.end(), m.group(2) or "image", m.group(1)))
-    matches.sort()
-
-    if not matches:
-        return text, []
-
-    new_text = ""
-    last_idx = 0
-    images: list[dict] = []
-    for img_num, (start, end, alt, url) in enumerate(matches, 1):
-        new_text += text[last_idx:start]
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-        unique_id = f"{img_num}-{url_hash}"
-        placeholder = f"GitHub-Image-{unique_id}"
-        # Put placeholder on its own line so it becomes a separate ADF paragraph
-        new_text += f"\n\n{placeholder}\n\n"
-        images.append(
-            {"num": img_num, "alt": alt, "url": url,
-             "placeholder": placeholder, "unique_id": unique_id}
-        )
-        last_idx = end
-    new_text += text[last_idx:]
-    return new_text, images
-
-
-def _download_and_upload_images(
-    images: list[dict], issue_key: str
-) -> list[dict]:
-    """Download images from GitHub, upload to Jira, resolve media UUIDs.
-
-    Returns a list of dicts with keys:
-      placeholder, unique_id, attachment_id, media_uuid, attachment_filename, alt, url
-    """
-    uploaded: list[dict] = []
-    for img in images:
-        print(f"  Processing image {img['num']}: {img['url'][:100]}...")
-        local_path, orig_filename = _download_image(img["url"])
-        if not local_path:
-            print(f"  WARNING: Skipping image {img['num']} - download failed")
-            continue
-        name, ext = os.path.splitext(orig_filename or "image.png")
-        filename = f"GitHub-Image-{img['unique_id']}-{name}{ext}"
-        try:
-            att = _upload_attachment(issue_key, local_path, filename)
-            if att:
-                att_id = str(att.get("id", ""))
-                media_uuid = _get_media_uuid(att_id) if att_id else None
-                print(f"  Image {img['num']}: attachment_id={att_id}, media_uuid={media_uuid}")
-                uploaded.append({
-                    "placeholder": img["placeholder"],
-                    "unique_id": img["unique_id"],
-                    "attachment_id": att_id,
-                    "media_uuid": media_uuid,
-                    "attachment_filename": att.get("filename", filename),
-                    "alt": img["alt"],
-                    "url": img["url"],
-                })
-            else:
-                print(f"  WARNING: Skipping image {img['num']} - upload failed")
-        finally:
-            try:
-                os.remove(local_path)
-            except OSError:
-                pass
-    return uploaded
-
-
-def _embed_images_in_adf(adf: dict, uploaded: list[dict]) -> dict:
-    """Walk the ADF tree and replace placeholder paragraphs with mediaSingle nodes.
-
-    Handles both:
-    - Full paragraph match: entire paragraph text is just the placeholder
-    - Partial match: placeholder appears within a paragraph with other text
-    """
-    if not uploaded:
-        return adf
-
-    placeholder_map = {att["placeholder"]: att for att in uploaded}
-    placeholder_re = re.compile(r"GitHub-Image-\d+-[a-f0-9]{8}")
-
-    def _make_media_node(att: dict) -> dict | None:
-        """Build a mediaSingle ADF node from attachment info."""
-        if att.get("media_uuid"):
-            return {
-                "type": "mediaSingle",
-                "attrs": {"layout": "center"},
-                "content": [{
-                    "type": "media",
-                    "attrs": {
-                        "id": att["media_uuid"],
-                        "type": "file",
-                        "collection": "",
-                    },
-                }],
-            }
-        # Fallback: clickable link to the original image URL
-        link_text = f"[Image: {att.get('alt', 'image')}]"
-        link_url = att.get("url", "")
-        if att.get("attachment_id"):
-            fn = att.get("attachment_filename", "")
-            link_url = f"{JIRA_BASE_URL}/secure/attachment/{att['attachment_id']}/{fn}"
-        return {
-            "type": "paragraph",
-            "content": [{
-                "type": "text",
-                "text": link_text,
-                "marks": [{"type": "link", "attrs": {"href": link_url}}],
-            }],
-        }
-
-    def _process(node: dict) -> list[dict]:
-        if not isinstance(node, dict):
-            return [node]
-
-        if node.get("type") == "paragraph":
-            content = node.get("content", [])
-            full_text = "".join(
-                c.get("text", "") for c in content if c.get("type") == "text"
-            )
-
-            # Case 1: entire paragraph is just a placeholder
-            m = placeholder_re.fullmatch(full_text.strip())
-            if m and m.group(0) in placeholder_map:
-                media = _make_media_node(placeholder_map[m.group(0)])
-                return [media] if media else [node]
-
-            # Case 2: placeholder embedded within paragraph text
-            # Split the paragraph around placeholders
-            if placeholder_re.search(full_text):
-                result_nodes: list[dict] = []
-                remaining_content: list[dict] = []
-
-                for child in content:
-                    if child.get("type") != "text":
-                        remaining_content.append(child)
-                        continue
-
-                    child_text = child.get("text", "")
-                    parts = placeholder_re.split(child_text)
-                    placeholders_found = placeholder_re.findall(child_text)
-
-                    for idx, part in enumerate(parts):
-                        if part:
-                            remaining_content.append({"type": "text", "text": part})
-                        if idx < len(placeholders_found):
-                            ph = placeholders_found[idx]
-                            if ph in placeholder_map:
-                                # Flush any accumulated text as a paragraph
-                                if remaining_content:
-                                    result_nodes.append({"type": "paragraph", "content": remaining_content})
-                                    remaining_content = []
-                                media = _make_media_node(placeholder_map[ph])
-                                if media:
-                                    result_nodes.append(media)
-
-                if remaining_content:
-                    result_nodes.append({"type": "paragraph", "content": remaining_content})
-
-                return result_nodes if result_nodes else [node]
-
-            return [node]
-
-        # Recurse into child nodes
-        if "content" in node:
-            new_children: list[dict] = []
-            for child in node.get("content", []):
-                new_children.extend(_process(child))
-            return [{**node, "content": new_children}]
-
-        return [node]
-
-    new_content: list[dict] = []
-    for n in adf.get("content", []):
-        new_content.extend(_process(n))
-    return {**adf, "content": new_content}
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +191,7 @@ def _markdown_to_adf_nodes(text: str) -> list[dict]:
             nodes.append({"type": "orderedList", "content": items})
             continue
 
-        # Regular paragraph (single line = single paragraph to preserve placeholders)
+        # Regular paragraph
         nodes.append({
             "type": "paragraph",
             "content": _inline_markdown(stripped),
@@ -568,11 +237,7 @@ def _find_jira_account_id(display_name: str) -> str | None:
 
 
 def _build_description_adf(body_text: str, gh_url: str) -> dict:
-    """Build an ADF document from the GH issue markdown body + a footer link.
-
-    Images are left as placeholder text nodes (replaced later after the Jira
-    issue exists so that attachments can be uploaded).
-    """
+    """Build an ADF document from the GH issue markdown body + a footer link."""
     content_nodes = _markdown_to_adf_nodes(body_text) if body_text else []
 
     # Divider before footer
@@ -598,8 +263,8 @@ def _build_description_adf(body_text: str, gh_url: str) -> dict:
 # Core logic
 # ---------------------------------------------------------------------------
 
-def create_jira_issue(body_for_adf: str) -> tuple[str | None, str]:
-    """Create a Jira issue and return (jira_key, body_with_placeholders)."""
+def create_jira_issue() -> str | None:
+    """Create a Jira issue and return its key, or None on failure."""
     labels = [l.strip() for l in ISSUE_LABELS.split(",") if l.strip()]
     issue_type = _map_issue_type(ISSUE_TYPE, labels)
 
@@ -611,7 +276,7 @@ def create_jira_issue(body_for_adf: str) -> tuple[str | None, str]:
             priority = label
             break
 
-    description_adf = _build_description_adf(body_for_adf, ISSUE_HTML_URL)
+    description_adf = _build_description_adf(ISSUE_BODY, ISSUE_HTML_URL)
 
     payload: dict = {
         "fields": {
@@ -642,14 +307,14 @@ def create_jira_issue(body_for_adf: str) -> tuple[str | None, str]:
     print(f"  reporter = {GH_REPORTER_NAME!r} -> {reporter_id}")
 
     url = f"{JIRA_BASE_URL}/rest/api/3/issue"
-    status, resp_body = _jira_post(url, payload, JIRA_AUTH)
+    status, body = _jira_post(url, payload, JIRA_AUTH)
 
     if status not in (200, 201):
         print(f"ERROR: Jira issue creation failed (HTTP {status})")
-        print(resp_body)
-        return None, body_for_adf
+        print(body)
+        return None
 
-    jira_key = json.loads(resp_body)["key"]
+    jira_key = json.loads(body)["key"]
     print(f"Created Jira issue: {jira_key}")
 
     # Assign (separate call)
@@ -661,42 +326,7 @@ def create_jira_issue(body_for_adf: str) -> tuple[str | None, str]:
         if a_status not in (200, 204):
             print(f"WARNING: Could not assign {jira_key} (HTTP {a_status}): {a_body}")
 
-    return jira_key, body_for_adf
-
-
-def _migrate_images(jira_key: str, images: list[dict], body_with_placeholders: str) -> None:
-    """Download images from GitHub, upload to Jira, and update the description
-    to embed them as inline mediaSingle nodes.
-    """
-    if not images:
-        return
-
-    print(f"Migrating {len(images)} image(s) to Jira issue {jira_key} ...")
-    uploaded = _download_and_upload_images(images, jira_key)
-    if not uploaded:
-        print("  No images were successfully uploaded. Description keeps placeholder text.")
-        return
-
-    print(f"  Waiting 3 seconds for Jira to index {len(uploaded)} attachment(s)...")
-    time.sleep(3)
-
-    # Rebuild the ADF from the placeholder text and embed the uploaded images
-    adf = _build_description_adf(body_with_placeholders, ISSUE_HTML_URL)
-    print(f"  ADF before embedding has {len(adf.get('content', []))} top-level nodes")
-    final_adf = _embed_images_in_adf(adf, uploaded)
-    print(f"  ADF after embedding has {len(final_adf.get('content', []))} top-level nodes")
-
-    # Update the issue description
-    update_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{jira_key}"
-    status, resp = _jira_put(
-        update_url,
-        {"fields": {"description": final_adf}},
-        JIRA_AUTH,
-    )
-    if status in (200, 204):
-        print(f"  Updated {jira_key} description with {len(uploaded)} embedded image(s).")
-    else:
-        print(f"  WARNING: Failed to update description with images (HTTP {status}): {resp}")
+    return jira_key
 
 
 def append_jira_link_to_gh_issue(jira_key: str) -> None:
@@ -741,23 +371,11 @@ def main():
         print("ERROR: GITHUB_TOKEN env var is not set.")
         sys.exit(1)
 
-    # --- Step 1: Replace images with placeholders ---
-    body_with_placeholders, images = _replace_images_with_placeholders(ISSUE_BODY or "")
-    if images:
-        print(f"Found {len(images)} inline image(s) in the issue body.")
-    else:
-        print("No inline images found in the issue body.")
-
-    # --- Step 2: Create Jira issue (with placeholders, no images yet) ---
-    jira_key, _ = create_jira_issue(body_with_placeholders)
+    jira_key = create_jira_issue()
     if not jira_key:
         print("ERROR: Failed to create Jira issue. Exiting.")
         sys.exit(1)
 
-    # --- Step 3: Upload images and embed in the description ---
-    _migrate_images(jira_key, images, body_with_placeholders)
-
-    # --- Step 4: Append Jira link to the GitHub issue ---
     append_jira_link_to_gh_issue(jira_key)
 
     print("=" * 60)
