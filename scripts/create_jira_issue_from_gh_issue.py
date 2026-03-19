@@ -8,12 +8,14 @@ a corresponding Jira issue in the configured project, including:
   - Assignee / reporter lookup (best-effort by display name)
   - Clickable cross-links in both the Jira description footer and
     the GitHub issue body footer
+  - Markdown-to-ADF conversion for the issue description
 
 Reuses HTTP helpers from jira_sync_modules to avoid code duplication.
 """
 
 import json
 import os
+import re
 import sys
 
 from jira_sync_modules import (
@@ -48,6 +50,165 @@ OWNER_REPO = os.environ.get("OWNER_REPO", "")
 # Assignee / reporter (GitHub login + display name)
 GH_ASSIGNEE_NAME = os.environ.get("GH_ASSIGNEE_NAME", "")
 GH_REPORTER_NAME = os.environ.get("GH_REPORTER_NAME", "")
+
+# ---------------------------------------------------------------------------
+# Markdown -> ADF conversion
+# ---------------------------------------------------------------------------
+
+def _inline_markdown(text: str) -> list[dict]:
+    """Convert inline markdown (bold, italic, code, links) to ADF inline nodes."""
+    if not text:
+        return [{"type": "text", "text": ""}]
+
+    nodes: list[dict] = []
+    pattern = re.compile(
+        r"\*\*(.+?)\*\*"                       # group 1: bold
+        r"|`([^`]+)`"                           # group 2: inline code
+        r"|\[([^\]]+)\]\(([^)]+)\)"             # group 3,4: link text + url
+        r"|(?<!\*)\*([^*\n]+?)\*(?!\*)"         # group 5: italic
+    )
+
+    last_end = 0
+    for m in pattern.finditer(text):
+        if m.start() > last_end:
+            nodes.append({"type": "text", "text": text[last_end:m.start()]})
+
+        if m.group(1) is not None:
+            nodes.append({"type": "text", "text": m.group(1),
+                          "marks": [{"type": "strong"}]})
+        elif m.group(2) is not None:
+            nodes.append({"type": "text", "text": m.group(2),
+                          "marks": [{"type": "code"}]})
+        elif m.group(3) is not None:
+            nodes.append({"type": "text", "text": m.group(3),
+                          "marks": [{"type": "link", "attrs": {"href": m.group(4)}}]})
+        elif m.group(5) is not None:
+            nodes.append({"type": "text", "text": m.group(5),
+                          "marks": [{"type": "em"}]})
+
+        last_end = m.end()
+
+    if last_end < len(text):
+        remaining = text[last_end:]
+        if remaining:
+            nodes.append({"type": "text", "text": remaining})
+
+    return nodes if nodes else [{"type": "text", "text": text}]
+
+
+def _markdown_to_adf_nodes(text: str) -> list[dict]:
+    """Convert markdown text to a list of ADF block-level nodes."""
+    nodes: list[dict] = []
+    lines = text.split("\n")
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Blank line
+        if not stripped:
+            i += 1
+            continue
+
+        # Fenced code block
+        if stripped.startswith("```"):
+            lang = stripped[3:].strip()
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            node: dict = {
+                "type": "codeBlock",
+                "content": [{"type": "text", "text": "\n".join(code_lines)}],
+            }
+            if lang:
+                node["attrs"] = {"language": lang}
+            nodes.append(node)
+            continue
+
+        # Heading
+        hm = re.match(r"^(#{1,6})\s+(.*)", line)
+        if hm:
+            nodes.append({
+                "type": "heading",
+                "attrs": {"level": len(hm.group(1))},
+                "content": _inline_markdown(hm.group(2).strip()),
+            })
+            i += 1
+            continue
+
+        # Horizontal rule
+        if re.match(r"^[-*_]{3,}\s*$", stripped):
+            nodes.append({"type": "rule"})
+            i += 1
+            continue
+
+        # Blockquote
+        if stripped.startswith(">"):
+            quote_lines: list[str] = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote_lines.append(re.sub(r"^>\s?", "", lines[i]))
+                i += 1
+            inner = _markdown_to_adf_nodes("\n".join(quote_lines))
+            if not inner:
+                inner = [{"type": "paragraph",
+                          "content": [{"type": "text",
+                                       "text": "\n".join(quote_lines)}]}]
+            nodes.append({"type": "blockquote", "content": inner})
+            continue
+
+        # Bullet list
+        if re.match(r"^[\s]*[-*+]\s", line):
+            items: list[dict] = []
+            while i < len(lines) and re.match(r"^[\s]*[-*+]\s", lines[i]):
+                item_text = re.sub(r"^[\s]*[-*+]\s+", "", lines[i])
+                items.append({
+                    "type": "listItem",
+                    "content": [{"type": "paragraph",
+                                 "content": _inline_markdown(item_text)}],
+                })
+                i += 1
+            nodes.append({"type": "bulletList", "content": items})
+            continue
+
+        # Ordered list
+        if re.match(r"^[\s]*\d+[.)]\s", line):
+            items = []
+            while i < len(lines) and re.match(r"^[\s]*\d+[.)]\s", lines[i]):
+                item_text = re.sub(r"^[\s]*\d+[.)]\s+", "", lines[i])
+                items.append({
+                    "type": "listItem",
+                    "content": [{"type": "paragraph",
+                                 "content": _inline_markdown(item_text)}],
+                })
+                i += 1
+            nodes.append({"type": "orderedList", "content": items})
+            continue
+
+        # Regular paragraph
+        para_lines: list[str] = []
+        while (i < len(lines)
+               and lines[i].strip()
+               and not lines[i].strip().startswith("#")
+               and not lines[i].strip().startswith("```")
+               and not lines[i].strip().startswith(">")
+               and not re.match(r"^[\s]*[-*+]\s", lines[i])
+               and not re.match(r"^[\s]*\d+[.)]\s", lines[i])
+               and not re.match(r"^[-*_]{3,}\s*$", lines[i].strip())):
+            para_lines.append(lines[i])
+            i += 1
+        if para_lines:
+            nodes.append({
+                "type": "paragraph",
+                "content": _inline_markdown(" ".join(para_lines)),
+            })
+
+    return nodes
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -86,14 +247,8 @@ def _find_jira_account_id(display_name: str) -> str | None:
 
 
 def _build_description_adf(body_text: str, gh_url: str) -> dict:
-    """Build an ADF document from the GH issue body + a footer link."""
-    content_nodes = []
-
-    if body_text:
-        content_nodes.append({
-            "type": "paragraph",
-            "content": [{"type": "text", "text": body_text}],
-        })
+    """Build an ADF document from the GH issue markdown body + a footer link."""
+    content_nodes = _markdown_to_adf_nodes(body_text) if body_text else []
 
     # Divider before footer
     content_nodes.append({"type": "rule"})
@@ -210,7 +365,7 @@ def append_jira_link_to_gh_issue(jira_key: str) -> None:
 
 def main():
     print("=" * 60)
-    print(" sync_gh_issue_to_jira")
+    print(" create_jira_issue_from_gh_issue")
     print("=" * 60)
 
     if not JIRA_AUTH:
