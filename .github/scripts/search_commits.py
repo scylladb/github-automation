@@ -23,12 +23,35 @@ def parser():
     return parser.parse_args()
 
 
+def get_promoted_label_for_ref(ref: str) -> str:
+    """
+    Compute the correct promoted-to label based on the branch reference.
+    - refs/heads/master or refs/heads/main -> promoted-to-master
+    - refs/heads/next -> promoted-to-master (gating for master)
+    - refs/heads/branch-X.Y -> promoted-to-branch-X.Y
+    - refs/heads/next-X.Y -> promoted-to-branch-X.Y (gating for branch-X.Y)
+    - refs/heads/manager-X.Y -> promoted-to-manager-X.Y
+    """
+    # Extract branch name from ref
+    branch = ref.replace('refs/heads/', '') if ref.startswith('refs/heads/') else ref
+
+    if branch in ('master', 'main', 'next'):
+        return 'promoted-to-master'
+    # For gating branches (next-X.Y), map to the stable branch label
+    if branch.startswith('next-'):
+        stable = branch.replace('next-', 'branch-', 1)
+        return f'promoted-to-{stable}'
+    return f'promoted-to-{branch}'
+
+
 def main():
     args = parser()
     g = Github(github_token)
     repo = g.get_repo(args.repository, lazy=False)
     start_commit, end_commit = args.commits.split('..')
     commits = repo.compare(start_commit, end_commit).commits
+    # Compute the correct promoted label based on the branch
+    promoted_label = get_promoted_label_for_ref(args.ref) if args.label == 'promoted-to-master' else args.label
     processed_prs = set()
     for commit in commits:
         search_url = f'https://api.github.com/search/issues'
@@ -78,7 +101,7 @@ def main():
                     print(f'Label {label_to_remove} cant be removed')
             else:
                 pr_number = pr["number"]
-                label_to_add = args.label
+                label_to_add = promoted_label
             data = {
                 "labels": [f'{label_to_add}']
             }

@@ -1689,11 +1689,18 @@ def create_pr_comment_and_remove_label(pr):
 def get_promoted_label(base_branch: str) -> str:
     """
     Get the promoted label based on the base branch.
-    For master/main: 'promoted-to-master'
-    For branch-X.Y or next-X.Y: 'promoted-to-branch-X.Y' or 'promoted-to-next-X.Y'
+    For master/main/next: 'promoted-to-master'
+    For branch-X.Y: 'promoted-to-branch-X.Y'
+    For next-X.Y (gating): 'promoted-to-branch-X.Y' (maps to the stable branch label,
+        since promotion from next-X.Y to branch-X.Y is what triggers backports)
     """
     if base_branch in ('master', 'main', 'next'):
         return 'promoted-to-master'
+    # For gating branches (next-X.Y), map to the stable branch label (promoted-to-branch-X.Y)
+    # since the promoted-to label is added when commits land on the stable branch
+    if base_branch.startswith('next-'):
+        stable_branch = base_branch.replace('next-', 'branch-', 1)
+        return f'promoted-to-{stable_branch}'
     return f'promoted-to-{base_branch}'
 
 
@@ -1705,10 +1712,13 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
     2. Adding promoted-to-<branch> label to them
     3. Marking backport/X.Y or backport/manager-X.Y as done on the original PR
     4. Continuing the chain backport if there are more versions
+    5. For original (non-backport) PRs on version branches: adding promoted label
+       and initiating backport chain if backport labels are present
     
     For repos with version branch gating (scylla-pkg):
     - Push to next-X.Y: Ignored (PR merge event, not a promotion)
     - Push to branch-X.Y: Adds promoted-to-branch-X.Y label, marks done, continues chain
+      For original PRs targeting next-X.Y directly: initiates backport chain
     
     For repos with master gating (scylladb/scylladb):
     - Push to next: Ignored (PR merge to gating branch, not a promotion)
@@ -1776,16 +1786,32 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
                 continue
             processed_prs.add(pr.number)
             
-            # For non-backport (original) PRs on master, add the promoted label
+            # For non-backport (original) PRs, add the promoted label
             if not is_backport_pr(pr.title, pr.body):
-                if branch_name in ('master', 'main'):
-                    try:
-                        pr.add_to_labels(promoted_label)
-                        logging.info(f"Added '{promoted_label}' label to original PR #{pr.number}")
-                    except Exception as e:
-                        logging.warning(f"Failed to add label to original PR #{pr.number}: {e}")
-                else:
-                    logging.info(f"PR #{pr.number} is not a backport PR, skipping")
+                try:
+                    pr.add_to_labels(promoted_label)
+                    logging.info(f"Added '{promoted_label}' label to original PR #{pr.number}")
+                except Exception as e:
+                    logging.warning(f"Failed to add label to original PR #{pr.number}: {e}")
+                
+                # For PRs that originated directly on a version branch (not master),
+                # check if they have backport labels and initiate the backport chain.
+                # This handles the case where a PR targets next-X.Y (or branch-X.Y)
+                # directly instead of going through master first.
+                if branch_name not in ('master', 'main'):
+                    backport_label_pattern = re.compile(r'backport/(manager-)?\d+\.\d+$')
+                    pr_labels = [label.name for label in pr.labels]
+                    backport_labels = [label for label in pr_labels if backport_label_pattern.match(label)]
+                    if backport_labels:
+                        logging.info(f"Original PR #{pr.number} on version branch {branch_name} has backport labels: {backport_labels}")
+                        versions = [label.replace('backport/', '') for label in backport_labels]
+                        stable_branch = branch_name
+                        commits = get_pr_commits(repo, pr, stable_branch)
+                        if commits:
+                            main_jira_key = extract_jira_key_from_pr_body(pr.body)
+                            backport_with_jira(repo, pr, versions, commits, main_jira_key, repo_name)
+                        else:
+                            logging.warning(f"No commits found for PR #{pr.number} on branch {stable_branch}")
                 continue
             
             logging.info(f"Found merged backport PR #{pr.number}: {pr.title}")
@@ -1919,7 +1945,7 @@ def main():
 
     # Determine branch prefix based on repository
     backport_branch = get_branch_prefix(repo_name)
-    stable_branch = 'master' if base_branch == 'next' else base_branch.replace('next', 'branch')
+    stable_branch = 'master' if base_branch in ('next', 'main') else base_branch.replace('next-', 'branch-', 1)
     backport_label_pattern = re.compile(r'backport/(manager-)?\d+\.\d+$')
 
     g = Github(github_token)
