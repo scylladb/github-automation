@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: run backport-script unit tests.
+# Stored in hooks/ so it's tracked by git.
+#
+# Activate with:
+#   git config core.hooksPath hooks
+# Or:
+#   make hooks
+#
+
+set -euo pipefail
+
+# Only run tests when backport-related files are being committed.
+CHANGED=$(git diff --cached --name-only --diff-filter=ACMR -- \
+    '.github/scripts/auto-backport-jira.py' \
+    '.github/tests/' \
+    'hooks/pre-commit' \
+    2>/dev/null || true)
+
+if [ -z "$CHANGED" ]; then
+    exit 0
+fi
+
+echo "pre-commit: backport-related files changed, running tests..."
+
+if ! command -v python3 &>/dev/null; then
+    echo "WARNING: python3 not found, skipping pre-commit tests"
+    exit 0
+fi
+
+if ! python3 -m pytest --version &>/dev/null; then
+    echo "WARNING: pytest not installed, skipping pre-commit tests"
+    echo "  Install with: pip3 install -r .github/tests/requirements-test.txt"
+    exit 0
+fi
+
+if ! python3 -m pytest .github/tests/ -q --tb=short; then
+    echo ""
+    echo "pre-commit: TESTS FAILED -- commit aborted."
+    exit 1
+fi
+
+echo "pre-commit: all checks passed."
