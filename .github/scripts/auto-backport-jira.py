@@ -756,13 +756,25 @@ def report_jira_failure(main_jira_key: str, version: str):
 # ============================================================================
 
 def extract_main_pr_link_from_body(pr_body: str) -> Optional[str]:
-    """Extract the main PR link from backport PR body."""
+    """Extract the main PR link from backport PR body.
+    
+    Supports both formats:
+    - New format: "This PR is a backport of PR scylladb/repo#1234" or "backport of PR #1234"
+    - Old format: "Parent PR: #1234"
+    """
     if not pr_body:
         return None
     
+    # Try new format first: "backport of PR ..."
     match = re.search(r'backport of PR\s+(\S+)', pr_body, re.IGNORECASE)
     if match:
         return match.group(1)
+    
+    # Try old format: "Parent PR: #1234"
+    parent_match = re.search(r'Parent PR:\s*(#\d+)', pr_body, re.IGNORECASE)
+    if parent_match:
+        return parent_match.group(1)
+    
     return None
 
 
@@ -1653,9 +1665,16 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
     original_pr_body = original_pr.body if original_pr else merged_pr.body
     
     # Generate PR body for next backport
+    # Resolve the main PR link: prefer extracted link from body, then root original PR,
+    # then fall back to the merged PR number.
+    if not main_pr_link:
+        if original_pr:
+            main_pr_link = f"#{original_pr.number}"
+        else:
+            main_pr_link = f"#{merged_pr.number}"
     new_pr_body = generate_backport_pr_body(
         original_pr_body=original_pr_body,
-        main_pr_link=main_pr_link or f"#{merged_pr.number}",
+        main_pr_link=main_pr_link,
         jira_mapping=jira_mapping,
         commits=commits
     )

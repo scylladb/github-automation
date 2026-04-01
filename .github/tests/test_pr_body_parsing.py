@@ -27,6 +27,19 @@ class TestExtractMainPrLinkFromBody:
         body = "This PR is a Backport of PR #5678"
         assert bp_module.extract_main_pr_link_from_body(body) == "#5678"
 
+    def test_parent_pr_format(self, bp_module):
+        body = "Some text\n\n- (cherry picked from commit abc123)\n\nParent PR: #6398"
+        assert bp_module.extract_main_pr_link_from_body(body) == "#6398"
+
+    def test_parent_pr_format_case_insensitive(self, bp_module):
+        body = "parent pr: #999"
+        assert bp_module.extract_main_pr_link_from_body(body) == "#999"
+
+    def test_backport_of_pr_preferred_over_parent_pr(self, bp_module):
+        """When both formats are present, 'backport of PR' should be preferred."""
+        body = "This PR is a backport of PR #100\n\nParent PR: #200"
+        assert bp_module.extract_main_pr_link_from_body(body) == "#100"
+
     def test_no_match(self, bp_module):
         assert bp_module.extract_main_pr_link_from_body("Just a normal PR") is None
 

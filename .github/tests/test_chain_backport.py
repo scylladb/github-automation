@@ -153,6 +153,86 @@ class TestProcessChainBackport:
             mock_assign.assert_called_once_with("SCYLLADB-888", "user-id")
             mock_create.assert_not_called()
 
+    def test_chain_backport_uses_parent_pr_format_for_pr_link(self, bp_module, make_pr, make_repo):
+        """Chain backport from a PR using 'Parent PR: #N' format should correctly
+        resolve the original PR link, not fall back to the merged PR number.
+        
+        Regression test for: https://scylladb.atlassian.net/browse/DTEST-162
+        PR #6800 (2026.1 backport) had 'Parent PR: #6398'. When chain-backporting
+        to 2025.4, the automation incorrectly used #6800 as the parent PR instead
+        of #6398 because extract_main_pr_link_from_body didn't handle the
+        'Parent PR' format.
+        """
+        repo = make_repo()
+        # Original PR (e.g., #6398)
+        original = make_pr(number=6398, title="Fix bug", body="Fix\nFixes: DTEST-93")
+        # Merged 2026.1 backport PR (e.g., #6800) uses "Parent PR:" format
+        merged_pr = make_pr(
+            number=6800,
+            title="[Backport 2026.1] Fix bug",
+            body="Fix\nFixes: DTEST-161\n\n- (cherry picked from commit abc123)\n\nParent PR: #6398",
+            merged=True,
+            merge_commit_sha="merge456",
+            labels=["backport/2025.4"]
+        )
+
+        captured_pr_body = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_pr_body['body'] = kwargs.get('pr_body', '')
+            return make_pr(number=6824)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value="DTEST-162"), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylla-dtest")
+
+            mock_bp.assert_called_once()
+            pr_body = captured_pr_body['body']
+            # Parent PR should point to original #6398, not intermediate #6800
+            assert "Parent PR: #6398" in pr_body, f"Expected 'Parent PR: #6398' but got body:\n{pr_body}"
+            assert "Parent PR: #6800" not in pr_body
+            # Fixes should reference the sub-issue DTEST-162, not the parent DTEST-93
+            assert "DTEST-162" in pr_body
+            assert "DTEST-93" not in pr_body
+
+    def test_chain_backport_fallback_to_original_pr_when_no_link(self, bp_module, make_pr, make_repo):
+        """When neither 'backport of PR' nor 'Parent PR' is found in body,
+        should fall back to the root original PR number, not the merged PR."""
+        repo = make_repo()
+        original = make_pr(number=100, title="Fix bug", body="Fix\nFixes: PROJ-1")
+        # Merged PR with no parent PR link in body (edge case)
+        merged_pr = make_pr(
+            number=200,
+            title="[Backport 2025.4] Fix bug",
+            body="Fix\nFixes: PROJ-2",
+            merged=True,
+            merge_commit_sha="merge123",
+            labels=["backport/2025.3"]
+        )
+
+        captured_pr_body = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_pr_body['body'] = kwargs.get('pr_body', '')
+            return make_pr(number=300)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "backport", side_effect=capture_backport):
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+            pr_body = captured_pr_body['body']
+            # Should fall back to original PR #100, not merged PR #200
+            assert "Parent PR: #100" in pr_body, f"Expected 'Parent PR: #100' but got body:\n{pr_body}"
+            assert "Parent PR: #200" not in pr_body
+
 
 class TestProcessBranchPush:
     def test_skips_gating_branch_next(self, bp_module, make_repo):
