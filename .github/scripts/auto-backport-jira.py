@@ -452,9 +452,9 @@ def has_fixes_reference(pr_body: str) -> bool:
     if not pr_body:
         return False
 
-    jira_match = re.search(r'[Ff]ixes:\s*(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+)', pr_body)
+    jira_match = re.search(r'[Ff]ixes:?\s*(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+)', pr_body)
     github_match = re.search(
-        r'[Ff]ixes:\s*(?:https?://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+|[^#\s]+/[^#\s]+#\d+|#\d+)\b',
+        r'[Ff]ixes:?\s*(?:https?://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+|[^#\s]+/[^#\s]+#\d+|#\d+)\b',
         pr_body
     )
     return bool(jira_match or github_match)
