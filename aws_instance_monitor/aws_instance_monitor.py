@@ -25,14 +25,18 @@ def main():
         ec2_reg = boto3.client('ec2', region_name=region_name)
         
         # Get all running instances in this region
-        response = ec2_reg.describe_instances(
-            Filters=[
-                {
-                    'Name': 'instance-state-name',
-                    'Values': ['running']
-                }
-            ]
-        )
+        try:
+            response = ec2_reg.describe_instances(
+                Filters=[
+                    {
+                        'Name': 'instance-state-name',
+                        'Values': ['running']
+                    }
+                ]
+            )
+        except Exception as e:
+            print(f"Warning: Skipping region {region_name} - {e}")
+            continue
         
         for reservation in response['Reservations']:
             for instance in reservation['Instances']:
