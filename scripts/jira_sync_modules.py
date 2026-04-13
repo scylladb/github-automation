@@ -106,16 +106,16 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
         return set()
 
 
-def _fetch_commit_messages(
+def _fetch_commits(
     owner_repo: str, pr_number: int, gh_token: str,
-) -> list[str]:
+) -> list[tuple[str, str]]:
     """
-    Fetch all commit messages for a PR via the GitHub REST API.
+    Fetch all commits for a PR via the GitHub REST API.
 
-    Returns a list of commit message strings (subject + body).
+    Returns a list of (short_sha, message) tuples.
     Paginates automatically (up to 250 commits per PR).
     """
-    messages: list[str] = []
+    results: list[tuple[str, str]] = []
     page = 1
     per_page = 100
 
@@ -139,16 +139,17 @@ def _fetch_commit_messages(
             break
 
         for commit in commits:
+            sha = commit.get("sha", "")[:10]
             msg = commit.get("commit", {}).get("message", "")
             if msg:
-                messages.append(msg)
+                results.append((sha, msg))
 
         if len(commits) < per_page:
             break
         page += 1
 
-    print(f"Fetched {len(messages)} commit message(s) from {owner_repo}#{pr_number}")
-    return messages
+    print(f"Fetched {len(results)} commit(s) from {owner_repo}#{pr_number}")
+    return results
 
 
 def extract_jira_keys(
@@ -179,14 +180,19 @@ def extract_jira_keys(
 
     candidates = _extract_candidate_keys(pr_body)
 
+    # Track where each key was found for logging.
+    key_origins: dict[str, list[str]] = {}
+    for key in candidates:
+        key_origins.setdefault(key, []).append("PR body")
+
     # Also scan commit messages for closing-keyword Jira keys (PM-279).
     if owner_repo and pr_number and gh_token:
-        commit_messages = _fetch_commit_messages(owner_repo, pr_number, gh_token)
-        for msg in commit_messages:
+        commits = _fetch_commits(owner_repo, pr_number, gh_token)
+        for sha, msg in commits:
             commit_keys = _extract_candidate_keys(msg)
-            if commit_keys:
-                print(f"  Found key(s) in commit message: {commit_keys}")
-                candidates.extend(commit_keys)
+            for key in commit_keys:
+                key_origins.setdefault(key, []).append(f"commit {sha}")
+            candidates.extend(commit_keys)
         # Re-deduplicate after merging body + commit keys.
         candidates = sorted(set(candidates))
     else:
@@ -200,7 +206,8 @@ def extract_jira_keys(
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print("Candidate keys:")
     for key in candidates:
-        print(f"  {key}")
+        origins = ", ".join(key_origins.get(key, ["unknown"]))
+        print(f"  {key}  (found in: {origins})")
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     accepted: list[str] = []
