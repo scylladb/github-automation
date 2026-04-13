@@ -83,6 +83,37 @@ class TestGetPrCommits:
         result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == []
 
+    def test_warns_on_partial_commit_match(self, bp_module, make_pr, make_repo, make_commit, caplog):
+        """When title matching finds fewer commits than PR has, a warning should be logged."""
+        import logging
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
+
+        # Single parent -> not a merge commit (rebase merge path)
+        squash_commit = make_commit(sha="squash123", parents=[MagicMock()])
+        repo.get_commit.return_value = squash_commit
+
+        # PR has 2 commits
+        pr_commit1 = MagicMock()
+        pr_commit1.commit.message = "Fix the bug\n\nDetails"
+        pr_commit2 = MagicMock()
+        pr_commit2.commit.message = "Add comment\n\nMore details"
+        pr.get_commits.return_value = [pr_commit1, pr_commit2]
+
+        # Only one promoted commit matches (the first one)
+        promoted_commit = make_commit(sha="promoted1", message="Fix the bug")
+        promoted_commit.commit.message = "Fix the bug"
+        comparison = MagicMock()
+        comparison.commits = [promoted_commit]
+        repo.compare.return_value = comparison
+
+        with caplog.at_level(logging.WARNING):
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+
+        assert len(result) == 1
+        assert "promoted1" in result
+        assert any("has 2 commits but only 1 were matched" in msg for msg in caplog.messages)
+
 
 class TestIsCommitInBranch:
     def test_commit_found_by_title(self, bp_module, make_repo, make_commit):

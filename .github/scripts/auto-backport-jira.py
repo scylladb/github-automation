@@ -1148,7 +1148,8 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
                              f"using merge_commit_sha {pr.merge_commit_sha} directly")
                 commits.append(pr.merge_commit_sha)
             else:
-                for commit in pr.get_commits():
+                pr_commits_list = list(pr.get_commits())
+                for commit in pr_commits_list:
                     for promoted_commit in promoted_commits:
                         commit_title = commit.commit.message.splitlines()[0]
                         # In Scylla-pkg and scylla-dtest, for example,
@@ -1158,6 +1159,10 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
                         # So here, we are validating the correct SHA for each commit so we can cherry-pick
                         if promoted_commit.commit.message.startswith(commit_title):
                             commits.append(promoted_commit.sha)
+                if len(commits) != len(pr_commits_list):
+                    logging.warning(f"get_pr_commits: PR #{pr.number} has {len(pr_commits_list)} commits "
+                                    f"but only {len(commits)} were matched by title against promoted commits. "
+                                    f"PR commit titles: {[c.commit.message.splitlines()[0] for c in pr_commits_list]}")
 
     # For non-merged closed PRs, or as a fallback when the merged path found no commits,
     # look for the commit SHA from the close event. This handles PRs closed by direct push
@@ -1624,7 +1629,22 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
     
     # Get commits from the merged/closed PR
     if merged_pr.merged:
-        commits = [merged_pr.merge_commit_sha] if merged_pr.merge_commit_sha else []
+        if merged_pr.merge_commit_sha:
+            merge_commit = repo.get_commit(merged_pr.merge_commit_sha)
+            if len(merge_commit.parents) > 1:
+                # True merge commit (multi-parent): cherry-pick with -m1 handles it
+                commits = [merged_pr.merge_commit_sha]
+            else:
+                # Rebase merge (single-parent merge_commit_sha): this SHA is just the
+                # LAST commit in the PR. For multi-commit PRs we must collect ALL commits.
+                pr_commits = list(merged_pr.get_commits())
+                if len(pr_commits) > 1:
+                    commits = [c.sha for c in pr_commits]
+                    logging.info(f"Rebase-merged PR #{merged_pr.number} has {len(commits)} commits: {commits}")
+                else:
+                    commits = [merged_pr.merge_commit_sha]
+        else:
+            commits = []
     else:
         # For PRs closed by direct push (not merged through GitHub UI),
         # get the actual commit SHA from the close event

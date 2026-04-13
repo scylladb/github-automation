@@ -62,6 +62,125 @@ class TestProcessChainBackport:
             call_args = mock_bp.call_args[0]
             assert call_args[2] == "2025.3"  # Next version (highest remaining)
 
+    def test_rebase_merged_pr_uses_all_commits(self, bp_module, make_pr, make_repo, make_commit):
+        """Rebase-merged backport PR with multiple commits should cherry-pick ALL commits,
+        not just the last one (merge_commit_sha).
+
+        Regression test for: https://github.com/scylladb/scylla-dtest/pull/6865#issuecomment-4236622352
+        PR #6856 had 2 commits. The chain backport from PR #6863 (rebase-merged) only
+        cherry-picked the last commit (merge_commit_sha), dropping the first commit.
+        """
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
+
+        # PR commit objects (as returned by pr.get_commits())
+        commit1 = make_commit(sha="commit1_sha", message="Fix the actual bug")
+        commit2 = make_commit(sha="commit2_sha", message="Add comment documenting workaround")
+
+        merged_pr = make_pr(
+            number=10,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
+            merged=True,
+            merge_commit_sha="commit2_sha",  # Rebase merge: last commit = merge_commit_sha
+            labels=["backport/2025.3"]
+        )
+        merged_pr.get_commits.return_value = [commit1, commit2]
+
+        # repo.get_commit for the merge_commit_sha returns single-parent (rebase merge)
+        rebase_commit = make_commit(sha="commit2_sha", parents=[MagicMock()])
+        repo.get_commit.return_value = rebase_commit
+
+        captured_commits = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_commits['commits'] = args[3]  # 4th positional arg is commits
+            return make_pr(number=42)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+            mock_bp.assert_called_once()
+            # Must cherry-pick BOTH commits, not just the last one
+            assert captured_commits['commits'] == ["commit1_sha", "commit2_sha"], \
+                f"Expected both commits but got: {captured_commits['commits']}"
+
+    def test_true_merge_commit_uses_single_sha(self, bp_module, make_pr, make_repo, make_commit):
+        """True merge commit (multi-parent) should use only merge_commit_sha."""
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
+        merged_pr = make_pr(
+            number=10,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
+            merged=True,
+            merge_commit_sha="merge_sha",
+            labels=["backport/2025.3"]
+        )
+
+        # True merge commit has 2 parents
+        merge_commit = make_commit(sha="merge_sha", parents=[MagicMock(), MagicMock()])
+        repo.get_commit.return_value = merge_commit
+
+        captured_commits = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_commits['commits'] = args[3]
+            return make_pr(number=42)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+            mock_bp.assert_called_once()
+            assert captured_commits['commits'] == ["merge_sha"]
+
+    def test_single_commit_rebase_merge_uses_merge_sha(self, bp_module, make_pr, make_repo, make_commit):
+        """Rebase-merged PR with a single commit should use merge_commit_sha directly."""
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
+
+        single_commit = make_commit(sha="only_commit_sha", message="Fix bug")
+        merged_pr = make_pr(
+            number=10,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
+            merged=True,
+            merge_commit_sha="only_commit_sha",
+            labels=["backport/2025.3"]
+        )
+        merged_pr.get_commits.return_value = [single_commit]
+
+        # Single parent = rebase merge
+        rebase_commit = make_commit(sha="only_commit_sha", parents=[MagicMock()])
+        repo.get_commit.return_value = rebase_commit
+
+        captured_commits = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_commits['commits'] = args[3]
+            return make_pr(number=42)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+            mock_bp.assert_called_once()
+            assert captured_commits['commits'] == ["only_commit_sha"]
+
     def test_marks_merged_version_done_on_original(self, bp_module, make_pr, make_repo):
         repo = make_repo()
         original = make_pr(number=1, title="Fix bug", body="Normal body")
