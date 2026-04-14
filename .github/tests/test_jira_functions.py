@@ -53,6 +53,14 @@ class TestExtractJiraKeyFromPrBody:
         body = "Fixes: SCYLLADB-100\nFixes: SCYLLADB-200"
         assert bp_module.extract_jira_key_from_pr_body(body) == "SCYLLADB-100"
 
+    def test_fixes_with_markdown_link(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)"
+        assert bp_module.extract_jira_key_from_pr_body(body) == "RELENG-358"
+
+    def test_multiple_markdown_links_returns_first(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)\nFixes: [RELENG-121](https://scylladb.atlassian.net/browse/RELENG-121)"
+        assert bp_module.extract_jira_key_from_pr_body(body) == "RELENG-358"
+
 
 class TestExtractAllJiraKeysFromPrBody:
     def test_multiple_fixes(self, bp_module):
@@ -79,6 +87,16 @@ class TestExtractAllJiraKeysFromPrBody:
         result = bp_module.extract_all_jira_keys_from_pr_body(body)
         assert result == ["SCYLLADB-100", "PROJ-200"]
 
+    def test_with_markdown_links(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)\nFixes: [RELENG-121](https://scylladb.atlassian.net/browse/RELENG-121)\nFixes: [RELENG-396](https://scylladb.atlassian.net/browse/RELENG-396)"
+        result = bp_module.extract_all_jira_keys_from_pr_body(body)
+        assert result == ["RELENG-358", "RELENG-121", "RELENG-396"]
+
+    def test_mixed_formats(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)\nFixes: SCYLLADB-123\nFixes: https://scylladb.atlassian.net/browse/PROJ-456"
+        result = bp_module.extract_all_jira_keys_from_pr_body(body)
+        assert result == ["RELENG-358", "SCYLLADB-123", "PROJ-456"]
+
 
 class TestHasFixesReference:
     def test_jira_key(self, bp_module):
@@ -86,6 +104,9 @@ class TestHasFixesReference:
 
     def test_jira_url(self, bp_module):
         assert bp_module.has_fixes_reference("Fixes: https://scylladb.atlassian.net/browse/SCYLLADB-123") is True
+
+    def test_jira_markdown_link(self, bp_module):
+        assert bp_module.has_fixes_reference("Fixes: [SCYLLADB-123](https://scylladb.atlassian.net/browse/SCYLLADB-123)") is True
 
     def test_github_issue_number(self, bp_module):
         assert bp_module.has_fixes_reference("Fixes: #123") is True

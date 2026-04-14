@@ -75,6 +75,24 @@ class TestReplaceFixesInBody:
         result = bp_module.replace_fixes_in_body(body, mapping)
         assert "SCYLLADB-999" in result
 
+    def test_markdown_link_replacement(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)"
+        mapping = {"RELENG-358": "RELENG-500"}
+        result = bp_module.replace_fixes_in_body(body, mapping)
+        assert "RELENG-500" in result
+        assert "RELENG-358" not in result
+
+    def test_multiple_markdown_link_replacements(self, bp_module):
+        body = "Fixes: [RELENG-358](https://scylladb.atlassian.net/browse/RELENG-358)\nFixes: [RELENG-121](https://scylladb.atlassian.net/browse/RELENG-121)\nFixes: [RELENG-396](https://scylladb.atlassian.net/browse/RELENG-396)"
+        mapping = {"RELENG-358": "RELENG-500", "RELENG-121": "RELENG-501", "RELENG-396": "RELENG-502"}
+        result = bp_module.replace_fixes_in_body(body, mapping)
+        assert "RELENG-500" in result
+        assert "RELENG-501" in result
+        assert "RELENG-502" in result
+        assert "RELENG-358" not in result
+        assert "RELENG-121" not in result
+        assert "RELENG-396" not in result
+
     def test_no_mapping_preserves_body(self, bp_module):
         body = "Fixes: SCYLLADB-123"
         result = bp_module.replace_fixes_in_body(body, {})
