@@ -65,9 +65,9 @@ def _sanitize(text: str) -> str:
     return text.replace('\r', '').replace('`', ' ')
 
 
-def _extract_candidate_keys(pr_body: str) -> list[str]:
+def _extract_candidate_keys(text: str) -> list[str]:
     """
-    Extract candidate Jira keys from the PR body.
+    Extract candidate Jira keys from arbitrary text (PR body, commit message).
 
     Only keys preceded by a closing keyword (Fixes, Closes, Resolves, etc.)
     are accepted. Bare key mentions are ignored.
@@ -75,9 +75,9 @@ def _extract_candidate_keys(pr_body: str) -> list[str]:
     """
     candidates: set[str] = set()
 
-    body = _sanitize(pr_body)
+    body = _sanitize(text)
 
-    # Closing-keyword keys from body (Fixes, Closes, Resolves, etc.)
+    # Closing-keyword keys (Fixes, Closes, Resolves, etc.)
     candidates.update(k.upper() for k in _CLOSING_KEYWORD_RE.findall(body))
 
     return sorted(candidates)
@@ -106,16 +106,72 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
         return set()
 
 
-def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
+def _fetch_commits(
+    owner_repo: str, pr_number: int, gh_token: str,
+) -> list[tuple[str, str]]:
+    """
+    Fetch all commits for a PR via the GitHub REST API.
+
+    Returns a list of (short_sha, message) tuples.
+    Paginates automatically (up to 250 commits per PR).
+    """
+    results: list[tuple[str, str]] = []
+    page = 1
+    per_page = 100
+
+    while True:
+        url = (f"https://api.github.com/repos/{owner_repo}"
+               f"/pulls/{pr_number}/commits"
+               f"?per_page={per_page}&page={page}")
+
+        req = Request(url)
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("Authorization", f"Bearer {gh_token}")
+
+        try:
+            with urlopen(req) as resp:
+                commits = json.loads(resp.read().decode())
+        except (HTTPError, URLError) as exc:
+            print(f"Warning: failed to fetch PR commits (page {page}): {exc}")
+            break
+
+        if not commits:
+            break
+
+        for commit in commits:
+            sha = commit.get("sha", "")[:10]
+            msg = commit.get("commit", {}).get("message", "")
+            if msg:
+                results.append((sha, msg))
+
+        if len(commits) < per_page:
+            break
+        page += 1
+
+    print(f"Fetched {len(results)} commit(s) from {owner_repo}#{pr_number}")
+    return results
+
+
+def extract_jira_keys(
+    pr_title: str,
+    pr_body: str,
+    jira_auth: str,
+    owner_repo: str = "",
+    pr_number: int = 0,
+    gh_token: str = "",
+) -> list[str]:
     """
     Replicate the extract_jira_keys.yml logic in pure Python.
 
-    1. Extract candidate JIRA keys from the PR body (title is ignored).
+    1. Extract candidate JIRA keys from the PR body and commit messages.
     2. Accept keys whose project prefix is in the hard-coded set.
     3. For remaining keys, query the Jira API and accept valid prefixes.
     4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
+
+    When owner_repo, pr_number, and gh_token are provided the function
+    also fetches the PR's commit messages from the GitHub API and scans
+    them for closing-keyword patterns (Fixes, Closes, Resolves, etc.).
     """
-    print(f"PR title: {pr_title}")
     print(f"PR body: {pr_body}")
 
     if not jira_auth:
@@ -124,14 +180,34 @@ def extract_jira_keys(pr_title: str, pr_body: str, jira_auth: str) -> list[str]:
 
     candidates = _extract_candidate_keys(pr_body)
 
+    # Track where each key was found for logging.
+    key_origins: dict[str, list[str]] = {}
+    for key in candidates:
+        key_origins.setdefault(key, []).append("PR body")
+
+    # Also scan commit messages for closing-keyword Jira keys (PM-279).
+    if owner_repo and pr_number and gh_token:
+        commits = _fetch_commits(owner_repo, pr_number, gh_token)
+        for sha, msg in commits:
+            commit_keys = _extract_candidate_keys(msg)
+            for key in commit_keys:
+                key_origins.setdefault(key, []).append(f"commit {sha}")
+            candidates.extend(commit_keys)
+        # Re-deduplicate after merging body + commit keys.
+        candidates = sorted(set(candidates))
+    else:
+        print("Skipping commit-message scan "
+              "(owner_repo/pr_number/gh_token not provided)")
+
     if not candidates:
-        print("No Jira-like keys found in PR body")
+        print("No Jira-like keys found in PR body or commit messages")
         return ["__NO_KEYS_FOUND__"]
 
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print("Candidate keys:")
     for key in candidates:
-        print(f"  {key}")
+        origins = ", ".join(key_origins.get(key, ["unknown"]))
+        print(f"  {key}  (found in: {origins})")
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     accepted: list[str] = []
@@ -1077,7 +1153,7 @@ def jira_status_transition(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        print(f"WARNING: {failed} transition(s) failed. Continuing.")
+        print(f"WARNING: {failed} comment(s) failed. Continuing.")
 
 
 # ---------------------------------------------------------------------------
