@@ -17,6 +17,13 @@ jobs:
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }}
 
+      - name: Fetch allowed emails list
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          sparse-checkout: .github/workflows/allowed_emails.txt
+          path: _github_automation
+
       - name: Validate author emails
         id: validate
         run: |
@@ -37,9 +44,9 @@ jobs:
           INVALID_COMMITS=""
           INVALID_COUNT=0
 
-          # Load known external contributors from the allow-list file.
+          # Load known external contributors from the allow-list file (fetched from github-automation repo).
           # Lines starting with '#' and blank lines are ignored.
-          ALLOWED_EMAILS_FILE="${GITHUB_WORKSPACE}/.github/workflows/allowed_emails.txt"
+          ALLOWED_EMAILS_FILE="${GITHUB_WORKSPACE}/_github_automation/.github/workflows/allowed_emails.txt"
           mapfile -t ALLOWED_EMAILS < <(grep -v '^\s*#' "$ALLOWED_EMAILS_FILE" | grep -v '^\s*$')
 
           is_allowed_email() {
