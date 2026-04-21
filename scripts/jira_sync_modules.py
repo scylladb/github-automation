@@ -777,9 +777,14 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
             seen.add(s)
             labels.append(s)
 
-    # 2) Remove P0..P4 from base list
+    # 2) Remove P0..P4 and workflow-managed labels from base list.
+    #    backport/* and promoted-to-* labels are managed by the backport
+    #    automation and must never be synced from Jira to PRs -- doing so
+    #    can break the backport chain (e.g. re-adding a backport/X.Y label
+    #    for a version that was already completed).
     priority_names = {"P0", "P1", "P2", "P3", "P4"}
-    labels = [lb for lb in labels if lb not in priority_names]
+    _WORKFLOW_MANAGED_RE = re.compile(r"^(backport/|promoted-to-)")
+    labels = [lb for lb in labels if lb not in priority_names and not _WORKFLOW_MANAGED_RE.match(lb)]
 
     # 3) Parse details CSV for priority + scylla_components
     best_rank = None
