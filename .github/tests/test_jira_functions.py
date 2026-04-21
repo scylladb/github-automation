@@ -330,18 +330,48 @@ class TestAssignJiraIssue:
 
 
 class TestFindExistingSubIssue:
+    def test_found_via_parent_subtasks(self, bp_module):
+        """Primary path: finds existing sub-issue via parent's subtasks field."""
+        parent_issue = {
+            "fields": {
+                "subtasks": [
+                    {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
+                ]
+            }
+        }
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue):
+            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            assert result == "SCYLLADB-999"
+
+    def test_found_via_jql_fallback(self, bp_module):
+        """Fallback path: parent subtasks field doesn't have it, but JQL finds it."""
+        parent_issue = {"fields": {"subtasks": []}}
+        jql_result = {
+            "issues": [
+                {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
+            ]
+        }
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value=jql_result):
+            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            assert result == "SCYLLADB-999"
+
     def test_found_exact_match(self, bp_module):
+        parent_issue = {"fields": {"subtasks": []}}
         result_data = {
             "issues": [
                 {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
             ]
         }
-        with patch.object(bp_module, "jira_api_request", return_value=result_data):
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value=result_data):
             result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
             assert result == "SCYLLADB-999"
 
     def test_not_found(self, bp_module):
-        with patch.object(bp_module, "jira_api_request", return_value={"issues": []}):
+        parent_issue = {"fields": {"subtasks": []}}
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value={"issues": []}):
             result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
             assert result is None
 
@@ -359,14 +389,37 @@ class TestFindExistingSubIssue:
 
     def test_avoids_partial_version_match(self, bp_module):
         """Searching for 2025.4 should NOT match 2025.40."""
-        result_data = {
+        parent_issue = {
+            "fields": {
+                "subtasks": [
+                    {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.40] - Fix bug"}}
+                ]
+            }
+        }
+        jql_result = {
             "issues": [
                 {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.40] - Fix bug"}}
             ]
         }
-        with patch.object(bp_module, "jira_api_request", return_value=result_data):
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value=jql_result):
             result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
             assert result is None
+
+    def test_parent_subtasks_takes_priority_over_jql(self, bp_module):
+        """If found in parent subtasks, JQL should not be called."""
+        parent_issue = {
+            "fields": {
+                "subtasks": [
+                    {"key": "SCYLLADB-888", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
+                ]
+            }
+        }
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request") as mock_jql:
+            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            assert result == "SCYLLADB-888"
+            mock_jql.assert_not_called()
 
 
 class TestCreateJiraSubIssue:
@@ -521,8 +574,8 @@ class TestAssignJiraIssueErrors:
 
 class TestFindExistingSubIssueErrors:
     def test_exception_returns_none(self, bp_module):
-        """Line 494-495: Exception in find_existing_sub_issue returns None."""
-        with patch.object(bp_module, "jira_api_request", side_effect=Exception("boom")):
+        """Exception in find_existing_sub_issue returns None."""
+        with patch.object(bp_module, "get_jira_issue", side_effect=Exception("boom")):
             result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
             assert result is None
 

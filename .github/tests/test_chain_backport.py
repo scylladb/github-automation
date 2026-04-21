@@ -1205,3 +1205,128 @@ class TestClosePromotedBackportPrEdgeCases:
 
             mock_root.assert_not_called()
             mock_done.assert_not_called()
+
+
+class TestProcessChainBackportSuperseded:
+    """Tests for chain continuation when a backport PR is superseded (closed, not merged)."""
+
+    def test_uses_promoted_commit_sha_for_superseded_pr(self, bp_module, make_pr, make_repo):
+        """When a PR is closed (not merged) and promoted_commit_sha is provided,
+        the chain should use that SHA instead of trying to get commits from the PR."""
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Fixes: SCYLLADB-100")
+        merged_pr = make_pr(
+            number=42,
+            title="[Backport 2026.1] Fix bug",
+            body="This PR is a backport of PR #1\n\nFixes: SCYLLADB-100",
+            merged=False,  # Superseded - closed, not merged
+            labels=["backport/2025.4"],
+            base_ref="branch-2026.1"
+        )
+        merged_pr.state = "closed"
+
+        captured = {}
+        def capture_backport(*args, **kwargs):
+            captured['commits'] = args[3]
+            return make_pr(number=99)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "has_fixes_reference", return_value=True), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "extract_all_jira_keys_from_pr_body", return_value=["SCYLLADB-100"]), \
+             patch.object(bp_module, "extract_main_jira_from_body", return_value="SCYLLADB-100"), \
+             patch.object(bp_module, "extract_main_pr_link_from_body", return_value="#1"), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-200"), \
+             patch.object(bp_module, "generate_backport_pr_body", return_value="body"), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp, \
+             patch.object(bp_module, "_replace_labels_with_pending"):
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb",
+                                            promoted_commit_sha="promoted_sha_123")
+
+            # The backport function should have been called with the promoted commit SHA
+            assert captured['commits'] == ["promoted_sha_123"]
+
+    def test_superseded_pr_without_sha_falls_back_to_get_pr_commits(self, bp_module, make_pr, make_repo):
+        """When a PR is closed (not merged) and no promoted_commit_sha is provided,
+        it should fall back to get_pr_commits (which may fail for superseded PRs)."""
+        repo = make_repo()
+        merged_pr = make_pr(
+            number=42,
+            title="[Backport 2026.1] Fix bug",
+            body="This PR is a backport of PR #1",
+            merged=False,
+            labels=["backport/2025.4"],
+            base_ref="branch-2026.1"
+        )
+        merged_pr.state = "closed"
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=merged_pr), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_pr_commits", return_value=[]) as mock_get_commits, \
+             patch.object(bp_module, "backport") as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+            # Should have tried get_pr_commits and then skipped (no commits)
+            mock_get_commits.assert_called_once()
+            mock_bp.assert_not_called()
+
+    def test_close_promoted_passes_sha_to_chain(self, bp_module, make_pr, make_repo):
+        """_close_promoted_backport_pr should pass commit_sha to process_chain_backport."""
+        repo = make_repo()
+        pr = make_pr(
+            number=42,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1",
+            state="open"
+        )
+        original = make_pr(number=1, title="Fix bug", body="Normal body")
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "process_chain_backport") as mock_chain:
+            bp_module._close_promoted_backport_pr(
+                repo, pr, "branch-2025.4", "2025.4",
+                "promoted-to-branch-2025.4", "scylladb/scylladb", "promoted_sha_abc"
+            )
+            # Verify promoted_commit_sha is passed through
+            mock_chain.assert_called_once_with(repo, pr, "scylladb/scylladb",
+                                              promoted_commit_sha="promoted_sha_abc")
+
+
+class TestReplacLabelsWithPending:
+    """Tests for the _replace_labels_with_pending helper."""
+
+    def test_replaces_labels(self, bp_module, make_pr):
+        """Basic test: removes original labels and adds -pending versions."""
+        pr = make_pr(labels=["backport/2025.4", "backport/2025.3"])
+        # Mock get_labels for the verification pass (no re-added labels)
+        pr.get_labels.return_value = [MagicMock(name="backport/2025.4-pending"),
+                                      MagicMock(name="backport/2025.3-pending")]
+        # Fix: MagicMock(name=...) sets the mock's internal name, not .name attribute
+        for label in pr.get_labels.return_value:
+            label.name = label._mock_name
+
+        with patch.object(bp_module.time, "sleep"):
+            bp_module._replace_labels_with_pending(pr, ["backport/2025.4", "backport/2025.3"])
+
+        # Check remove and add calls
+        assert pr.remove_from_labels.call_count >= 2
+        pr.add_to_labels.assert_any_call("backport/2025.4-pending")
+        pr.add_to_labels.assert_any_call("backport/2025.3-pending")
+
+    def test_removes_readded_labels(self, bp_module, make_pr):
+        """If an external actor re-adds a label, the second pass should remove it."""
+        pr = make_pr(labels=["backport/2025.4"])
+        # Simulate external actor re-adding the label
+        readded_label = MagicMock()
+        readded_label.name = "backport/2025.4"
+        pending_label = MagicMock()
+        pending_label.name = "backport/2025.4-pending"
+        pr.get_labels.return_value = [readded_label, pending_label]
+
+        with patch.object(bp_module.time, "sleep"):
+            bp_module._replace_labels_with_pending(pr, ["backport/2025.4"])
+
+        # Should have removed the label twice: once in first pass, once in cleanup
+        assert pr.remove_from_labels.call_count == 2

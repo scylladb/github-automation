@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import logging
 import requests
 from typing import Optional, List, Dict, Tuple
@@ -478,14 +479,29 @@ def find_existing_sub_issue(parent_key: str, version: str) -> Optional[str]:
     """
     Search for an existing sub-issue for a specific backport version.
     Returns the issue key if found, None otherwise.
+    
+    Uses the parent issue's subtasks field (direct REST API) as the primary method,
+    with JQL search as a fallback. The subtasks field is always consistent (no index delay),
+    unlike JQL which has eventual consistency and may miss recently created issues.
     """
     if not JIRA_USER or not JIRA_API_TOKEN:
         return None
     
     try:
-        # Search for sub-tasks of the parent with the backport title pattern
-        # JQL: parent = PROJ-123 AND summary ~ "Backport 2025.4" AND issuetype = Sub-task
-        # Uses POST /search/jql (GET /search was deprecated by Atlassian and returns 410 Gone)
+        # Primary method: fetch subtasks directly from the parent issue.
+        # This is always consistent (no JQL index delay).
+        parent_issue = get_jira_issue(parent_key)
+        if parent_issue:
+            subtasks = parent_issue.get("fields", {}).get("subtasks", [])
+            for subtask in subtasks:
+                summary = subtask.get("fields", {}).get("summary", "")
+                if f"Backport {version}]" in summary or f"Backport {version} " in summary or summary.endswith(f"Backport {version}"):
+                    existing_key = subtask["key"]
+                    logging.info(f"Found existing Jira sub-issue for {parent_key} version {version}: {existing_key} (via parent subtasks)")
+                    return existing_key
+        
+        # Fallback: JQL search (may have eventual consistency delay, but catches
+        # edge cases where the parent's subtasks field is truncated or unavailable)
         jql = f'parent = {parent_key} AND summary ~ "Backport {version}" AND issuetype = Sub-task'
         result = jira_api_request("POST", "search/jql", data={"jql": jql, "maxResults": 10})
         
@@ -496,7 +512,7 @@ def find_existing_sub_issue(parent_key: str, version: str) -> Optional[str]:
                 # Check if the version appears as a complete version number
                 if f"Backport {version}]" in summary or f"Backport {version} " in summary or summary.endswith(f"Backport {version}"):
                     existing_key = issue["key"]
-                    logging.info(f"Found existing Jira sub-issue for {parent_key} version {version}: {existing_key}")
+                    logging.info(f"Found existing Jira sub-issue for {parent_key} version {version}: {existing_key} (via JQL fallback)")
                     return existing_key
         
         logging.info(f"No existing Jira sub-issue found for {parent_key} version {version}")
@@ -1355,6 +1371,43 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str):
     return None
 
 
+def _replace_labels_with_pending(pr, backport_labels: List[str]):
+    """
+    Replace backport/X.Y labels with backport/X.Y-pending on a PR.
+    
+    An external actor (e.g., github-actions[bot]) can race with us and re-add
+    the original labels right after we remove them.  To defend against this we:
+    1. Do a first pass: remove each label, add its -pending counterpart.
+    2. Re-read labels from the API and remove any backport/X.Y labels that
+       were re-added during the first pass.
+    """
+    labels_to_replace = set()
+    for label in backport_labels:
+        version = label.replace('backport/', '')
+        labels_to_replace.add(label)
+        pending_label = f"backport/{version}-pending"
+        try:
+            pr.remove_from_labels(label)
+            pr.add_to_labels(pending_label)
+            logging.info(f"Replaced '{label}' with '{pending_label}' on PR #{pr.number}")
+        except Exception as e:
+            logging.warning(f"Failed to replace label '{label}' on PR #{pr.number}: {e}")
+
+    # Second pass: re-read labels and remove any that were re-added by a concurrent actor
+    time.sleep(2)
+    try:
+        current_labels = {label.name for label in pr.get_labels()}
+        for label in labels_to_replace:
+            if label in current_labels:
+                logging.warning(f"Label '{label}' was re-added to PR #{pr.number} by a concurrent actor, removing again")
+                try:
+                    pr.remove_from_labels(label)
+                except Exception as e:
+                    logging.warning(f"Failed to remove re-added label '{label}' on PR #{pr.number}: {e}")
+    except Exception as e:
+        logging.warning(f"Failed to verify label cleanup on PR #{pr.number}: {e}")
+
+
 def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_jira_key: str, repo_name: str):
     """
     Perform backport with Jira sub-issue creation.
@@ -1515,16 +1568,7 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     # 3. Allows tracking if the chain breaks mid-way
     # The actual backport labels are now on the backport PR for chain continuation.
     if backport_pr and remaining_backport_labels:
-        logging.info(f"Replacing remaining backport labels with pending labels on original PR #{pr.number}")
-        for label in remaining_backport_labels:
-            version = label.replace('backport/', '')
-            pending_label = f"backport/{version}-pending"
-            try:
-                pr.remove_from_labels(label)
-                pr.add_to_labels(pending_label)
-                logging.info(f"Replaced '{label}' with '{pending_label}' on original PR #{pr.number}")
-            except Exception as e:
-                logging.warning(f"Failed to replace label '{label}' on PR #{pr.number}: {e}")
+        _replace_labels_with_pending(pr, remaining_backport_labels)
     
     # Note: The highest version label is NOT marked as done here - it will be marked when 
     # the backport PR is merged/promoted. This happens in process_chain_backport or process_branch_push.
@@ -1532,7 +1576,7 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     return backport_pr
 
 
-def process_chain_backport(repo, merged_pr, repo_name: str):
+def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha: str = None):
     """
     Process the next backport in the chain when a backport PR is merged.
     Uses backport labels on the merged PR to determine next versions.
@@ -1640,7 +1684,13 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
                 jira_mapping[parent_jira_key] = parent_jira_key
     
     # Get commits from the merged/closed PR
-    if merged_pr.merged:
+    # For superseded (closed, not merged) PRs, use the promoted commit SHA if provided.
+    # This handles the case where a backport PR was closed because the promoter pushed
+    # the commit directly to the branch (different SHA than the PR's commits).
+    if promoted_commit_sha and not merged_pr.merged:
+        commits = [promoted_commit_sha]
+        logging.info(f"Using promoted commit SHA for superseded PR #{merged_pr.number}: {promoted_commit_sha}")
+    elif merged_pr.merged:
         if merged_pr.merge_commit_sha:
             merge_commit = repo.get_commit(merged_pr.merge_commit_sha)
             if len(merge_commit.parents) > 1:
@@ -1674,19 +1724,20 @@ def process_chain_backport(repo, merged_pr, repo_name: str):
     # - Add backport/X.Y-pending for versions after the next one (for tracking)
     # - The next version label will be on the new backport PR
     logging.info(f"Updating labels on merged backport PR #{merged_pr.number}")
-    for label in remaining_labels:
-        version = label.replace('backport/', '')
+    labels_to_make_pending = [label for label in remaining_labels if label.replace('backport/', '') != next_version]
+    labels_to_just_remove = [label for label in remaining_labels if label.replace('backport/', '') == next_version]
+    
+    # Remove the next version label (it moves to the new backport PR)
+    for label in labels_to_just_remove:
         try:
             merged_pr.remove_from_labels(label)
-            # Add pending label for versions other than the next one
-            if version != next_version:
-                pending_label = f"backport/{version}-pending"
-                merged_pr.add_to_labels(pending_label)
-                logging.info(f"Replaced '{label}' with '{pending_label}' on merged PR #{merged_pr.number}")
-            else:
-                logging.info(f"Removed '{label}' from merged PR #{merged_pr.number} (transferred to new backport PR)")
+            logging.info(f"Removed '{label}' from merged PR #{merged_pr.number} (transferred to new backport PR)")
         except Exception as e:
-            logging.warning(f"Failed to update label '{label}' on merged PR #{merged_pr.number}: {e}")
+            logging.warning(f"Failed to remove label '{label}' on merged PR #{merged_pr.number}: {e}")
+    
+    # Replace remaining labels with -pending
+    if labels_to_make_pending:
+        _replace_labels_with_pending(merged_pr, labels_to_make_pending)
     
     # Get the source branch - this is the branch the merged PR was merged into
     source_branch = merged_pr.base.ref
@@ -1985,7 +2036,7 @@ def _close_promoted_backport_pr(repo, pr, branch_name: str, version: str,
             logging.warning(f"Error marking backport as done for PR #{pr.number}: {e}")
 
     # Continue chain backport to remaining versions
-    process_chain_backport(repo, pr, repo_name)
+    process_chain_backport(repo, pr, repo_name, promoted_commit_sha=commit_sha)
 
 
 def main():
