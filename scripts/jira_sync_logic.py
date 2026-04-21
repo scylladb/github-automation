@@ -30,9 +30,6 @@ _NO_KEYS = '["__NO_KEYS_FOUND__"]'
 # Labels that should be ignored by the labeled/unlabeled event handlers.
 # When a PR label event fires for one of these labels the automation
 # skips all Jira sync steps and exits early.
-# Each entry is matched using startswith, so "backport/" excludes all
-# labels starting with "backport/", and "status/ci_in_progress" excludes
-# that exact label (as well as any hypothetical longer variant).
 _EXCLUDED_LABELS: tuple[str, ...] = (
     "status/ci_in_progress",
     "backport/",
