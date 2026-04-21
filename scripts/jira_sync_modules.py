@@ -32,14 +32,40 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 
-
 KNOWN_PROJECT_PREFIXES = {
-    "ANSROLES", "ARGUS", "CE", "CLOUD", "CLOUDEVOPS", "COREPROD",
-    "CUSTOMER", "CXTOOLS", "DOCTOR", "DRIVER", "DTEST",
-    "FIELDAUTO", "FIELDCLOUD", "FIELDCLUS", "FIELDENG", "ILIAD",
-    "OPERATOR", "PKG", "PKGDASH", "PM", "PT", "PUB",
-    "QAINFRA", "QATOOLS", "RELENG", "SCT", "SCYLLADB", "SMI",
-    "STAG", "TOOLS", "UX", "VECTOR", "WEBINSTALL",
+    "ANSROLES",
+    "ARGUS",
+    "CE",
+    "CLOUD",
+    "CLOUDEVOPS",
+    "COREPROD",
+    "CUSTOMER",
+    "CXTOOLS",
+    "DOCTOR",
+    "DRIVER",
+    "DTEST",
+    "FIELDAUTO",
+    "FIELDCLOUD",
+    "FIELDCLUS",
+    "FIELDENG",
+    "ILIAD",
+    "OPERATOR",
+    "PKG",
+    "PKGDASH",
+    "PM",
+    "PT",
+    "PUB",
+    "QAINFRA",
+    "QATOOLS",
+    "RELENG",
+    "SCT",
+    "SCYLLADB",
+    "SMI",
+    "STAG",
+    "TOOLS",
+    "UX",
+    "VECTOR",
+    "WEBINSTALL",
 }
 
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
@@ -47,22 +73,30 @@ SCYLLA_COMPONENTS_FIELD = "customfield_10321"
 SYMPTOM_FIELD = "customfield_11120"
 
 # Regex: any JIRA-style key (PROJECT-123) in any text
-_JIRA_KEY_RE = re.compile(r'[A-Za-z]+-[0-9]+')
+_JIRA_KEY_RE = re.compile(r"[A-Za-z]+-[0-9]+")
 
 # Regex: closing keywords followed by a Jira key (optionally as a browse URL)
 _CLOSING_KEYWORD_RE = re.compile(
-    r'(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
-    r'\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Za-z]+-[0-9]+)',
+    r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+    r"\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Za-z]+-[0-9]+)",
     re.IGNORECASE,
 )
 
 # Priority names recognised as Jira priority values
 _PRIORITY_NAMES = {"P0", "P1", "P2", "P3", "P4"}
 
+# Labels that should be excluded from Jira->GitHub label sync (Step 5).
+_EXCLUDED_SYNC_LABEL_PREFIXES = ("status/ci_in_progress", "backport/")
+
+
+def _is_excluded_sync_label(label: str) -> bool:
+    """Return True if *label* should be excluded from sync to GitHub."""
+    return label.startswith(_EXCLUDED_SYNC_LABEL_PREFIXES)
+
 
 def _sanitize(text: str) -> str:
     """Remove carriage returns and backticks (matches the shell workflow)."""
-    return text.replace('\r', '').replace('`', ' ')
+    return text.replace("\r", "").replace("`", " ")
 
 
 def _extract_candidate_keys(text: str) -> list[str]:
@@ -107,7 +141,9 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
 
 
 def _fetch_commits(
-    owner_repo: str, pr_number: int, gh_token: str,
+    owner_repo: str,
+    pr_number: int,
+    gh_token: str,
 ) -> list[tuple[str, str]]:
     """
     Fetch all commits for a PR via the GitHub REST API.
@@ -120,9 +156,11 @@ def _fetch_commits(
     per_page = 100
 
     while True:
-        url = (f"https://api.github.com/repos/{owner_repo}"
-               f"/pulls/{pr_number}/commits"
-               f"?per_page={per_page}&page={page}")
+        url = (
+            f"https://api.github.com/repos/{owner_repo}"
+            f"/pulls/{pr_number}/commits"
+            f"?per_page={per_page}&page={page}"
+        )
 
         req = Request(url)
         req.add_header("Accept", "application/vnd.github+json")
@@ -175,8 +213,10 @@ def extract_jira_keys(
     print(f"PR body: {pr_body}")
 
     if not jira_auth:
-        print("Warning: jira_auth is not set. "
-              "Jira API fallback for unknown prefixes will be skipped.")
+        print(
+            "Warning: jira_auth is not set. "
+            "Jira API fallback for unknown prefixes will be skipped."
+        )
 
     candidates = _extract_candidate_keys(pr_body)
 
@@ -196,8 +236,9 @@ def extract_jira_keys(
         # Re-deduplicate after merging body + commit keys.
         candidates = sorted(set(candidates))
     else:
-        print("Skipping commit-message scan "
-              "(owner_repo/pr_number/gh_token not provided)")
+        print(
+            "Skipping commit-message scan (owner_repo/pr_number/gh_token not provided)"
+        )
 
     if not candidates:
         print("No Jira-like keys found in PR body or commit messages")
@@ -214,9 +255,11 @@ def extract_jira_keys(
     unknown: list[str] = []
 
     # --- Pass 1: hard-coded prefixes ---
-    print(f"Known project prefixes (hard-coded): {' '.join(sorted(KNOWN_PROJECT_PREFIXES))}")
+    print(
+        f"Known project prefixes (hard-coded): {' '.join(sorted(KNOWN_PROJECT_PREFIXES))}"
+    )
     for key in candidates:
-        prefix = key.split('-', 1)[0]
+        prefix = key.split("-", 1)[0]
         if prefix in KNOWN_PROJECT_PREFIXES:
             print(f"Accepting {key} via hard-coded prefix '{prefix}'.")
             accepted.append(key)
@@ -235,17 +278,25 @@ def extract_jira_keys(
         api_keys = _fetch_jira_project_keys(jira_auth)
 
         if api_keys:
-            print(f"Valid Jira project keys from API (first 20): {' '.join(sorted(api_keys)[:20])}")
+            print(
+                f"Valid Jira project keys from API (first 20): {' '.join(sorted(api_keys)[:20])}"
+            )
 
         for key in unknown:
-            prefix = key.split('-', 1)[0]
+            prefix = key.split("-", 1)[0]
             if prefix in api_keys:
-                print(f"Accepting {key} via Jira API (valid project prefix '{prefix}').")
+                print(
+                    f"Accepting {key} via Jira API (valid project prefix '{prefix}')."
+                )
                 accepted.append(key)
             else:
-                print(f"Skipping {key} - unknown project prefix '{prefix}' (not in Jira).")
+                print(
+                    f"Skipping {key} - unknown project prefix '{prefix}' (not in Jira)."
+                )
     else:
-        print("All prefixes resolved via hard-coded list; no Jira project lookup needed.")
+        print(
+            "All prefixes resolved via hard-coded list; no Jira project lookup needed."
+        )
 
     print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
@@ -265,6 +316,7 @@ def extract_jira_keys(
 # add_label_to_jira_issue
 # ---------------------------------------------------------------------------
 
+
 def _parse_jira_keys_json(raw: str) -> list[str]:
     """Parse and deduplicate a JSON array of Jira keys.
 
@@ -273,7 +325,7 @@ def _parse_jira_keys_json(raw: str) -> list[str]:
     raw = raw.strip()
     print(f"Incoming jira_keys_json: {raw}")
 
-    if not raw or raw in ('[]', '[""]', '["__NO_KEYS_FOUND__"]'):
+    if not raw or raw in ("[]", '[""]', '["__NO_KEYS_FOUND__"]'):
         print("No usable Jira keys in jira_keys_json; nothing to update.")
         return []
 
@@ -284,7 +336,10 @@ def _parse_jira_keys_json(raw: str) -> list[str]:
         sys.exit(1)
 
     if not isinstance(data, list):
-        print(f"ERROR: jira_keys_json must be a JSON array; got: {type(data)}", file=sys.stderr)
+        print(
+            f"ERROR: jira_keys_json must be a JSON array; got: {type(data)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     keys: list[str] = []
@@ -317,24 +372,20 @@ def _determine_mode(label: str) -> tuple[str, str | None, dict | None]:
 
     # area/* -> add Scylla component
     if label.startswith("area/"):
-        component_value = label[len("area/"):].replace("_", " ")
-        print(f"Derived Scylla component value: '{component_value}' from label '{label}'")
+        component_value = label[len("area/") :].replace("_", " ")
+        print(
+            f"Derived Scylla component value: '{component_value}' from label '{label}'"
+        )
         payload = {
-            "update": {
-                SCYLLA_COMPONENTS_FIELD: [{"add": {"value": component_value}}]
-            }
+            "update": {SCYLLA_COMPONENTS_FIELD: [{"add": {"value": component_value}}]}
         }
         return "scylla_component", None, payload
 
     # symptom/* -> add symptom custom field
     if label.startswith("symptom/"):
-        symptom_value = label[len("symptom/"):].replace("_", " ")
+        symptom_value = label[len("symptom/") :].replace("_", " ")
         print(f"Derived symptom value: '{symptom_value}' from label '{label}'")
-        payload = {
-            "update": {
-                SYMPTOM_FIELD: [{"add": {"value": symptom_value}}]
-            }
-        }
+        payload = {"update": {SYMPTOM_FIELD: [{"add": {"value": symptom_value}}]}}
         return "symptom", None, payload
 
     # Fallback: normal Jira label
@@ -362,7 +413,9 @@ def _jira_put(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
         return 0, str(exc)
 
 
-def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
+def add_label_to_jira_issue(
+    jira_keys_json: str, label: str, jira_auth: str
+) -> list[str]:
     """Add a label, priority, or Scylla component to every Jira issue in *jira_keys_json*.
 
     Replicates the logic of add_label_to_jira_issue.yml in pure Python.
@@ -425,17 +478,23 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
         elif mode in ("scylla_component", "symptom") and code not in (200, 204):
             print(f"WARN {key} ({code}) custom field update failed. First 200 chars:")
             print(body_text[:200])
-            print(f"Falling back to adding '{label}' as a plain Jira label on {key} ...")
+            print(
+                f"Falling back to adding '{label}' as a plain Jira label on {key} ..."
+            )
             fallback_payload = {"update": {"labels": [{"add": label}]}}
             fb_code, fb_body = _jira_put(issue_url, fallback_payload, jira_auth)
             if fb_code in (200, 204):
                 print(f"OK {key} (fallback label, {fb_code})")
                 ok += 1
             elif fb_code == 400:
-                print(f"SKIP {key} (fallback label, {fb_code}) likely already has the label.")
+                print(
+                    f"SKIP {key} (fallback label, {fb_code}) likely already has the label."
+                )
                 skipped += 1
             elif fb_code == 404:
-                print(f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing.")
+                print(
+                    f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing."
+                )
                 skipped += 1
                 not_found_keys.append(key)
             else:
@@ -444,7 +503,9 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
                 failed += 1
 
         elif code == 404:
-            print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
+            print(
+                f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing."
+            )
             skipped += 1
             not_found_keys.append(key)
 
@@ -457,13 +518,17 @@ def add_label_to_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> 
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if not_found_keys:
-        print(f"Not-found keys (will be removed from further processing): {not_found_keys}")
+        print(
+            f"Not-found keys (will be removed from further processing): {not_found_keys}"
+        )
     if failed > 0:
         sys.exit(1)
     return not_found_keys
 
 
-def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str) -> list[str]:
+def remove_label_from_jira_issue(
+    jira_keys_json: str, label: str, jira_auth: str
+) -> list[str]:
     """Remove a label or Scylla component from every Jira issue in *jira_keys_json*.
 
     Replicates the logic of remove_label_from_jira_issue.yml in pure Python.
@@ -491,7 +556,7 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
 
     if label.startswith("area/"):
         mode = "scylla_component"
-        component_value = label[len("area/"):].replace("_", " ")
+        component_value = label[len("area/") :].replace("_", " ")
         payload = {
             "update": {
                 SCYLLA_COMPONENTS_FIELD: [{"remove": {"value": component_value}}]
@@ -501,12 +566,8 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
         print(f"Will remove Scylla component: '{component_value}'")
     elif label.startswith("symptom/"):
         mode = "symptom"
-        symptom_value = label[len("symptom/"):].replace("_", " ")
-        payload = {
-            "update": {
-                SYMPTOM_FIELD: [{"remove": {"value": symptom_value}}]
-            }
-        }
+        symptom_value = label[len("symptom/") :].replace("_", " ")
+        payload = {"update": {SYMPTOM_FIELD: [{"remove": {"value": symptom_value}}]}}
         action_desc = "Remove symptom"
         print(f"Will remove symptom: '{symptom_value}'")
     else:
@@ -538,7 +599,9 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
         elif mode in ("scylla_component", "symptom") and code not in (200, 204):
             print(f"WARN {key} ({code}) custom field update failed. First 200 chars:")
             print(body_text[:200])
-            print(f"Falling back to removing '{label}' as a plain Jira label on {key} ...")
+            print(
+                f"Falling back to removing '{label}' as a plain Jira label on {key} ..."
+            )
             fallback_payload = {"update": {"labels": [{"remove": label}]}}
             fb_code, fb_body = _jira_put(issue_url, fallback_payload, jira_auth)
             if fb_code in (200, 204):
@@ -548,7 +611,9 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
                 print(f"SKIP {key} (fallback label, {fb_code}) label may not exist.")
                 skipped += 1
             elif fb_code == 404:
-                print(f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing.")
+                print(
+                    f"SKIP {key} (fallback label, {fb_code}) issue not found or no permission. Removing from further processing."
+                )
                 skipped += 1
                 not_found_keys.append(key)
             else:
@@ -557,7 +622,9 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
                 failed += 1
 
         elif code == 404:
-            print(f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing.")
+            print(
+                f"SKIP {key} ({code}) issue not found or no permission. Removing from further processing."
+            )
             skipped += 1
             not_found_keys.append(key)
 
@@ -570,7 +637,9 @@ def remove_label_from_jira_issue(jira_keys_json: str, label: str, jira_auth: str
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if not_found_keys:
-        print(f"Not-found keys (will be removed from further processing): {not_found_keys}")
+        print(
+            f"Not-found keys (will be removed from further processing): {not_found_keys}"
+        )
     if failed > 0:
         sys.exit(1)
     return not_found_keys
@@ -608,7 +677,9 @@ def _csv_escape(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str, str, list[str]]:
+def extract_jira_issue_details(
+    jira_keys_json: str, jira_auth: str
+) -> tuple[str, str, list[str]]:
     """Fetch Jira issue details and produce a CSV plus a deduplicated labels string.
 
     Replicates the logic of extract_jira_issue_details.yml in pure Python.
@@ -632,10 +703,19 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         print("---------------------------------------------------")
         return _CSV_HEADER + "\n", "", []
 
-    fields_param = ",".join([
-        "status", "labels", "assignee", "priority", "fixVersions",
-        SCYLLA_COMPONENTS_FIELD, SYMPTOM_FIELD, START_DATE_FIELD, DUE_DATE_FIELD,
-    ])
+    fields_param = ",".join(
+        [
+            "status",
+            "labels",
+            "assignee",
+            "priority",
+            "fixVersions",
+            SCYLLA_COMPONENTS_FIELD,
+            SYMPTOM_FIELD,
+            START_DATE_FIELD,
+            DUE_DATE_FIELD,
+        ]
+    )
 
     csv_lines: list[str] = [_CSV_HEADER]
     all_labels: list[str] = []
@@ -662,9 +742,7 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         all_labels.extend(labels_list)
 
         fix_versions_raw = fields.get("fixVersions") or []
-        fix_versions = _DETAIL_DELIM.join(
-            v.get("name", "") for v in fix_versions_raw
-        )
+        fix_versions = _DETAIL_DELIM.join(v.get("name", "") for v in fix_versions_raw)
 
         components_raw = fields.get(SCYLLA_COMPONENTS_FIELD)
         if isinstance(components_raw, list):
@@ -691,18 +769,20 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
         start_date = fields.get(START_DATE_FIELD) or ""
         due_date = fields.get(DUE_DATE_FIELD) or ""
 
-        row = ",".join([
-            _csv_escape(key),
-            _csv_escape(status),
-            _csv_escape(labels_str),
-            _csv_escape(assignee),
-            _csv_escape(priority),
-            _csv_escape(fix_versions),
-            _csv_escape(components),
-            _csv_escape(symptoms),
-            _csv_escape(start_date),
-            _csv_escape(due_date),
-        ])
+        row = ",".join(
+            [
+                _csv_escape(key),
+                _csv_escape(status),
+                _csv_escape(labels_str),
+                _csv_escape(assignee),
+                _csv_escape(priority),
+                _csv_escape(fix_versions),
+                _csv_escape(components),
+                _csv_escape(symptoms),
+                _csv_escape(start_date),
+                _csv_escape(due_date),
+            ]
+        )
         csv_lines.append(row)
 
     # Deduplicate labels
@@ -730,17 +810,29 @@ def extract_jira_issue_details(jira_keys_json: str, jira_auth: str) -> tuple[str
 
 # Jira priority name -> P* rank mapping
 _PRIORITY_RANK_MAP = {
-    "p0": 0, "highest": 0, "blocker": 0,
-    "p1": 1, "critical": 1, "high": 1,
-    "p2": 2, "medium": 2, "major": 2,
-    "p3": 3, "low": 3, "minor": 3,
-    "p4": 4, "lowest": 4, "trivial": 4,
+    "p0": 0,
+    "highest": 0,
+    "blocker": 0,
+    "p1": 1,
+    "critical": 1,
+    "high": 1,
+    "p2": 2,
+    "medium": 2,
+    "major": 2,
+    "p3": 3,
+    "low": 3,
+    "minor": 3,
+    "p4": 4,
+    "lowest": 4,
+    "trivial": 4,
 }
 
 _GH_API_VERSION = "2022-11-28"
 
 
-def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -> tuple[int, str]:
+def _gh_api(
+    method: str, url: str, gh_token: str, payload: dict | None = None
+) -> tuple[int, str]:
     """Make a GitHub REST API request. Returns (http_code, response_body)."""
     body = json.dumps(payload).encode() if payload else None
 
@@ -758,7 +850,9 @@ def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -
         return exc.code, exc.read().decode() if exc.fp else str(exc)
 
 
-def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) -> list[str]:
+def _compute_labels(
+    labels_csv: str, details_csv: str, new_priority_label: str
+) -> list[str]:
     """Compute the final list of labels to apply to a PR.
 
     1. Parse labels_csv into a deduped list.
@@ -849,6 +943,11 @@ def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) 
     for symp in symptom_labels:
         if symp not in labels:
             labels.append(symp)
+
+    excluded = [lb for lb in labels if _is_excluded_sync_label(lb)]
+    if excluded:
+        print(f"Excluding labels from sync: {sorted(set(excluded))}")
+        labels = [lb for lb in labels if not _is_excluded_sync_label(lb)]
 
     print(f"Final labels to apply: {labels}")
     return labels
@@ -986,8 +1085,11 @@ def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
 
 
 def _plan_transitions(
-    details_csv: str, transition_name: str,
-) -> tuple[list[tuple[str, str, str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+    details_csv: str,
+    transition_name: str,
+) -> tuple[
+    list[tuple[str, str, str, str]], list[tuple[str, str]], list[tuple[str, str]]
+]:
     """Parse the details CSV and categorize issues.
 
     Returns (to_transition, already_ok, done_issues).
@@ -1026,12 +1128,15 @@ def _plan_transitions(
 
     return to_transition, already_ok, done_issues
 
+
 def _set_date_field(key: str, field_id: str, field_label: str, jira_auth: str) -> None:
     """Set a date field on a Jira issue to today's date (UTC)."""
     today = date.today().isoformat()
     print(f"Setting {field_label} to {today} for {key} (field: {field_id})")
     payload = {"fields": {field_id: today}}
-    code, body_text = _jira_put(f"{JIRA_BASE_URL}/rest/api/3/issue/{key}", payload, jira_auth)
+    code, body_text = _jira_put(
+        f"{JIRA_BASE_URL}/rest/api/3/issue/{key}", payload, jira_auth
+    )
     if code not in (200, 204):
         print(f"Warning: Failed to set {field_label} for {key} (HTTP {code})")
         print(body_text[:200])
@@ -1082,7 +1187,9 @@ def jira_status_transition(
             break
     print("------------------------------------------------------\n")
 
-    to_transition, already_ok, done_issues = _plan_transitions(details_csv, transition_name)
+    to_transition, already_ok, done_issues = _plan_transitions(
+        details_csv, transition_name
+    )
 
     print(f"Target status:           {transition_name}")
     print(f"Issues already at target: {len(already_ok)}")
@@ -1114,16 +1221,20 @@ def jira_status_transition(
     for key, current_status, start_dt, due_dt in to_transition:
         # Guard: do not regress issues that are further along in the workflow
         _FORBIDDEN_TRANSITIONS = {
-            ('in review', 'in progress'),
-            ('ready for merge', 'in progress'),
-            ('ready for merge', 'in review'),
-            ('done', 'done'),
+            ("in review", "in progress"),
+            ("ready for merge", "in progress"),
+            ("ready for merge", "in review"),
+            ("done", "done"),
         }
         if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
-            print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
+            print(
+                f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'"
+            )
             skipped += 1
             continue
-        print(f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})")
+        print(
+            f"Transitioning {key} from '{current_status}' -> '{transition_name}' (id={transition_id})"
+        )
 
         # Set start date for working states if empty
         if is_working and (not start_dt or start_dt == "null"):
@@ -1173,9 +1284,7 @@ def _build_adf_comment(comment: str, link_text: str, link_url: str) -> dict:
             {
                 "type": "text",
                 "text": link_text,
-                "marks": [
-                    {"type": "link", "attrs": {"href": link_url}}
-                ],
+                "marks": [{"type": "link", "attrs": {"href": link_url}}],
             },
         ]
     else:
@@ -1185,9 +1294,7 @@ def _build_adf_comment(comment: str, link_text: str, link_url: str) -> dict:
         "body": {
             "type": "doc",
             "version": 1,
-            "content": [
-                {"type": "paragraph", "content": content}
-            ],
+            "content": [{"type": "paragraph", "content": content}],
         }
     }
 
@@ -1266,5 +1373,3 @@ def add_comment_to_jira(
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
         print(f"WARNING: {failed} comment(s) failed. Continuing.")
-
-
