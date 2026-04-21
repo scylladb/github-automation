@@ -1277,7 +1277,7 @@ def replace_backport_label_with_done(repo, pr, version: str):
     return False
 
 
-def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jira_failed=False, original_pr=None, remaining_backport_labels=None, warn_missing_fixes=False):
+def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jira_failed=False, original_pr=None, remaining_backport_labels=None, warn_missing_fixes=False, jira_mapping=None):
     """
     Create a backport PR.
     
@@ -1287,6 +1287,9 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                      If None, uses pr. This ensures backport PRs are always assigned
                      to the original author, not to scylladbbot.
         remaining_backport_labels: List of backport/X.Y labels to add for chain continuation
+        jira_mapping: Dict mapping original Jira keys to their sub-task keys.
+                     If provided, commit messages are amended to replace Fixes references
+                     with the version-specific sub-task keys.
     """
     # Check if commits are already in the target branch
     logging.info(f"Backporting commits {commits} to {backport_base_branch} for version {version}")
@@ -1329,6 +1332,17 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                     is_draft = True
                     repo_local.git.add(A=True)
                     repo_local.git.cherry_pick('--continue')
+                # Amend the just-cherry-picked commit to replace Fixes references
+                # with the version-specific sub-task key
+                if jira_mapping:
+                    try:
+                        old_msg = repo_local.git.log('-1', '--format=%B')
+                        new_msg = replace_fixes_in_body(old_msg, jira_mapping)
+                        if new_msg != old_msg:
+                            repo_local.git.commit('--amend', '-m', new_msg, '--no-verify')
+                            logging.info(f"Amended commit message to update Fixes reference with sub-task key")
+                    except GitCommandError as e:
+                        logging.warning(f"Failed to amend commit message: {e}")
             repo_local.git.push(fork_repo, new_branch_name, force=True)
             return create_pull_request(repo, new_branch_name, backport_base_branch, pr, backport_pr_title, commits,
                                 is_draft=is_draft, pr_body=pr_body, jira_failed=jira_failed,
@@ -1519,7 +1533,8 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
             # No remaining backport labels in parallel mode - each PR is independent
             backport_pr = backport(repo, pr, version, commits, target_branch, pr_body=pr_body, 
                                    jira_failed=jira_failed, original_pr=pr, 
-                                   remaining_backport_labels=None, warn_missing_fixes=warn_missing_fixes)
+                                   remaining_backport_labels=None, warn_missing_fixes=warn_missing_fixes,
+                                   jira_mapping=jira_mapping)
             
             if backport_pr:
                 created_prs.append(backport_pr)
@@ -1559,7 +1574,8 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     logging.info(f"Creating backport PR for version {highest_version} to branch {target_branch}")
     backport_pr = backport(repo, pr, highest_version, commits, target_branch, pr_body=pr_body, 
                            jira_failed=jira_failed, original_pr=pr, 
-                           remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes)
+                           remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes,
+                           jira_mapping=jira_mapping)
     
     # If backport PR was successfully created, replace remaining backport labels on the original PR
     # with "pending" labels. This:
@@ -1774,7 +1790,8 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     # Create backport PR, passing original_pr for label updates if commit already exists
     backport_pr = backport(repo, merged_pr, next_version, commits, target_branch, pr_body=new_pr_body, 
                            jira_failed=False, original_pr=original_pr, 
-                           remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes)
+                           remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes,
+                           jira_mapping=jira_mapping)
     
     return backport_pr
 
