@@ -30,18 +30,23 @@ _NO_KEYS = '["__NO_KEYS_FOUND__"]'
 # Labels that should be ignored by the labeled/unlabeled event handlers.
 # When a PR label event fires for one of these labels the automation
 # skips all Jira sync steps and exits early.
+# Exact values are matched as-is; entries ending with '*' are treated as
+# prefix patterns (e.g. "backport/*" matches any label starting with "backport/").
 _EXCLUDED_LABELS: set[str] = {
     "status/ci_in_progress",
+    "backport/*",
 }
-
-# Label prefixes that should also be excluded from sync.
-# Any label starting with one of these prefixes will be skipped.
-_EXCLUDED_LABEL_PREFIXES: tuple[str, ...] = ("backport/",)
 
 
 def _is_excluded_label(label: str) -> bool:
     """Return True if *label* should be excluded from Jira sync."""
-    return label in _EXCLUDED_LABELS or label.startswith(_EXCLUDED_LABEL_PREFIXES)
+    for pattern in _EXCLUDED_LABELS:
+        if pattern.endswith("*"):
+            if label.startswith(pattern[:-1]):
+                return True
+        elif label == pattern:
+            return True
+    return False
 
 
 def manage_labeled_gh_event(
