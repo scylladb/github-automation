@@ -30,9 +30,14 @@ _NO_KEYS = '["__NO_KEYS_FOUND__"]'
 # Labels that should be ignored by the labeled/unlabeled event handlers.
 # When a PR label event fires for one of these labels the automation
 # skips all Jira sync steps and exits early.
-_EXCLUDED_LABELS: set[str] = {
+_EXCLUDED_LABELS: tuple[str, ...] = (
     "status/ci_in_progress",
-}
+    "backport/",
+)
+
+def _is_excluded_label(label: str) -> bool:
+    """Return True if *label* should be excluded from Jira sync."""
+    return label.startswith(_EXCLUDED_LABELS)
 
 def manage_labeled_gh_event(
     pr_title: str,
@@ -67,7 +72,7 @@ def manage_labeled_gh_event(
     print(f"  owner_repo       = {owner_repo!r}")
     
     # --- Early exit: excluded labels ---
-    if triggering_label in _EXCLUDED_LABELS:
+    if _is_excluded_label(triggering_label):
         print(f"SKIPPED: triggering_label '{triggering_label}' is in the exclusion list. "
               "No Jira sync will be performed.")
         return
@@ -628,7 +633,7 @@ def manage_unlabeled_gh_event(
     print(f"  owner_repo     = {owner_repo!r}")
 
     # --- Early exit: excluded labels ---
-    if removed_label in _EXCLUDED_LABELS:
+    if _is_excluded_label(removed_label):
         print(f"SKIPPED: removed_label '{removed_label}' is in the exclusion list. "
               "No Jira sync will be performed.")
         return
