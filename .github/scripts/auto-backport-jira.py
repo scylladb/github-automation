@@ -1622,7 +1622,14 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     for label in merged_pr_labels:
         match = backport_label_pattern.match(label)
         if match:
-            remaining_versions.append(match.group(1))
+            version = match.group(1)
+            # Skip the version that was just merged -- it may have been
+            # re-added by an external workflow (e.g. Jira label sync) and
+            # must not be picked as the next backport target.
+            if version == merged_version:
+                logging.info(f"Skipping backport/{version} label on merged PR (same as just-merged version)")
+                continue
+            remaining_versions.append(version)
             remaining_labels.append(label)
     
     if not remaining_versions:
