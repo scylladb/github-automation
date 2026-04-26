@@ -1195,13 +1195,19 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     # For non-merged closed PRs, or as a fallback when the merged path found no commits,
     # look for the commit SHA from the close event. This handles PRs closed by direct push
     # (e.g., in scylladb/scylladb where commits are pushed directly to the branch).
+    # commit.get_pulls() does not return such non-merged PRs.
+    # We use the *last* referenced event because a PR may be queued (creating commit A),
+    # dequeued, and re-queued (creating commit B that replaces A). The first referenced
+    # event would point to commit A which may no longer exist on the branch.
     if not commits and pr.state == 'closed':
         events = pr.get_issue_events()
+        last_referenced_commit = None
         for event in events:
             if event.event == 'referenced' and event.commit_id:
-                commits.append(event.commit_id)
-                logging.info(f"Found close event commit for PR #{pr.number}: {event.commit_id}")
-                return commits
+                last_referenced_commit = event.commit_id
+        if last_referenced_commit:
+            commits.append(last_referenced_commit)
+            logging.info(f"Found close event commit for PR #{pr.number}: {last_referenced_commit}")
     return commits
 
 
