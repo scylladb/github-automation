@@ -48,6 +48,15 @@ on:
       jira_auth:
         description: 'Jira authentication (user:token format)'
         required: true
+      copilot_token:
+        description: 'Deprecated - kept for backward compatibility with callers that still pass it'
+        required: false
+      dockerhub_username:
+        description: 'Docker Hub username for pulling opencode-skills image'
+        required: false
+      dockerhub_token:
+        description: 'Docker Hub token for pulling opencode-skills image'
+        required: false
 
 env:
   DEFAULT_BRANCH: 'master'
@@ -110,6 +119,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
+
         run: |
           python .github/scripts/auto-backport-jira.py \
             --repo "${{ github.repository }}" \
@@ -146,6 +156,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
+
         run: |
           python .github/scripts/auto-backport-jira.py \
             --repo "${{ github.repository }}" \
@@ -202,6 +213,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
+
         run: |
           python .github/scripts/auto-backport-jira.py \
             --repo "${{ github.repository }}" \
@@ -235,3 +247,84 @@ jobs:
             --base-branch "${{ inputs.base_branch }}" \
             --chain-backport \
             --merged-pr "${{ inputs.pull_request_number }}"
+
+  resolve-conflicts:
+    needs: backport
+    if: always()
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.DEFAULT_BRANCH }}
+          token: ${{ secrets.gh_token }}
+          fetch-depth: 0
+          path: repo
+
+      - name: Set up Git identity
+        run: |
+          git config --global user.name "scylladbbot"
+          git config --global user.email "scylladbbot@scylladb.com"
+
+      - name: Resolve conflicts on draft backport PRs using OpenCode AI
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
+          DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+        run: |
+          # Find draft PRs with 'conflicts' label authored by scylladbbot
+          CONFLICTED_PRS=$(gh pr list --repo "${{ github.repository }}" \
+            --author scylladbbot --label conflicts --draft --json number,headRefName,baseRefName,headRepositoryOwner \
+            --jq '.[] | "\(.number) \(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)"')
+
+          if [ -z "$CONFLICTED_PRS" ]; then
+            echo "No conflicted backport PRs found, skipping."
+            exit 0
+          fi
+
+          # Login to Docker Hub (required to pull the opencode-skills image)
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::warning::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set, skipping AI conflict resolution."
+            exit 0
+          fi
+          echo "$DOCKERHUB_TOKEN" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+
+          echo "$CONFLICTED_PRS" | while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
+            echo "::group::Resolving conflicts on PR #${PR_NUMBER} (${FORK_OWNER}:${HEAD_BRANCH} -> ${BASE_BRANCH})"
+
+            # Checkout the PR branch from the fork
+            cd "${{ github.workspace }}/repo"
+            git remote add fork "https://github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git" 2>/dev/null || true
+            git remote set-url fork "https://github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git"
+            git fetch fork "${HEAD_BRANCH}"
+            git fetch origin "${BASE_BRANCH}"
+            git checkout -B "${HEAD_BRANCH}" "fork/${HEAD_BRANCH}"
+
+            # Run opencode resolve-conflicts via Docker
+            podman run --pull=always --rm \
+              -v "${{ github.workspace }}/repo":/workspace \
+              -w /workspace \
+              -e GH_TOKEN="${GH_TOKEN}" \
+              docker.io/scylladb/opencode-skills:stable run-resolve-conflicts "${BASE_BRANCH}"
+
+            RESOLVE_STATUS=$?
+            if [ $RESOLVE_STATUS -eq 0 ]; then
+              echo "Conflicts resolved successfully for PR #${PR_NUMBER}"
+              # Push the resolved branch back to the fork
+              git push fork "${HEAD_BRANCH}" --force-with-lease
+              # Mark PR as ready and remove conflicts label
+              gh pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
+              gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label conflicts
+              # Add a comment indicating AI resolution
+              gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
+                --body ":robot: Conflicts in this backport were automatically resolved by AI (OpenCode resolve-conflicts skill).\n\nPlease review the changes carefully to ensure correctness."
+            else
+              echo "::warning::Failed to resolve conflicts on PR #${PR_NUMBER} (exit code: ${RESOLVE_STATUS})"
+            fi
+
+            echo "::endgroup::"
+          done

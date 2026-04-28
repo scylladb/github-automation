@@ -179,6 +179,11 @@ def _make_pr(
     # Milestone
     pr.milestone = None
 
+    # Assignees (default: the PR user)
+    assignee = MagicMock()
+    assignee.login = user_login
+    pr.assignees = [assignee]
+
     # Methods
     pr.add_to_labels = MagicMock()
     pr.remove_from_labels = MagicMock()

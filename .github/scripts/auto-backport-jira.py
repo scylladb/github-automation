@@ -33,6 +33,7 @@ else:
     JIRA_API_TOKEN = None
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
 
+
 # GitHub Actions run URL for error reporting
 GITHUB_RUN_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/" + \
                  os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + \
@@ -1062,8 +1063,14 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
             pr_body += f'- (cherry picked from commit {commit})\n\n'
         pr_body += f'Parent PR: #{pr.number}'
     
-    # Determine who to assign the PR to - always use original PR author
+    # Determine who to assign the PR to - use the assignee of the source PR
+    # (not the author, which may be scylladbbot for chain backports)
     assign_to_pr = original_pr if original_pr else pr
+    assignee = None
+    if assign_to_pr.assignees:
+        assignee = assign_to_pr.assignees[0]
+    else:
+        assignee = assign_to_pr.user
     
     try:
         backport_pr = repo.create_pull(
@@ -1074,11 +1081,11 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
             draft=is_draft
         )
         logging.info(f"Pull request created: {backport_pr.html_url}")
-        backport_pr.add_to_assignees(assign_to_pr.user)
-        logging.info(f"Assigned PR to original author: {assign_to_pr.user.login}")
+        backport_pr.add_to_assignees(assignee)
+        logging.info(f"Assigned PR to: {assignee.login}")
 
         if warn_missing_fixes:
-            warning_comment = (f"@{assign_to_pr.user.login} This backport PR can't be merged without a valid Fixes reference ")
+            warning_comment = (f"@{assignee.login} This backport PR can't be merged without a valid Fixes reference ")
             backport_pr.create_issue_comment(warning_comment)
         
         # Add labels to the backport PR
@@ -1103,9 +1110,10 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
         # Add conflicts label if PR is in draft mode
         if is_draft:
             labels_to_add.append("conflicts")
-            pr_comment = f"@{assign_to_pr.user.login} - This PR has conflicts, therefore it was moved to `draft` \n"
+            pr_comment = f"@{assignee.login} - This PR has conflicts, therefore it was moved to `draft` \n"
             pr_comment += "Please resolve them and mark this PR as ready for review by removing the conflicts label"
             backport_pr.create_issue_comment(pr_comment)
+        
         
         # Note: promoted-to-<branch> label is NOT added here.
         # It will be added by the workflow when the commit is actually pushed/promoted to the branch.
@@ -1141,7 +1149,7 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
                     # Update the body with the latest info
                     existing_pr.edit(body=pr_body)
                     if warn_missing_fixes:
-                        warning_comment = (f"@{assign_to_pr.user.login} This backport PR can't be merged without a valid Fixes reference ")
+                        warning_comment = (f"@{assignee.login} This backport PR can't be merged without a valid Fixes reference ")
                         existing_pr.create_issue_comment(warning_comment)
                     if backport_version:
                         milestone_title = resolve_backport_milestone_title(backport_version)

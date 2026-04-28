@@ -219,7 +219,7 @@ class TestCreatePullRequest:
         assert result.number == 42
 
     def test_original_pr_used_for_assignment(self, bp_module, make_pr, make_repo):
-        """When original_pr is provided, PR is assigned to original author."""
+        """When original_pr is provided, PR is assigned to original PR's assignee."""
         repo = make_repo()
         pr = make_pr(number=10, user_login="bot")
         original_pr = make_pr(number=5, user_login="real-author")
@@ -233,8 +233,8 @@ class TestCreatePullRequest:
                 pr_body="Test body", original_pr=original_pr, backport_version="2025.4"
             )
 
-        # Should assign to original_pr's user, not pr's user
-        created_pr.add_to_assignees.assert_called_once_with(original_pr.user)
+        # Should assign to original_pr's assignee, not pr's user
+        created_pr.add_to_assignees.assert_called_once_with(original_pr.assignees[0])
 
     def test_warn_missing_fixes(self, bp_module, make_pr, make_repo):
         repo = make_repo()
