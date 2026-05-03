@@ -316,6 +316,11 @@ jobs:
             # Ensure the container user can write to the entire workspace (files + .git)
             chmod -R a+rw "${{ github.workspace }}/repo"
 
+            # Configure git credential for the container (embed token in remote URL)
+            cd "${{ github.workspace }}/repo"
+            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+            git remote set-url fork "https://x-access-token:${GH_TOKEN}@github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git"
+
             # Run opencode resolve-conflicts via Docker
             podman run --pull=always --rm \
               -v "${{ github.workspace }}/repo":/workspace \
