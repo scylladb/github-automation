@@ -296,6 +296,15 @@ jobs:
           echo "$CONFLICTED_PRS" | while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
             echo "::group::Resolving conflicts on PR #${PR_NUMBER} (${FORK_OWNER}:${HEAD_BRANCH} -> ${BASE_BRANCH})"
 
+            # Dedup: skip if AI already commented on this PR (another workflow run got there first)
+            EXISTING_COMMENT=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
+              --json comments --jq '.comments[] | select(.body | contains("Conflicts in this backport were automatically resolved by AI")) | .id' | head -1)
+            if [ -n "$EXISTING_COMMENT" ]; then
+              echo "PR #${PR_NUMBER} already has an AI resolution comment, skipping."
+              echo "::endgroup::"
+              continue
+            fi
+
             # Checkout the PR branch from the fork
             cd "${{ github.workspace }}/repo"
             git remote add fork "https://github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git" 2>/dev/null || true
@@ -312,6 +321,16 @@ jobs:
               docker.io/scylladb/opencode-skills:stable run-resolve-conflicts "${BASE_BRANCH}"
 
             RESOLVE_STATUS=$?
+
+            # Post-resolution validation: ensure no conflict markers remain in tracked files
+            if [ $RESOLVE_STATUS -eq 0 ]; then
+              REMAINING_MARKERS=$(git grep -l '<<<<<<< ' -- ':(exclude).git' 2>/dev/null || true)
+              if [ -n "$REMAINING_MARKERS" ]; then
+                echo "::error::AI reported success but conflict markers remain in: ${REMAINING_MARKERS}"
+                RESOLVE_STATUS=1
+              fi
+            fi
+
             if [ $RESOLVE_STATUS -eq 0 ]; then
               echo "Conflicts resolved successfully for PR #${PR_NUMBER}"
               # Push the resolved branch back to the fork
