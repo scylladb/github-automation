@@ -313,6 +313,9 @@ jobs:
             git fetch origin "${BASE_BRANCH}"
             git checkout -B "${HEAD_BRANCH}" "fork/${HEAD_BRANCH}"
 
+            # Ensure the container user can write to the git repo
+            chmod -R a+rw "${{ github.workspace }}/repo/.git"
+
             # Run opencode resolve-conflicts via Docker
             podman run --pull=always --rm \
               -v "${{ github.workspace }}/repo":/workspace \
