@@ -351,7 +351,7 @@ jobs:
               gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label conflicts
               # Add a comment indicating AI resolution
               gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
-                --body ":robot: Conflicts in this backport were automatically resolved by AI (OpenCode resolve-conflicts skill).\n\nPlease review the changes carefully to ensure correctness."
+                --body $':robot: Conflicts in this backport were automatically resolved by AI (OpenCode resolve-conflicts skill).\n\nPlease review the changes carefully to ensure correctness.'
             else
               echo "::error::Failed to resolve conflicts on PR #${PR_NUMBER} (exit code: ${RESOLVE_STATUS})"
               echo "::endgroup::"
