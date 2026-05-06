@@ -12,15 +12,22 @@ from unittest.mock import patch, MagicMock
 
 class TestGetPrCommits:
     def test_merged_pr_with_merge_commit(self, bp_module, make_pr, make_repo, make_commit):
-        """Merged PR with a merge commit (multiple parents) returns the merge commit SHA."""
+        """Merged PR with a merge commit (multiple parents) returns individual commit SHAs."""
         repo = make_repo()
         pr = make_pr(number=10, merged=True, merge_commit_sha="merge123")
 
         merge_commit = make_commit(sha="merge123", parents=[MagicMock(), MagicMock()])
         repo.get_commit.return_value = merge_commit
 
+        # PR has individual commits
+        c1 = MagicMock()
+        c1.sha = "commit1"
+        c2 = MagicMock()
+        c2.sha = "commit2"
+        pr.get_commits.return_value = [c1, c2]
+
         result = bp_module.get_pr_commits(repo, pr, "master")
-        assert result == ["merge123"]
+        assert result == ["commit1", "commit2"]
 
     def test_merged_pr_squash_with_start_commit(self, bp_module, make_pr, make_repo, make_commit):
         """Squash-merged PR with start_commit uses compare to find promoted commits."""

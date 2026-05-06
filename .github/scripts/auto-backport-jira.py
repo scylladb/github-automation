@@ -1168,8 +1168,13 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
                  f"start_commit={start_commit}")
     if pr.merged:
         merge_commit = repo.get_commit(pr.merge_commit_sha)
-        if len(merge_commit.parents) > 1:  # Check if this merge commit includes multiple commits
-            commits.append(pr.merge_commit_sha)
+        if len(merge_commit.parents) > 1:  # True merge commit (multi-parent)
+            # Instead of cherry-picking the merge commit (which loses individual commit history),
+            # collect the individual PR commits. With a true merge commit, the original
+            # commit SHAs are preserved on the branch as-is.
+            pr_commits_list = list(pr.get_commits())
+            commits = [c.sha for c in pr_commits_list]
+            logging.info(f"get_pr_commits: merge-commit PR #{pr.number} has {len(commits)} individual commits: {commits}")
         else:
             if start_commit:
                 promoted_commits = list(repo.compare(start_commit, stable_branch).commits)
@@ -1731,8 +1736,13 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
         if merged_pr.merge_commit_sha:
             merge_commit = repo.get_commit(merged_pr.merge_commit_sha)
             if len(merge_commit.parents) > 1:
-                # True merge commit (multi-parent): cherry-pick with -m1 handles it
-                commits = [merged_pr.merge_commit_sha]
+                # True merge commit (multi-parent): collect individual commits to preserve history
+                pr_commits = list(merged_pr.get_commits())
+                if len(pr_commits) > 1:
+                    commits = [c.sha for c in pr_commits]
+                    logging.info(f"Merge-commit PR #{merged_pr.number} has {len(commits)} individual commits: {commits}")
+                else:
+                    commits = [merged_pr.merge_commit_sha]
             else:
                 # Rebase merge (single-parent merge_commit_sha): this SHA is just the
                 # LAST commit in the PR. For multi-commit PRs we must collect ALL commits.
