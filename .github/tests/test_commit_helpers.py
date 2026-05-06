@@ -78,8 +78,41 @@ class TestGetPrCommits:
         event.commit_id = "direct123"
         pr.get_issue_events.return_value = [event]
 
-        result = bp_module.get_pr_commits(repo, pr, "master")
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="direct123"):
+            result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == ["direct123"]
+
+    def test_closed_pr_referenced_commit_not_on_stable_branch(self, bp_module, make_pr, make_repo):
+        """Closed PR where referenced commit is on gating branch, finds match by title on stable branch."""
+        repo = make_repo()
+        pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        event = MagicMock()
+        event.event = "referenced"
+        event.commit_id = "gating_branch_commit"
+        pr.get_issue_events.return_value = [event]
+
+        # Simulate: referenced commit not on stable branch, but matching commit found by title
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="stable_branch_commit"):
+            result = bp_module.get_pr_commits(repo, pr, "master")
+        assert result == ["stable_branch_commit"]
+
+    def test_closed_pr_referenced_commit_not_found_anywhere(self, bp_module, make_pr, make_repo, caplog):
+        """Closed PR where referenced commit cannot be validated returns empty list."""
+        import logging
+        repo = make_repo()
+        pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        event = MagicMock()
+        event.event = "referenced"
+        event.commit_id = "orphan_commit"
+        pr.get_issue_events.return_value = [event]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value=None):
+            with caplog.at_level(logging.WARNING):
+                result = bp_module.get_pr_commits(repo, pr, "master")
+        assert result == []
+        assert "could not be validated" in caplog.text
 
     def test_no_commits_found(self, bp_module, make_pr, make_repo, make_commit):
         """When no commits can be found, returns empty list."""
@@ -165,3 +198,52 @@ class TestIsCommitInBranch:
 
         result = bp_module.is_commit_in_branch(repo, "abc123", "branch-2025.4")
         assert result is False
+
+
+class TestFindCommitOnStableBranch:
+    def test_commit_directly_on_stable_branch(self, bp_module, make_repo, make_commit):
+        """Commit is already on stable branch (behind_by == 0)."""
+        repo = make_repo()
+        commit = make_commit(sha="abc123", message="Fix something")
+        repo.get_commit.return_value = commit
+
+        comparison = MagicMock()
+        comparison.behind_by = 0
+        repo.compare.return_value = comparison
+
+        result = bp_module._find_commit_on_stable_branch(repo, "abc123", "master")
+        assert result == "abc123"
+
+    def test_commit_not_on_branch_finds_by_title(self, bp_module, make_repo, make_commit):
+        """Commit not on stable branch, but matching commit found by title."""
+        repo = make_repo()
+        commit = make_commit(sha="gating123", message="Fix something")
+        repo.get_commit.return_value = commit
+
+        comparison = MagicMock()
+        comparison.behind_by = 5
+        repo.compare.return_value = comparison
+
+        stable_commit = make_commit(sha="master456", message="Fix something")
+        stable_commit.commit.message = "Fix something"
+        repo.get_commits.return_value = [stable_commit]
+
+        result = bp_module._find_commit_on_stable_branch(repo, "gating123", "master")
+        assert result == "master456"
+
+    def test_commit_not_found_anywhere(self, bp_module, make_repo, make_commit):
+        """Commit not on stable branch and no title match found."""
+        repo = make_repo()
+        commit = make_commit(sha="orphan123", message="Unique title")
+        repo.get_commit.return_value = commit
+
+        comparison = MagicMock()
+        comparison.behind_by = 5
+        repo.compare.return_value = comparison
+
+        other_commit = make_commit(sha="other456", message="Different title")
+        other_commit.commit.message = "Different title"
+        repo.get_commits.return_value = [other_commit]
+
+        result = bp_module._find_commit_on_stable_branch(repo, "orphan123", "master")
+        assert result is None

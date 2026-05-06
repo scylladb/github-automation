@@ -1161,6 +1161,47 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
             logging.error(f'Failed to create PR: {e}')
 
 
+def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> Optional[str]:
+    """
+    Validate that a commit exists on the stable branch, or find the equivalent commit by title.
+
+    In repos with gating branches (e.g., scylladb/scylladb where PRs target 'next' and commits
+    are cherry-picked to 'master'), the 'referenced' event on a PR may point to a commit on the
+    gating branch rather than the stable branch. This function:
+    1. Checks if the commit itself is reachable from the stable branch (returns it if so).
+    2. If not, looks for a commit with the same title on the stable branch (cherry-pick match).
+
+    Returns the validated commit SHA on the stable branch, or None if not found.
+    """
+    try:
+        commit_obj = repo.get_commit(commit_sha)
+        commit_title = commit_obj.commit.message.splitlines()[0]
+
+        # Check if the commit is directly on the stable branch
+        try:
+            comparison = repo.compare(commit_sha, stable_branch)
+            # If behind_by == 0, the commit is an ancestor of stable_branch
+            if comparison.behind_by == 0:
+                logging.info(f"Commit {commit_sha} is on stable branch {stable_branch}")
+                return commit_sha
+        except Exception:
+            pass
+
+        # Commit is not on the stable branch; search by title
+        logging.info(f"Commit {commit_sha} not on {stable_branch}, searching by title: '{commit_title}'")
+        branch_commits = repo.get_commits(sha=stable_branch)
+        for branch_commit in branch_commits[:200]:
+            branch_title = branch_commit.commit.message.splitlines()[0]
+            if branch_title == commit_title:
+                logging.info(f"Found matching commit on {stable_branch}: {branch_commit.sha} "
+                             f"(original referenced: {commit_sha})")
+                return branch_commit.sha
+        logging.warning(f"No matching commit found on {stable_branch} for title: '{commit_title}'")
+    except Exception as e:
+        logging.warning(f"Error validating commit {commit_sha} on {stable_branch}: {e}")
+    return None
+
+
 def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     commits = []
     logging.info(f"get_pr_commits: PR #{pr.number} state={pr.state}, merged={pr.merged}, "
@@ -1219,8 +1260,18 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
             if event.event == 'referenced' and event.commit_id:
                 last_referenced_commit = event.commit_id
         if last_referenced_commit:
-            commits.append(last_referenced_commit)
-            logging.info(f"Found close event commit for PR #{pr.number}: {last_referenced_commit}")
+            # Validate that the referenced commit actually exists on the stable branch.
+            # In repos with gating branches (e.g., scylladb/scylladb where PRs target 'next'),
+            # the referenced event may point to a commit on the gating branch, not the stable
+            # branch. If the commit is not on the stable branch, find the matching commit
+            # by title on the stable branch instead.
+            validated_commit = _find_commit_on_stable_branch(repo, last_referenced_commit, stable_branch)
+            if validated_commit:
+                commits.append(validated_commit)
+                logging.info(f"Found close event commit for PR #{pr.number}: {validated_commit}")
+            else:
+                logging.warning(f"Referenced commit {last_referenced_commit} for PR #{pr.number} "
+                                f"could not be validated on stable branch '{stable_branch}'")
     return commits
 
 
