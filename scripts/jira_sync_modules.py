@@ -761,27 +761,21 @@ def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -
 def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) -> list[str]:
     """Compute the final list of labels to apply to a PR.
 
-    1. Parse labels_csv into a deduped list.
-    2. Strip any existing P0..P4 from that list.
-    3. Parse details_csv to derive the best Jira priority (P*) and area/* labels.
-    4. If the triggering event label is P0..P4 it overrides the Jira priority.
-    5. Append area/* labels.
-    6. Append symptom/* labels.
+    1. Parse details_csv to derive the best Jira priority (P*) and area/* labels.
+    2. If the triggering event label is P0..P4 it overrides the Jira priority.
+    3. Append area/* labels.
+    4. Append symptom/* labels.
+
+    Note: Jira labels (from labels_csv) are intentionally NOT synced back
+    to the PR (PM-304).  Only structured fields (priority, scylla_components,
+    symptoms) produce PR labels.
     """
-    # 1) Parse labels_csv
-    raw_labels = [s.strip() for s in labels_csv.split(_DETAIL_DELIM)]
-    seen: set[str] = set()
+    # Jira labels are intentionally not synced to the PR (PM-304).
+    # Start with an empty label list; only structured Jira fields
+    # (priority, scylla_components, symptoms) produce PR labels.
     labels: list[str] = []
-    for s in raw_labels:
-        if s and s not in seen:
-            seen.add(s)
-            labels.append(s)
 
-    # 2) Remove P0..P4 from base list
-    priority_names = {"P0", "P1", "P2", "P3", "P4"}
-    labels = [lb for lb in labels if lb not in priority_names]
-
-    # 3) Parse details CSV for priority + scylla_components
+    # Parse details CSV for priority + scylla_components
     best_rank = None
     area_labels: list[str] = []
     area_seen: set[str] = set()
