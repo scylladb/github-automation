@@ -1169,7 +1169,8 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
     are cherry-picked to 'master'), the 'referenced' event on a PR may point to a commit on the
     gating branch rather than the stable branch. This function:
     1. Checks if the commit itself is reachable from the stable branch (returns it if so).
-    2. If not, looks for a commit with the same title on the stable branch (cherry-pick match).
+    2. If not, looks for a commit with the same title on the stable branch (cherry-pick match),
+       using the original commit's date to narrow the search window.
 
     Returns the validated commit SHA on the stable branch, or None if not found.
     """
@@ -1187,16 +1188,24 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
         except Exception:
             pass
 
-        # Commit is not on the stable branch; search by title
+        # Commit is not on the stable branch; search by title using a date-based window
+        # around the original commit's date to handle old PRs efficiently.
         logging.info(f"Commit {commit_sha} not on {stable_branch}, searching by title: '{commit_title}'")
-        branch_commits = repo.get_commits(sha=stable_branch)
-        for branch_commit in branch_commits[:200]:
+        commit_date = commit_obj.commit.committer.date
+        # Search in a window: from 1 day before to 7 days after the original commit
+        # (the cherry-pick to stable branch typically happens within a few days)
+        from datetime import timedelta
+        since_date = commit_date - timedelta(days=1)
+        until_date = commit_date + timedelta(days=7)
+        branch_commits = repo.get_commits(sha=stable_branch, since=since_date, until=until_date)
+        for branch_commit in branch_commits:
             branch_title = branch_commit.commit.message.splitlines()[0]
             if branch_title == commit_title:
                 logging.info(f"Found matching commit on {stable_branch}: {branch_commit.sha} "
                              f"(original referenced: {commit_sha})")
                 return branch_commit.sha
-        logging.warning(f"No matching commit found on {stable_branch} for title: '{commit_title}'")
+        logging.warning(f"No matching commit found on {stable_branch} for title: '{commit_title}' "
+                        f"(searched {since_date.isoformat()} to {until_date.isoformat()})")
     except Exception as e:
         logging.warning(f"Error validating commit {commit_sha} on {stable_branch}: {e}")
     return None
