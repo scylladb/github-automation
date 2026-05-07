@@ -46,6 +46,14 @@ def get_promoted_label_for_ref(ref: str) -> str:
 
 def main():
     args = parser()
+
+    # Skip gating branches (next-X.Y, next) - labels should only be added
+    # when commits are promoted to the stable branch (branch-X.Y, master)
+    branch = args.ref.replace('refs/heads/', '') if args.ref.startswith('refs/heads/') else args.ref
+    if branch.startswith('next-') or branch == 'next':
+        print(f"Skipping push to gating branch {branch} - waiting for promotion to stable branch")
+        return
+
     g = Github(github_token)
     repo = g.get_repo(args.repository, lazy=False)
     start_commit, end_commit = args.commits.split('..')
