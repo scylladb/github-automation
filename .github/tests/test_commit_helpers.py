@@ -168,6 +168,18 @@ class TestIsCommitInBranch:
         result = bp_module.is_commit_in_branch(repo, "abc123", "branch-2025.4")
         assert result is True
 
+    def test_substring_title_does_not_match(self, bp_module, make_repo, make_commit):
+        repo = make_repo()
+        commit = make_commit(sha="abc123", message="session: add logging")
+        repo.get_commit.return_value = commit
+
+        branch_commit = make_commit(sha="zzz999", message="session: add logging to drain_closing_sessions")
+        branch_commit.commit.message = "session: add logging to drain_closing_sessions"
+        repo.get_commits.return_value = [branch_commit]
+
+        result = bp_module.is_commit_in_branch(repo, "abc123", "branch-2025.1")
+        assert result is False
+
     def test_commit_found_by_sha(self, bp_module, make_repo, make_commit):
         repo = make_repo()
         commit = make_commit(sha="abc123", message="Fix bug")

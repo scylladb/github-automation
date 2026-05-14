@@ -1285,27 +1285,24 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
 
 
 def is_commit_in_branch(repo, commit_sha: str, branch_name: str) -> bool:
-    """
-    Check if a commit (or its cherry-pick) is already in the target branch.
-    This handles both exact SHA matches and cherry-picked commits (by commit message).
-    """
+    """Check if a commit (by SHA or exact title match) already exists in the target branch."""
     try:
         # Get the commit message to search for
         commit = repo.get_commit(commit_sha)
-        commit_title = commit.commit.message.splitlines()[0]
+        commit_title = commit.commit.message.splitlines()[0].strip()
         
         # Search for commits in the target branch with the same title
         # This catches both the original commit and cherry-picks
         branch_commits = repo.get_commits(sha=branch_name)
         for branch_commit in branch_commits[:100]:  # Check last 100 commits
-            branch_commit_title = branch_commit.commit.message.splitlines()[0]
-            # Check if titles match (ignoring cherry-pick markers)
-            if commit_title in branch_commit_title or branch_commit_title in commit_title:
-                logging.info(f"Commit '{commit_title}' already exists in branch {branch_name}")
-                return True
-            # Also check for exact SHA match
+            # Check for exact SHA match
             if branch_commit.sha == commit_sha:
                 logging.info(f"Commit {commit_sha} already exists in branch {branch_name}")
+                return True
+            branch_commit_title = branch_commit.commit.message.splitlines()[0].strip()
+            # Check for exact title match (cherry-picks preserve the commit title)
+            if commit_title == branch_commit_title:
+                logging.info(f"Commit '{commit_title}' already exists in branch {branch_name} (exact title match)")
                 return True
     except Exception as e:
         logging.warning(f"Error checking if commit exists in branch: {e}")
