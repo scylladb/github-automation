@@ -190,8 +190,39 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.gh_token }}
         run: |
+          # Retry wrapper for gh CLI commands to handle transient GitHub API failures
+          gh_retry() {
+            local max_attempts=3
+            local delay=10
+            local attempt=1
+            local output
+            local status
+            while [ $attempt -le $max_attempts ]; do
+              output=$(gh "$@" 2>&1)
+              status=$?
+              if [ $status -eq 0 ]; then
+                echo "$output"
+                return 0
+              fi
+              if echo "$output" | grep -qi "error connecting\|connection refused\|timeout\|ETIMEDOUT\|network\|502\|503"; then
+                echo "::warning::gh command failed (attempt ${attempt}/${max_attempts}): $output" >&2
+                if [ $attempt -lt $max_attempts ]; then
+                  sleep $delay
+                  delay=$((delay * 2))
+                fi
+              else
+                echo "$output"
+                return $status
+              fi
+              attempt=$((attempt + 1))
+            done
+            echo "::error::gh command failed after ${max_attempts} attempts: $output" >&2
+            echo "$output"
+            return $status
+          }
+
           # Get all running workflows for this PR
-          runs=$(gh api \
+          runs=$(gh_retry api \
             -H "Accept: application/vnd.github+json" \
             "/repos/${{ github.repository }}/actions/runs?status=in_progress&event=pull_request_target" \
             --jq ".workflow_runs[] | select(.name == \"${{ github.workflow }}\") | .id" | sort -n)
@@ -276,10 +307,45 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
         run: |
+          # Retry wrapper for gh CLI commands to handle transient GitHub API failures
+          gh_retry() {
+            local max_attempts=3
+            local delay=10
+            local attempt=1
+            local output
+            local status
+            while [ $attempt -le $max_attempts ]; do
+              output=$(gh "$@" 2>&1)
+              status=$?
+              if [ $status -eq 0 ]; then
+                echo "$output"
+                return 0
+              fi
+              if echo "$output" | grep -qi "error connecting\|connection refused\|timeout\|ETIMEDOUT\|network\|502\|503"; then
+                echo "::warning::gh command failed (attempt ${attempt}/${max_attempts}): $output" >&2
+                if [ $attempt -lt $max_attempts ]; then
+                  sleep $delay
+                  delay=$((delay * 2))
+                fi
+              else
+                # Non-transient error, fail immediately
+                echo "$output"
+                return $status
+              fi
+              attempt=$((attempt + 1))
+            done
+            echo "::error::gh command failed after ${max_attempts} attempts: $output" >&2
+            echo "$output"
+            return $status
+          }
+
           # Find draft PRs with 'conflicts' label authored by scylladbbot
-          CONFLICTED_PRS=$(gh pr list --repo "${{ github.repository }}" \
+          CONFLICTED_PRS=$(gh_retry pr list --repo "${{ github.repository }}" \
             --author scylladbbot --label conflicts --draft --json number,headRefName,baseRefName,headRepositoryOwner \
-            --jq '.[] | "\(.number) \(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)"')
+            --jq '.[] | "\(.number) \(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)"') || {
+            echo "::warning::Failed to list conflicted PRs due to GitHub API issues, skipping."
+            exit 0
+          }
 
           if [ -z "$CONFLICTED_PRS" ]; then
             echo "No conflicted backport PRs found, skipping."
@@ -297,7 +363,7 @@ jobs:
             echo "::group::Resolving conflicts on PR #${PR_NUMBER} (${FORK_OWNER}:${HEAD_BRANCH} -> ${BASE_BRANCH})"
 
             # Dedup: skip if AI already commented on this PR (another workflow run got there first)
-            EXISTING_COMMENT=$(gh pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
+            EXISTING_COMMENT=$(gh_retry pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \
               --json comments --jq '.comments[] | select(.body | contains("Conflicts in this backport were automatically resolved by AI")) | .id' | head -1)
             if [ -n "$EXISTING_COMMENT" ]; then
               echo "PR #${PR_NUMBER} already has an AI resolution comment, skipping."
@@ -347,10 +413,10 @@ jobs:
               # Push the resolved branch back to the fork
               git push fork "${HEAD_BRANCH}" --force-with-lease
               # Mark PR as ready and remove conflicts label
-              gh pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
-              gh pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label conflicts
+              gh_retry pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
+              gh_retry pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label conflicts
               # Add a comment indicating AI resolution
-              gh pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
+              gh_retry pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
                 --body $':robot: Conflicts in this backport were automatically resolved by AI (OpenCode resolve-conflicts skill).\n\nPlease review the changes carefully to ensure correctness.'
             else
               echo "::error::Failed to resolve conflicts on PR #${PR_NUMBER} (exit code: ${RESOLVE_STATUS})"
