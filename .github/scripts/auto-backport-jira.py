@@ -1977,12 +1977,20 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
         # Also find PRs referenced via "Closes #X" in commit messages.
         # This handles single-commit PRs that are closed (not merged) with a commit event
         # (e.g., in scylladb/scylladb), which commit.get_pulls() does not return.
+        # IMPORTANT: Only include PRs whose base branch matches the branch being pushed to,
+        # because promoter commits may contain Closes references to PRs from other branches
+        # (e.g., a commit promoted to branch-2025.1 may reference backport PRs for 2026.1).
         for match in re.finditer(r'Closes\s+(?:[\w-]+/[\w-]+)?#(\d+)', commit.commit.message):
             pr_number = int(match.group(1))
             if pr_number not in seen_in_commit and pr_number not in processed_prs:
                 try:
                     closed_pr = repo.get_pull(pr_number)
                     if closed_pr.state == 'closed':
+                        # Only process PRs that target this branch to avoid adding
+                        # wrong promoted-to labels to PRs from other branches
+                        if closed_pr.base.ref != branch_name:
+                            logging.info(f"Skipping PR #{pr_number} from 'Closes' reference: targets {closed_pr.base.ref}, not {branch_name}")
+                            continue
                         prs_for_commit.append(closed_pr)
                         logging.info(f"Found closed-with-commit PR #{pr_number} via 'Closes' reference")
                 except Exception as e:

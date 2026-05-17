@@ -75,11 +75,15 @@ def main():
         prs = response.json().get("items", [])
         # Fallback: if the commit message has "Closes" references, include those PRs too
         # This handles PRs closed by pushing a rebased commit directly (different SHA than the PR's head)
+        # IMPORTANT: Only include PRs whose base branch matches the branch being pushed to,
+        # because promoter commits may contain Closes references to PRs from other branches.
         found_pr_numbers = {pr["number"] for pr in prs}
         close_refs = re.findall(
             rf'Closes\s+(?:{re.escape(args.repository)}#|#)(\d+)',
             commit.commit.message
         )
+        # Extract the short branch name from the ref for comparison
+        target_branch = args.ref.replace('refs/heads/', '') if args.ref.startswith('refs/heads/') else args.ref
         for ref in close_refs:
             pr_num = int(ref)
             if pr_num not in found_pr_numbers and pr_num not in processed_prs:
@@ -88,6 +92,12 @@ def main():
                 if pr_response.ok:
                     pr_data = pr_response.json()
                     if pr_data.get("state") == "closed":
+                        # Only process PRs that target this branch to avoid adding
+                        # wrong promoted-to labels to PRs from other branches
+                        pr_base_branch = pr_data.get("base", {}).get("ref", "")
+                        if pr_base_branch != target_branch:
+                            print(f"Skipping PR #{pr_num} from 'Closes' reference: targets {pr_base_branch}, not {target_branch}")
+                            continue
                         prs.append(pr_data)
         for pr in prs:
             match = re.findall(r'Parent PR: #(\d+)', pr["body"])
