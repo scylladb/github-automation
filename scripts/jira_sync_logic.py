@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 jira_sync_logic.py - Top-level orchestrator and CLI dispatcher for Jira sync.
 
@@ -30,19 +30,14 @@ _NO_KEYS = '["__NO_KEYS_FOUND__"]'
 # Labels that should be ignored by the labeled/unlabeled event handlers.
 # When a PR label event fires for one of these labels the automation
 # skips all Jira sync steps and exits early.
-# Each entry is matched using startswith, so "backport/" excludes all
-# labels starting with "backport/", and "status/ci_in_progress" excludes
-# that exact label (as well as any hypothetical longer variant).
 _EXCLUDED_LABELS: tuple[str, ...] = (
     "status/ci_in_progress",
     "backport/",
 )
 
-
 def _is_excluded_label(label: str) -> bool:
     """Return True if *label* should be excluded from Jira sync."""
     return label.startswith(_EXCLUDED_LABELS)
-
 
 def manage_labeled_gh_event(
     pr_title: str,
@@ -75,27 +70,21 @@ def manage_labeled_gh_event(
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
-
+    
     # --- Early exit: excluded labels ---
     if _is_excluded_label(triggering_label):
-        print(
-            f"SKIPPED: triggering_label '{triggering_label}' is in the exclusion list. "
-            "No Jira sync will be performed."
-        )
+        print(f"SKIPPED: triggering_label '{triggering_label}' is in the exclusion list. "
+              "No Jira sync will be performed.")
         return
 
     # --- Step 1: extract jira keys ---
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(
-        pr_title,
-        pr_body,
-        jira_auth,
-        owner_repo=owner_repo,
-        pr_number=pr_number,
-        gh_token=gh_token,
-    )
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -113,9 +102,7 @@ def manage_labeled_gh_event(
     if not_found:
         keys = [k for k in keys if k not in not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -127,24 +114,18 @@ def manage_labeled_gh_event(
     if triggering_label == "status/release_blocker":
         add_label_to_jira_issue(jira_keys_json, "P0", jira_auth)
     else:
-        print(
-            f"SKIPPED: triggering_label is '{triggering_label}', not 'status/release_blocker'"
-        )
+        print(f"SKIPPED: triggering_label is '{triggering_label}', not 'status/release_blocker'")
 
     # --- Step 4: extract issue details ---
     print("\n" + "=" * 60)
     print(" Step 4 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv, details_not_found = extract_jira_issue_details(
-        jira_keys_json, jira_auth
-    )
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     if details_not_found:
         keys = [k for k in keys if k not in details_not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -154,12 +135,7 @@ def manage_labeled_gh_event(
     print(" Step 5 / apply_jira_labels_to_pr")
     print("=" * 60)
     apply_jira_labels_to_pr(
-        pr_number,
-        labels_csv,
-        csv_content,
-        triggering_label,
-        owner_repo,
-        gh_token,
+        pr_number, labels_csv, csv_content, triggering_label, owner_repo, gh_token,
     )
 
     # --- Step 6: status/merge_candidate -> Ready for Merge ---
@@ -169,9 +145,7 @@ def manage_labeled_gh_event(
     if triggering_label == "status/merge_candidate":
         jira_status_transition(csv_content, "Ready for Merge", "131", jira_auth)
     else:
-        print(
-            f"SKIPPED: triggering_label is '{triggering_label}', not 'status/merge_candidate'"
-        )
+        print(f"SKIPPED: triggering_label is '{triggering_label}', not 'status/merge_candidate'")
 
     # --- Step 7: promoted-to-* label ---
     print("\n" + "=" * 60)
@@ -187,10 +161,8 @@ def manage_labeled_gh_event(
             link_url=pr_url,
         )
     else:
-        print(
-            f"SKIPPED: triggering_label is '{triggering_label}'"
-            f" (requires label starting with 'promoted-to-')"
-        )
+        print(f"SKIPPED: triggering_label is '{triggering_label}'"
+              f" (requires label starting with 'promoted-to-')")
 
     print("\n" + "=" * 60)
     print(" Step 7b / jira_status_transition -> Done")
@@ -198,10 +170,8 @@ def manage_labeled_gh_event(
     if triggering_label.startswith("promoted-to-"):
         jira_status_transition(csv_content, "Done", "141", jira_auth)
     else:
-        print(
-            f"SKIPPED: triggering_label is '{triggering_label}'"
-            f" (requires label starting with 'promoted-to-')"
-        )
+        print(f"SKIPPED: triggering_label is '{triggering_label}'"
+              f" (requires label starting with 'promoted-to-')")
 
     print("\n" + "=" * 60)
     print(" manage_labeled_gh_event completed successfully")
@@ -249,14 +219,10 @@ def _run_manage_labeled_gh_event() -> None:
         sys.exit(1)
 
     manage_labeled_gh_event(
-        pr_title,
-        pr_body,
-        pr_number,
-        triggering_label,
-        owner_repo,
-        gh_token,
-        jira_auth,
+        pr_title, pr_body, pr_number, triggering_label,
+        owner_repo, gh_token, jira_auth,
     )
+
 
 
 def manage_review_gh_event(
@@ -291,14 +257,10 @@ def manage_review_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(
-        pr_title,
-        pr_body,
-        jira_auth,
-        owner_repo=owner_repo,
-        pr_number=pr_number,
-        gh_token=gh_token,
-    )
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -310,16 +272,12 @@ def manage_review_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv, details_not_found = extract_jira_issue_details(
-        jira_keys_json, jira_auth
-    )
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     if details_not_found:
         keys = [k for k in keys if k not in details_not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -329,12 +287,7 @@ def manage_review_gh_event(
     print(" Step 3 / apply_jira_labels_to_pr")
     print("=" * 60)
     apply_jira_labels_to_pr(
-        pr_number,
-        labels_csv,
-        csv_content,
-        "",
-        owner_repo,
-        gh_token,
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
     # --- Step 4: transition to In Review ---
@@ -385,14 +338,10 @@ def _run_manage_review_gh_event() -> None:
         sys.exit(1)
 
     manage_review_gh_event(
-        pr_title,
-        pr_body,
-        pr_number,
-        owner_repo,
-        gh_token,
-        requested_reviewer,
-        jira_auth,
+        pr_title, pr_body, pr_number,
+        owner_repo, gh_token, requested_reviewer, jira_auth,
     )
+
 
 
 def manage_closed_gh_event(
@@ -428,14 +377,10 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(
-        pr_title,
-        pr_body,
-        jira_auth,
-        owner_repo=owner_repo,
-        pr_number=pr_number,
-        gh_token=gh_token,
-    )
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -447,16 +392,12 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv, details_not_found = extract_jira_issue_details(
-        jira_keys_json, jira_auth
-    )
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     if details_not_found:
         keys = [k for k in keys if k not in details_not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -466,12 +407,7 @@ def manage_closed_gh_event(
     print(" Step 3 / apply_jira_labels_to_pr")
     print("=" * 60)
     apply_jira_labels_to_pr(
-        pr_number,
-        labels_csv,
-        csv_content,
-        "",
-        owner_repo,
-        gh_token,
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
     # --- Step 4: add "PR closed" comment ---
@@ -549,13 +485,8 @@ def _run_manage_closed_gh_event() -> None:
         sys.exit(1)
 
     manage_closed_gh_event(
-        pr_title,
-        pr_body,
-        pr_number,
-        pr_merged,
-        owner_repo,
-        gh_token,
-        jira_auth,
+        pr_title, pr_body, pr_number, pr_merged,
+        owner_repo, gh_token, jira_auth,
     )
 
 
@@ -590,14 +521,10 @@ def manage_opened_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(
-        pr_title,
-        pr_body,
-        jira_auth,
-        owner_repo=owner_repo,
-        pr_number=pr_number,
-        gh_token=gh_token,
-    )
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -609,16 +536,12 @@ def manage_opened_gh_event(
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv, details_not_found = extract_jira_issue_details(
-        jira_keys_json, jira_auth
-    )
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     if details_not_found:
         keys = [k for k in keys if k not in details_not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -628,12 +551,7 @@ def manage_opened_gh_event(
     print(" Step 3 / apply_jira_labels_to_pr")
     print("=" * 60)
     apply_jira_labels_to_pr(
-        pr_number,
-        labels_csv,
-        csv_content,
-        "",
-        owner_repo,
-        gh_token,
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
     # --- Step 4: transition to In Progress ---
@@ -696,14 +614,9 @@ def _run_manage_opened_gh_event() -> None:
         sys.exit(1)
 
     manage_opened_gh_event(
-        pr_title,
-        pr_body,
-        pr_number,
-        owner_repo,
-        gh_token,
-        jira_auth,
+        pr_title, pr_body, pr_number,
+        owner_repo, gh_token, jira_auth,
     )
-
 
 def manage_unlabeled_gh_event(
     pr_title: str,
@@ -735,24 +648,18 @@ def manage_unlabeled_gh_event(
 
     # --- Early exit: excluded labels ---
     if _is_excluded_label(removed_label):
-        print(
-            f"SKIPPED: removed_label '{removed_label}' is in the exclusion list. "
-            "No Jira sync will be performed."
-        )
+        print(f"SKIPPED: removed_label '{removed_label}' is in the exclusion list. "
+              "No Jira sync will be performed.")
         return
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(
-        pr_title,
-        pr_body,
-        jira_auth,
-        owner_repo=owner_repo,
-        pr_number=pr_number,
-        gh_token=gh_token,
-    )
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -768,17 +675,13 @@ def manage_unlabeled_gh_event(
     if removed_label in _PRIORITY_LABELS:
         print(f"SKIPPED: removed_label '{removed_label}' is a priority label (P0-P4)")
     else:
-        not_found = remove_label_from_jira_issue(
-            jira_keys_json, removed_label, jira_auth
-        )
+        not_found = remove_label_from_jira_issue(jira_keys_json, removed_label, jira_auth)
 
         # Remove issues that were not found (404) from subsequent steps
         if not_found:
             keys = [k for k in keys if k not in not_found]
             jira_keys_json = json.dumps(keys)
-            print(
-                f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}"
-            )
+            print(f"Filtered jira-keys-json (removed {len(not_found)} not-found): {jira_keys_json}")
             if not keys:
                 print("All Jira keys were not found. Nothing more to do.")
                 return
@@ -787,16 +690,12 @@ def manage_unlabeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 3 / extract_jira_issue_details")
     print("=" * 60)
-    csv_content, labels_csv, details_not_found = extract_jira_issue_details(
-        jira_keys_json, jira_auth
-    )
+    csv_content, labels_csv, details_not_found = extract_jira_issue_details(jira_keys_json, jira_auth)
 
     if details_not_found:
         keys = [k for k in keys if k not in details_not_found]
         jira_keys_json = json.dumps(keys)
-        print(
-            f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}"
-        )
+        print(f"Filtered jira-keys-json after details (removed {len(details_not_found)} not-found): {jira_keys_json}")
         if not keys:
             print("All Jira keys were not found. Nothing more to do.")
             return
@@ -806,12 +705,7 @@ def manage_unlabeled_gh_event(
     print(" Step 4 / apply_jira_labels_to_pr")
     print("=" * 60)
     apply_jira_labels_to_pr(
-        pr_number,
-        labels_csv,
-        csv_content,
-        "",
-        owner_repo,
-        gh_token,
+        pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
     print("\n" + "=" * 60)
@@ -860,24 +754,19 @@ def _run_manage_unlabeled_gh_event() -> None:
         sys.exit(1)
 
     manage_unlabeled_gh_event(
-        pr_title,
-        pr_body,
-        pr_number,
-        removed_label,
-        owner_repo,
-        gh_token,
-        jira_auth,
+        pr_title, pr_body, pr_number, removed_label,
+        owner_repo, gh_token, jira_auth,
     )
 
 
 def debug_sync_context():
     """Log GitHub event context and label-specific transition hints."""
-    event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-    action = os.environ.get("GITHUB_EVENT_ACTION", "")
-    jira_keys_json = os.environ.get("JIRA_KEYS_JSON", "")
-    label = os.environ.get("TRIGGERING_LABEL", "")
-    repository = os.environ.get("GITHUB_REPOSITORY", "")
-    github_context = os.environ.get("GITHUB_CONTEXT", "")
+    event_name = os.environ.get('GITHUB_EVENT_NAME', '')
+    action = os.environ.get('GITHUB_EVENT_ACTION', '')
+    jira_keys_json = os.environ.get('JIRA_KEYS_JSON', '')
+    label = os.environ.get('TRIGGERING_LABEL', '')
+    repository = os.environ.get('GITHUB_REPOSITORY', '')
+    github_context = os.environ.get('GITHUB_CONTEXT', '')
 
     print(f"event_name='{event_name}'")
     print(f"action='{action}'")
@@ -885,10 +774,10 @@ def debug_sync_context():
     print(f"triggering-label='{label}'")
     print(f"repository='{repository}'")
 
-    if label == "status/merge_candidate":
+    if label == 'status/merge_candidate':
         print("Try to transition Jira issue to 'Ready For Merge'")
 
-    if label.startswith("promoted-to-"):
+    if label.startswith('promoted-to-'):
         print(f"Try to close Jira issue ({label} label added)")
 
     print("~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~")
@@ -903,25 +792,25 @@ def debug_sync_context():
 
 
 ACTION_DISPATCH = {
-    "debug": debug_sync_context,
-    "manage_labeled_gh_event": _run_manage_labeled_gh_event,
-    "manage_review_gh_event": _run_manage_review_gh_event,
-    "manage_closed_gh_event": _run_manage_closed_gh_event,
-    "manage_opened_gh_event": _run_manage_opened_gh_event,
-    "manage_unlabeled_gh_event": _run_manage_unlabeled_gh_event,
+    'debug': debug_sync_context,
+    'manage_labeled_gh_event': _run_manage_labeled_gh_event,
+    'manage_review_gh_event': _run_manage_review_gh_event,
+    'manage_closed_gh_event': _run_manage_closed_gh_event,
+    'manage_opened_gh_event': _run_manage_opened_gh_event,
+    'manage_unlabeled_gh_event': _run_manage_unlabeled_gh_event,
 }
 
 # Map GitHub event actions to orchestrator function names.
 # This allows the consolidated workflow to pass the raw github.event.action
 # and have the script resolve the correct handler automatically.
 EVENT_ACTION_MAP = {
-    "opened": "manage_opened_gh_event",
-    "edited": "manage_opened_gh_event",
-    "ready_for_review": "manage_review_gh_event",
-    "review_requested": "manage_review_gh_event",
-    "labeled": "manage_labeled_gh_event",
-    "unlabeled": "manage_unlabeled_gh_event",
-    "closed": "manage_closed_gh_event",
+    'opened': 'manage_opened_gh_event',
+    'edited': 'manage_opened_gh_event',
+    'ready_for_review': 'manage_review_gh_event',
+    'review_requested': 'manage_review_gh_event',
+    'labeled': 'manage_labeled_gh_event',
+    'unlabeled': 'manage_unlabeled_gh_event',
+    'closed': 'manage_closed_gh_event',
 }
 
 
@@ -941,22 +830,22 @@ def _resolve_action(raw_action: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Jira sync logic for GitHub Actions workflows"
+        description='Jira sync logic for GitHub Actions workflows'
     )
     parser.add_argument(
-        "--action",
+        '--action',
         required=True,
-        help="The action to execute (orchestrator name or GitHub event action)",
+        help='The action to execute (orchestrator name or GitHub event action)'
     )
     args = parser.parse_args()
 
     action = _resolve_action(args.action)
     print(f"=== Jira Sync: {action} (raw input: {args.action}) ===")
-    os.environ["CALLER_ACTION"] = args.action
+    os.environ['CALLER_ACTION'] = args.action
 
     handler = ACTION_DISPATCH.get(action)
     if not handler:
-        valid = ", ".join(list(ACTION_DISPATCH.keys()) + list(EVENT_ACTION_MAP.keys()))
+        valid = ', '.join(list(ACTION_DISPATCH.keys()) + list(EVENT_ACTION_MAP.keys()))
         print(f"Error: Unknown action '{args.action}'. Valid values: {valid}")
         sys.exit(1)
 
@@ -964,5 +853,5 @@ def main():
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())
