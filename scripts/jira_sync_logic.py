@@ -506,6 +506,7 @@ def manage_opened_gh_event(
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
       4.  jira_status_transition -> "In Progress" (id 111)
+      5.  add_comment_to_jira ("A new linked PR was created: <PR link>")
     """
     print("=" * 60)
     print(" manage_opened_gh_event  input parameters")
@@ -558,6 +559,19 @@ def manage_opened_gh_event(
     print(" Step 4 / jira_status_transition -> In Progress")
     print("=" * 60)
     jira_status_transition(csv_content, "In Progress", "111", jira_auth)
+
+    # --- Step 5: add comment to Jira ---
+    print("\n" + "=" * 60)
+    print(" Step 5 / add_comment_to_jira (new PR created)")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_comment_to_jira(
+        jira_keys_json,
+        "A new linked PR was created: ",
+        jira_auth,
+        link_text=pr_title,
+        link_url=pr_url,
+    )
 
     print("\n" + "=" * 60)
     print(" manage_opened_gh_event completed successfully")
@@ -841,3 +855,4 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
