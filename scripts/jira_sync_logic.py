@@ -560,18 +560,22 @@ def manage_opened_gh_event(
     print("=" * 60)
     jira_status_transition(csv_content, "In Progress", "111", jira_auth)
 
-    # --- Step 5: add comment to Jira ---
-    print("\n" + "=" * 60)
-    print(" Step 5 / add_comment_to_jira (new PR created)")
-    print("=" * 60)
-    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
-    add_comment_to_jira(
-        jira_keys_json,
-        "A new linked PR was created: ",
-        jira_auth,
-        link_text=pr_title,
-        link_url=pr_url,
-    )
+    # --- Step 5: add comment to Jira (only on PR creation, not edits) ---
+    caller_action = os.environ.get("CALLER_ACTION", "")
+    if caller_action == "opened":
+        print("\n" + "=" * 60)
+        print(" Step 5 / add_comment_to_jira (new PR created)")
+        print("=" * 60)
+        pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+        add_comment_to_jira(
+            jira_keys_json,
+            "A new linked PR was created: ",
+            jira_auth,
+            link_text=pr_title,
+            link_url=pr_url,
+        )
+    else:
+        print(f"\n Skipping Step 5 (add PR-created comment): caller_action={caller_action!r}, not 'opened'")
 
     print("\n" + "=" * 60)
     print(" manage_opened_gh_event completed successfully")
