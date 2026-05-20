@@ -22,6 +22,7 @@ from jira_sync_modules import (
     jira_status_transition,
     add_comment_to_jira,
     remove_label_from_jira_issue,
+    get_done_issue_keys,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
@@ -411,26 +412,35 @@ def manage_closed_gh_event(
     )
 
     # --- Step 4: add "PR closed" comment ---
+    # Skip comment for issues already in a Done/closed state (PM-315).
     print("\n" + "=" * 60)
     print(" Step 4 / add_comment_to_jira (PR closed)")
     print("=" * 60)
-    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
-    if pr_merged:
-        add_comment_to_jira(
-            jira_keys_json,
-            "Closed via PR merge ",
-            jira_auth,
-            link_text=pr_title,
-            link_url=pr_url,
-        )
+    done_keys = get_done_issue_keys(csv_content)
+    commentable_keys = [k for k in keys if k not in done_keys]
+    if done_keys:
+        print(f"Skipping 'PR closed' comment for issues already in Done state: {sorted(done_keys)}")
+    if not commentable_keys:
+        print("All linked issues are already in a Done state. Skipping comment.")
     else:
-        add_comment_to_jira(
-            jira_keys_json,
-            "PR closed without merge ",
-            jira_auth,
-            link_text=pr_title,
-            link_url=pr_url,
-        )
+        commentable_keys_json = json.dumps(commentable_keys)
+        pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+        if pr_merged:
+            add_comment_to_jira(
+                commentable_keys_json,
+                "Closed via PR merge ",
+                jira_auth,
+                link_text=pr_title,
+                link_url=pr_url,
+            )
+        else:
+            add_comment_to_jira(
+                commentable_keys_json,
+                "PR closed without merge ",
+                jira_auth,
+                link_text=pr_title,
+                link_url=pr_url,
+            )
 
     # --- Step 5: transition to Done (merged PRs only) ---
     print("\n" + "=" * 60)
