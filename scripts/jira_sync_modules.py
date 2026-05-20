@@ -1262,3 +1262,22 @@ def add_comment_to_jira(
         print(f"WARNING: {failed} comment(s) failed. Continuing.")
 
 
+def get_done_issue_keys(details_csv: str) -> set[str]:
+    """Parse the details CSV and return issue keys whose status is in a closed/done state.
+
+    This is used to skip writing "PR closed" comments on issues that are
+    already resolved (PM-315).
+    """
+    done_keys: set[str] = set()
+    stripped = details_csv.strip()
+    if not stripped:
+        return done_keys
+
+    reader = csv.DictReader(io.StringIO(stripped))
+    for row in reader:
+        key = (row.get("key") or "").strip()
+        status = (row.get("status") or "").strip()
+        if key and status.lower() in _CLOSED_STATES:
+            done_keys.add(key)
+
+    return done_keys
