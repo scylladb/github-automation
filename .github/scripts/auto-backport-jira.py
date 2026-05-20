@@ -1831,15 +1831,7 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     labels_to_make_pending = [label for label in remaining_labels if label.replace('backport/', '') != next_version]
     labels_to_just_remove = [label for label in remaining_labels if label.replace('backport/', '') == next_version]
     
-    # Remove the next version label (it moves to the new backport PR)
-    for label in labels_to_just_remove:
-        try:
-            merged_pr.remove_from_labels(label)
-            logging.info(f"Removed '{label}' from merged PR #{merged_pr.number} (transferred to new backport PR)")
-        except Exception as e:
-            logging.warning(f"Failed to remove label '{label}' on merged PR #{merged_pr.number}: {e}")
-    
-    # Replace remaining labels with -pending
+    # Replace remaining labels with -pending (these are versions after the next one)
     if labels_to_make_pending:
         _replace_labels_with_pending(merged_pr, labels_to_make_pending)
     
@@ -1873,6 +1865,18 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
                            jira_failed=False, original_pr=original_pr, 
                            remaining_backport_labels=remaining_backport_labels, warn_missing_fixes=warn_missing_fixes,
                            jira_mapping=jira_mapping)
+    
+    # Only remove the next version label AFTER the backport PR was successfully created.
+    # This prevents losing track of pending backports when cherry-pick fails.
+    if backport_pr:
+        for label in labels_to_just_remove:
+            try:
+                merged_pr.remove_from_labels(label)
+                logging.info(f"Removed '{label}' from merged PR #{merged_pr.number} (transferred to new backport PR)")
+            except Exception as e:
+                logging.warning(f"Failed to remove label '{label}' on merged PR #{merged_pr.number}: {e}")
+    else:
+        logging.warning(f"Backport PR creation failed for version {next_version}; keeping '{labels_to_just_remove}' on PR #{merged_pr.number} for retry")
     
     return backport_pr
 
