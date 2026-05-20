@@ -1263,11 +1263,11 @@ def add_comment_to_jira(
 
 
 def get_done_issue_keys(details_csv: str) -> set[str]:
-    ```Parse the details CSV and return issue keys whose status is in a closed/done state.
+    """Parse the details CSV and return issue keys whose status is in a closed/done state.
 
     This is used to skip writing "PR closed" comments on issues that are
     already resolved (PM-315).
-    ```
+    """
     done_keys: set[str] = set()
     stripped = details_csv.strip()
     if not stripped:
