@@ -450,7 +450,7 @@ def extract_all_jira_keys_from_pr_body(pr_body: str) -> List[str]:
     #   "Fixes:PROJ-123"
     #   "Fixes: https://scylladb.atlassian.net/browse/PROJ-123"
     #   "Fixes: [PROJ-123](https://scylladb.atlassian.net/browse/PROJ-123)"
-    matches = re.findall(r'[Ff]ixes:\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
+    matches = re.findall(r'[Ff]ixes:?\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
     # findall with groups returns list of tuples; pick the non-empty group from each
     return [m[0] or m[1] for m in matches]
 
