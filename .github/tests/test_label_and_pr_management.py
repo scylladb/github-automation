@@ -87,6 +87,39 @@ class TestFindExistingBackportPr:
         result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
         assert result is None
 
+    def test_found_from_different_source_pr(self, bp_module, make_pr, make_repo):
+        """Detects duplicate when another source PR already created a backport to same version."""
+        repo = make_repo()
+        # Exact-match searches return empty (different source PR number)
+        other_pr = make_pr(number=99)
+        other_pr.head = MagicMock()
+        other_pr.head.ref = "backport/20/to-2025.4"
+        other_pr.title = "[Backport 2025.4] Fix bug"
+        other_pr.user = MagicMock()
+        other_pr.user.login = "scylladbbot"
+
+        # First two get_pulls calls (exact match) return empty,
+        # third call (broad search by base branch) returns the other PR
+        repo.get_pulls.side_effect = [[], [], [other_pr]]
+
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
+        assert result.number == 99
+
+    def test_broad_check_ignores_non_bot_prs(self, bp_module, make_pr, make_repo):
+        """Broad check skips PRs not created by scylladbbot."""
+        repo = make_repo()
+        other_pr = make_pr(number=99)
+        other_pr.head = MagicMock()
+        other_pr.head.ref = "backport/20/to-2025.4"
+        other_pr.title = "[Backport 2025.4] Fix bug"
+        other_pr.user = MagicMock()
+        other_pr.user.login = "someuser"
+
+        repo.get_pulls.side_effect = [[], [], [other_pr]]
+
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
+        assert result is None
+
     def test_error_returns_none(self, bp_module, make_repo):
         repo = make_repo()
         repo.get_pulls.side_effect = Exception("API error")
