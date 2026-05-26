@@ -1435,13 +1435,14 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str):
     Find an existing backport PR for a specific version.
     
     Checks for:
-    1. Open PRs with the backport branch pattern
-    2. Recently merged PRs (to handle race conditions)
-    3. Any PR in any state with the backport branch pattern
+    1. Open PRs with the exact backport branch pattern for this source PR
+    2. Any PR (all states) with the exact backport branch pattern for this source PR
+    3. Open PRs from ANY source PR targeting the same version (prevents duplicates
+       when both chain backport and original PR label processing race)
     
     Returns the PR object if found, None otherwise.
     """
-    # Search for PRs with the backport branch naming pattern
+    # Search for PRs with the backport branch naming pattern for this specific source PR
     branch_pattern = f"backport/{original_pr_number}/to-{version}"
     try:
         # Check open PRs first
@@ -1458,6 +1459,26 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str):
             return pull
     except Exception as e:
         logging.warning(f"Error searching for existing backport PR: {e}")
+
+    # Check for backport PRs from ANY source PR targeting the same version.
+    # This prevents duplicates when a chain backport (e.g., from PR #200) and the
+    # original PR's label processing (from PR #100) both try to create a backport
+    # to the same target version, using different branch names.
+    try:
+        target_branch = get_branch_name(repo.full_name, version)
+        pulls = repo.get_pulls(state='open', base=target_branch)
+        backport_title_prefix = f'[Backport {version}]'
+        for pull in pulls:
+            if (pull.head.ref.startswith('backport/') and
+                    pull.head.ref.endswith(f'/to-{version}') and
+                    pull.title.startswith(backport_title_prefix) and
+                    pull.user.login == 'scylladbbot'):
+                logging.info(f"Found existing open backport PR #{pull.number} from different source "
+                             f"(branch: {pull.head.ref}) for version {version}")
+                return pull
+    except Exception as e:
+        logging.warning(f"Error searching for existing backport PR by target branch: {e}")
+
     return None
 
 
