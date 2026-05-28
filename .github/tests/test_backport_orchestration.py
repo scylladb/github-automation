@@ -362,7 +362,7 @@ class TestBackportWithJiraParallelMode:
         )
         existing_pr = make_pr(number=42)
 
-        def side_effect(repo_obj, pr_num, version):
+        def side_effect(repo_obj, pr_num, version, title=None):
             if version == "2025.4":
                 return existing_pr
             return None

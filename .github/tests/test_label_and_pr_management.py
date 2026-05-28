@@ -102,8 +102,32 @@ class TestFindExistingBackportPr:
         # third call (broad search by base branch) returns the other PR
         repo.get_pulls.side_effect = [[], [], [other_pr]]
 
-        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4", "Fix bug")
         assert result.number == 99
+
+    def test_broad_check_ignores_unrelated_prs(self, bp_module, make_pr, make_repo):
+        """Broad check skips PRs with different original title (unrelated backports)."""
+        repo = make_repo()
+        other_pr = make_pr(number=99)
+        other_pr.head = MagicMock()
+        other_pr.head.ref = "backport/20/to-2025.4"
+        other_pr.title = "[Backport 2025.4] Some other fix"
+        other_pr.user = MagicMock()
+        other_pr.user.login = "scylladbbot"
+
+        repo.get_pulls.side_effect = [[], [], [other_pr]]
+
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4", "Fix bug")
+        assert result is None
+
+    def test_broad_check_skipped_without_title(self, bp_module, make_pr, make_repo):
+        """Broad check is skipped when no original_pr_title is provided."""
+        repo = make_repo()
+        # Only two calls should be made (exact match searches)
+        repo.get_pulls.side_effect = [[], []]
+
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
+        assert result is None
 
     def test_broad_check_ignores_non_bot_prs(self, bp_module, make_pr, make_repo):
         """Broad check skips PRs not created by scylladbbot."""
@@ -117,7 +141,7 @@ class TestFindExistingBackportPr:
 
         repo.get_pulls.side_effect = [[], [], [other_pr]]
 
-        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4")
+        result = bp_module.find_existing_backport_pr(repo, 10, "2025.4", "Fix bug")
         assert result is None
 
     def test_error_returns_none(self, bp_module, make_repo):

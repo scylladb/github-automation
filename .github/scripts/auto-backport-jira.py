@@ -1430,15 +1430,16 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
             return None
 
 
-def find_existing_backport_pr(repo, original_pr_number: int, version: str):
+def find_existing_backport_pr(repo, original_pr_number: int, version: str, original_pr_title: str = None):
     """
     Find an existing backport PR for a specific version.
     
     Checks for:
     1. Open PRs with the exact backport branch pattern for this source PR
     2. Any PR (all states) with the exact backport branch pattern for this source PR
-    3. Open PRs from ANY source PR targeting the same version (prevents duplicates
-       when both chain backport and original PR label processing race)
+    3. Open PRs from ANY source PR targeting the same version that have the same
+       original title (prevents duplicates when both chain backport and original PR
+       label processing race, using different branch names)
     
     Returns the PR object if found, None otherwise.
     """
@@ -1464,20 +1465,22 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str):
     # This prevents duplicates when a chain backport (e.g., from PR #200) and the
     # original PR's label processing (from PR #100) both try to create a backport
     # to the same target version, using different branch names.
-    try:
-        target_branch = get_branch_name(repo.full_name, version)
-        pulls = repo.get_pulls(state='open', base=target_branch)
-        backport_title_prefix = f'[Backport {version}]'
-        for pull in pulls:
-            if (pull.head.ref.startswith('backport/') and
-                    pull.head.ref.endswith(f'/to-{version}') and
-                    pull.title.startswith(backport_title_prefix) and
-                    pull.user.login == 'scylladbbot'):
-                logging.info(f"Found existing open backport PR #{pull.number} from different source "
-                             f"(branch: {pull.head.ref}) for version {version}")
-                return pull
-    except Exception as e:
-        logging.warning(f"Error searching for existing backport PR by target branch: {e}")
+    # We verify the title matches to avoid false positives from unrelated backport PRs.
+    if original_pr_title:
+        try:
+            target_branch = get_branch_name(repo.full_name, version)
+            pulls = repo.get_pulls(state='open', base=target_branch)
+            expected_title = f'[Backport {version}] {extract_original_title(original_pr_title)}'
+            for pull in pulls:
+                if (pull.head.ref.startswith('backport/') and
+                        pull.head.ref.endswith(f'/to-{version}') and
+                        pull.title == expected_title and
+                        pull.user.login == 'scylladbbot'):
+                    logging.info(f"Found existing open backport PR #{pull.number} from different source "
+                                 f"(branch: {pull.head.ref}) for version {version}")
+                    return pull
+        except Exception as e:
+            logging.warning(f"Error searching for existing backport PR by target branch: {e}")
 
     return None
 
@@ -1608,7 +1611,7 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
             jira_failed = any((version, key) in jira_failures for key in all_jira_keys)
             
             # Check if a backport PR already exists for this version
-            existing_pr = find_existing_backport_pr(repo, pr.number, version)
+            existing_pr = find_existing_backport_pr(repo, pr.number, version, pr.title)
             if existing_pr:
                 logging.info(f"Backport PR #{existing_pr.number} already exists for version {version}, skipping")
                 if warn_missing_fixes:
@@ -1658,7 +1661,7 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     )
     
     # Check if a backport PR already exists for the highest version
-    existing_pr = find_existing_backport_pr(repo, pr.number, highest_version)
+    existing_pr = find_existing_backport_pr(repo, pr.number, highest_version, pr.title)
     if existing_pr:
         logging.info(f"Backport PR #{existing_pr.number} already exists for version {highest_version}, skipping")
         if warn_missing_fixes:
@@ -2269,7 +2272,7 @@ def main():
         highest_version = sorted_versions[0] if sorted_versions else None
         
         if highest_version:
-            existing_pr = find_existing_backport_pr(repo, pr.number, highest_version)
+            existing_pr = find_existing_backport_pr(repo, pr.number, highest_version, pr.title)
             if existing_pr:
                 logging.info(f"Backport PR #{existing_pr.number} already exists for highest version {highest_version}")
                 logging.info(f"Skipping backport creation for PR #{pr.number} - chain is already in progress")
