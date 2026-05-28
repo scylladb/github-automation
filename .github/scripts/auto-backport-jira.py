@@ -2268,10 +2268,11 @@ def main():
         
         # Check if this is triggered by a specific label and a backport already exists for the highest version
         # This prevents race conditions where the 'labeled' event triggers after chain backport has already started
+        # Skip this check for parallel_backport PRs - they handle per-version dedup inside backport_with_jira
         sorted_versions = sort_versions_descending(versions)
         highest_version = sorted_versions[0] if sorted_versions else None
         
-        if highest_version:
+        if highest_version and "parallel_backport" not in labels:
             existing_pr = find_existing_backport_pr(repo, pr.number, highest_version, pr.title)
             if existing_pr:
                 logging.info(f"Backport PR #{existing_pr.number} already exists for highest version {highest_version}")
