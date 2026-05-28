@@ -125,6 +125,7 @@ jobs:
             exit 1
           fi
 
+
   update_jira_releases:
     if: github.event.action == 'edited'
     runs-on: ubuntu-slim
