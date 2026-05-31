@@ -68,51 +68,109 @@ class TestGetPrCommits:
         result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
         assert result == ["squash123"]
 
-    def test_closed_pr_not_merged(self, bp_module, make_pr, make_repo):
-        """Closed (not merged) PR finds commit from close event."""
+    def test_closed_pr_not_merged(self, bp_module, make_pr, make_repo, make_commit):
+        """Closed (not merged) PR finds commit from referenced event matching PR commit title."""
         repo = make_repo()
         pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        # PR has a commit with this title
+        pr_commit = MagicMock()
+        pr_commit.commit.message = "Fix the view builder bug\n\nDetails"
+        pr.get_commits.return_value = [pr_commit]
 
         event = MagicMock()
         event.event = "referenced"
         event.commit_id = "direct123"
         pr.get_issue_events.return_value = [event]
 
+        # The referenced commit has matching title
+        ref_commit = make_commit(sha="direct123", message="Fix the view builder bug")
+        repo.get_commit.return_value = ref_commit
+
         with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="direct123"):
             result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == ["direct123"]
 
-    def test_closed_pr_referenced_commit_not_on_stable_branch(self, bp_module, make_pr, make_repo):
+    def test_closed_pr_referenced_commit_not_on_stable_branch(self, bp_module, make_pr, make_repo, make_commit):
         """Closed PR where referenced commit is on gating branch, finds match by title on stable branch."""
         repo = make_repo()
         pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        pr_commit = MagicMock()
+        pr_commit.commit.message = "Fix the view builder bug\n\nDetails"
+        pr.get_commits.return_value = [pr_commit]
 
         event = MagicMock()
         event.event = "referenced"
         event.commit_id = "gating_branch_commit"
         pr.get_issue_events.return_value = [event]
 
+        ref_commit = make_commit(sha="gating_branch_commit", message="Fix the view builder bug")
+        repo.get_commit.return_value = ref_commit
+
         # Simulate: referenced commit not on stable branch, but matching commit found by title
         with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="stable_branch_commit"):
             result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == ["stable_branch_commit"]
 
-    def test_closed_pr_referenced_commit_not_found_anywhere(self, bp_module, make_pr, make_repo, caplog):
-        """Closed PR where referenced commit cannot be validated returns empty list."""
+    def test_closed_pr_skips_unrelated_referenced_commits(self, bp_module, make_pr, make_repo, make_commit):
+        """Closed PR skips referenced commits whose titles don't match PR commits."""
+        repo = make_repo()
+        pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        # PR has a commit with this title
+        pr_commit = MagicMock()
+        pr_commit.commit.message = "db: view: Serialize creation and dropping of views on shard0\n\nDetails"
+        pr.get_commits.return_value = [pr_commit]
+
+        # Two referenced events: first is the real one, second is from an unrelated PR
+        event1 = MagicMock()
+        event1.event = "referenced"
+        event1.commit_id = "correct_commit"
+        event2 = MagicMock()
+        event2.event = "referenced"
+        event2.commit_id = "unrelated_commit"
+        pr.get_issue_events.return_value = [event1, event2]
+
+        # The unrelated commit (last) has a different title
+        unrelated = make_commit(sha="unrelated_commit", message="db: view: refactor semaphore usage")
+        correct = make_commit(sha="correct_commit", message="db: view: Serialize creation and dropping of views on shard0")
+
+        def get_commit_side_effect(sha):
+            if sha == "unrelated_commit":
+                return unrelated
+            return correct
+
+        repo.get_commit.side_effect = get_commit_side_effect
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="correct_commit"):
+            result = bp_module.get_pr_commits(repo, pr, "master")
+        # Should pick the correct commit (walking backwards, skips unrelated, finds correct)
+        assert result == ["correct_commit"]
+
+    def test_closed_pr_referenced_commit_not_found_anywhere(self, bp_module, make_pr, make_repo, make_commit, caplog):
+        """Closed PR where no referenced commit matches PR titles returns empty list."""
         import logging
         repo = make_repo()
         pr = make_pr(number=10, state="closed", merged=False, merge_commit_sha=None)
+
+        pr_commit = MagicMock()
+        pr_commit.commit.message = "Fix the bug\n\nDetails"
+        pr.get_commits.return_value = [pr_commit]
 
         event = MagicMock()
         event.event = "referenced"
         event.commit_id = "orphan_commit"
         pr.get_issue_events.return_value = [event]
 
-        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value=None):
-            with caplog.at_level(logging.WARNING):
-                result = bp_module.get_pr_commits(repo, pr, "master")
+        # Referenced commit has a completely different title
+        orphan = make_commit(sha="orphan_commit", message="Completely unrelated change")
+        repo.get_commit.return_value = orphan
+
+        with caplog.at_level(logging.WARNING):
+            result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == []
-        assert "could not be validated" in caplog.text
+        assert "No valid referenced commit found" in caplog.text
 
     def test_no_commits_found(self, bp_module, make_pr, make_repo, make_commit):
         """When no commits can be found, returns empty list."""

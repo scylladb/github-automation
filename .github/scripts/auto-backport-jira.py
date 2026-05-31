@@ -1262,25 +1262,52 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     # We use the *last* referenced event because a PR may be queued (creating commit A),
     # dequeued, and re-queued (creating commit B that replaces A). The first referenced
     # event would point to commit A which may no longer exist on the branch.
+    #
+    # IMPORTANT: We must validate that the referenced commit actually belongs to this PR.
+    # GitHub creates 'referenced' events on a PR whenever ANY commit mentions the PR number
+    # (e.g., "#27929") in its message — including commits from unrelated PRs that merely
+    # reference this PR in comments. Taking the last such event blindly can pick a commit
+    # from a different PR entirely (see scylladb/scylladb#29777 for an example).
+    # We validate by checking the commit title against the PR's own commit titles.
     if not commits and pr.state == 'closed':
         events = pr.get_issue_events()
-        last_referenced_commit = None
+        pr_commits_list = list(pr.get_commits())
+        pr_commit_titles = {c.commit.message.splitlines()[0] for c in pr_commits_list}
+        logging.info(f"get_pr_commits: PR #{pr.number} commit titles for validation: {pr_commit_titles}")
+
+        # Collect all referenced commits (last one first) and pick the last one
+        # whose title matches one of the PR's own commits.
+        referenced_commits = []
         for event in events:
             if event.event == 'referenced' and event.commit_id:
-                last_referenced_commit = event.commit_id
-        if last_referenced_commit:
-            # Validate that the referenced commit actually exists on the stable branch.
-            # In repos with gating branches (e.g., scylladb/scylladb where PRs target 'next'),
-            # the referenced event may point to a commit on the gating branch, not the stable
-            # branch. If the commit is not on the stable branch, find the matching commit
-            # by title on the stable branch instead.
-            validated_commit = _find_commit_on_stable_branch(repo, last_referenced_commit, stable_branch)
-            if validated_commit:
-                commits.append(validated_commit)
-                logging.info(f"Found close event commit for PR #{pr.number}: {validated_commit}")
-            else:
-                logging.warning(f"Referenced commit {last_referenced_commit} for PR #{pr.number} "
-                                f"could not be validated on stable branch '{stable_branch}'")
+                referenced_commits.append(event.commit_id)
+
+        # Walk from last to first to find the most recent valid reference
+        for ref_sha in reversed(referenced_commits):
+            try:
+                ref_commit = repo.get_commit(ref_sha)
+                ref_title = ref_commit.commit.message.splitlines()[0]
+                if ref_title in pr_commit_titles:
+                    # Validate that the referenced commit actually exists on the stable branch.
+                    # In repos with gating branches (e.g., scylladb/scylladb where PRs target 'next'),
+                    # the referenced event may point to a commit on the gating branch, not the stable
+                    # branch. If the commit is not on the stable branch, find the matching commit
+                    # by title on the stable branch instead.
+                    validated_commit = _find_commit_on_stable_branch(repo, ref_sha, stable_branch)
+                    if validated_commit:
+                        commits.append(validated_commit)
+                        logging.info(f"Found close event commit for PR #{pr.number}: {validated_commit}")
+                        break
+                else:
+                    logging.debug(f"Skipping referenced commit {ref_sha} for PR #{pr.number}: "
+                                  f"title '{ref_title}' does not match any PR commit title")
+            except Exception as e:
+                logging.warning(f"Error checking referenced commit {ref_sha}: {e}")
+
+        if not commits:
+            logging.warning(f"No valid referenced commit found for PR #{pr.number} "
+                            f"(checked {len(referenced_commits)} referenced events, "
+                            f"none matched PR commit titles: {pr_commit_titles})")
     return commits
 
 
