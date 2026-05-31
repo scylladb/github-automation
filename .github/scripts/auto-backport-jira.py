@@ -1081,63 +1081,6 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
             draft=is_draft
         )
         logging.info(f"Pull request created: {backport_pr.html_url}")
-        backport_pr.add_to_assignees(assignee)
-        logging.info(f"Assigned PR to: {assignee.login}")
-
-        if warn_missing_fixes:
-            warning_comment = (f"@{assignee.login} This backport PR can't be merged without a valid Fixes reference ")
-            backport_pr.create_issue_comment(warning_comment)
-        
-        # Add labels to the backport PR
-        labels_to_add = []
-        
-        # Check for priority labels (P0 or P1) in parent PR and add them to backport PR
-        # Skip force_on_cloud for scylla-pkg and RELENG projects
-        priority_labels = {"P0", "P1"}
-        parent_pr_labels = [label.name for label in pr.labels]
-        skip_force_on_cloud_repos = {"scylladb/scylla-pkg"}
-        for label in priority_labels:
-            if label in parent_pr_labels:
-                labels_to_add.append(label)
-                # Add force_on_cloud only for repos that need it (not scylla-pkg or RELENG)
-                if repo.full_name not in skip_force_on_cloud_repos:
-                    labels_to_add.append("force_on_cloud")
-                    logging.info(f"Adding {label} and force_on_cloud labels from parent PR to backport PR")
-                else:
-                    logging.info(f"Adding {label} label from parent PR to backport PR (skipping force_on_cloud for {repo.full_name})")
-                break  # Only apply the highest priority label
-        
-        # Add conflicts label if PR is in draft mode
-        if is_draft:
-            labels_to_add.append("conflicts")
-            pr_comment = f"@{assignee.login} - This PR has conflicts, therefore it was moved to `draft` \n"
-            pr_comment += "Please resolve them and mark this PR as ready for review by removing the conflicts label"
-            backport_pr.create_issue_comment(pr_comment)
-        
-        
-        # Note: promoted-to-<branch> label is NOT added here.
-        # It will be added by the workflow when the commit is actually pushed/promoted to the branch.
-        # This allows chain backports to trigger only after successful merge.
-        
-        # Add Jira failure label if sub-issue creation failed
-        if jira_failed:
-            labels_to_add.append(JIRA_FAILURE_LABEL)
-            logging.info(f"Adding {JIRA_FAILURE_LABEL} label due to Jira sub-issue creation failure")
-        
-        # Add remaining backport labels for chain continuation
-        if remaining_backport_labels:
-            labels_to_add.extend(remaining_backport_labels)
-            logging.info(f"Adding remaining backport labels for chain: {remaining_backport_labels}")
-            
-        # Apply all labels at once if we have any
-        if labels_to_add:
-            backport_pr.add_to_labels(*labels_to_add)
-            logging.info(f"Added labels to backport PR: {labels_to_add}")
-            
-        if backport_version:
-            milestone_title = resolve_backport_milestone_title(backport_version)
-            set_pr_milestone(backport_pr, milestone_title)
-        return backport_pr
     except GithubException as e:
         if 'A pull request already exists' in str(e):
             logging.warning(f'A pull request already exists for scylladbbot:{new_branch_name}')
@@ -1148,17 +1091,99 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
                     logging.info(f"Found existing PR: {existing_pr.html_url}")
                     # Update the body with the latest info
                     existing_pr.edit(body=pr_body)
-                    if warn_missing_fixes:
-                        warning_comment = (f"@{assignee.login} This backport PR can't be merged without a valid Fixes reference ")
-                        existing_pr.create_issue_comment(warning_comment)
-                    if backport_version:
-                        milestone_title = resolve_backport_milestone_title(backport_version)
-                        set_pr_milestone(existing_pr, milestone_title)
-                    return existing_pr
+                    backport_pr = existing_pr
+                    break
+                else:
+                    logging.warning(f"Could not find existing PR for scylladbbot:{new_branch_name}")
+                    return None
             except Exception as find_error:
                 logging.warning(f"Could not find existing PR: {find_error}")
+                return None
         else:
             logging.error(f'Failed to create PR: {e}')
+            return None
+
+    # All post-creation operations are done outside the create_pull try block.
+    # This ensures that if any single operation fails, the others still proceed,
+    # and the PR object is always returned.
+
+    # Assign the PR to the original author with retry logic to handle
+    # transient GitHub API failures (e.g., secondary rate limits).
+    for attempt in range(3):
+        try:
+            backport_pr.add_to_assignees(assignee)
+            logging.info(f"Assigned PR to: {assignee.login}")
+            break
+        except Exception as e:
+            if attempt < 2:
+                logging.warning(f"Failed to assign PR to {assignee.login} (attempt {attempt + 1}/3): {e}")
+                time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+            else:
+                logging.error(f"Failed to assign PR to {assignee.login} after 3 attempts: {e}")
+
+    if warn_missing_fixes:
+        try:
+            warning_comment = (f"@{assignee.login} This backport PR can't be merged without a valid Fixes reference ")
+            backport_pr.create_issue_comment(warning_comment)
+        except Exception as e:
+            logging.warning(f"Failed to add missing-fixes warning comment: {e}")
+    
+    # Add labels to the backport PR
+    labels_to_add = []
+    
+    # Check for priority labels (P0 or P1) in parent PR and add them to backport PR
+    # Skip force_on_cloud for scylla-pkg and RELENG projects
+    priority_labels = {"P0", "P1"}
+    parent_pr_labels = [label.name for label in pr.labels]
+    skip_force_on_cloud_repos = {"scylladb/scylla-pkg"}
+    for label in priority_labels:
+        if label in parent_pr_labels:
+            labels_to_add.append(label)
+            # Add force_on_cloud only for repos that need it (not scylla-pkg or RELENG)
+            if repo.full_name not in skip_force_on_cloud_repos:
+                labels_to_add.append("force_on_cloud")
+                logging.info(f"Adding {label} and force_on_cloud labels from parent PR to backport PR")
+            else:
+                logging.info(f"Adding {label} label from parent PR to backport PR (skipping force_on_cloud for {repo.full_name})")
+            break  # Only apply the highest priority label
+    
+    # Add conflicts label if PR is in draft mode
+    if is_draft:
+        labels_to_add.append("conflicts")
+        try:
+            pr_comment = f"@{assignee.login} - This PR has conflicts, therefore it was moved to `draft` \n"
+            pr_comment += "Please resolve them and mark this PR as ready for review by removing the conflicts label"
+            backport_pr.create_issue_comment(pr_comment)
+        except Exception as e:
+            logging.warning(f"Failed to add conflicts comment: {e}")
+    
+    
+    # Note: promoted-to-<branch> label is NOT added here.
+    # It will be added by the workflow when the commit is actually pushed/promoted to the branch.
+    # This allows chain backports to trigger only after successful merge.
+    
+    # Add Jira failure label if sub-issue creation failed
+    if jira_failed:
+        labels_to_add.append(JIRA_FAILURE_LABEL)
+        logging.info(f"Adding {JIRA_FAILURE_LABEL} label due to Jira sub-issue creation failure")
+    
+    # Add remaining backport labels for chain continuation
+    if remaining_backport_labels:
+        labels_to_add.extend(remaining_backport_labels)
+        logging.info(f"Adding remaining backport labels for chain: {remaining_backport_labels}")
+        
+    # Apply all labels at once if we have any
+    if labels_to_add:
+        try:
+            backport_pr.add_to_labels(*labels_to_add)
+            logging.info(f"Added labels to backport PR: {labels_to_add}")
+        except Exception as e:
+            logging.error(f"Failed to add labels to backport PR: {e}")
+        
+    if backport_version:
+        milestone_title = resolve_backport_milestone_title(backport_version)
+        set_pr_milestone(backport_pr, milestone_title)
+    return backport_pr
 
 
 def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> Optional[str]:
