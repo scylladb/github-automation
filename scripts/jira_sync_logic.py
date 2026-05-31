@@ -82,10 +82,21 @@ def manage_labeled_gh_event(
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    # For backport PRs with promoted-to-* labels, only extract keys from the PR body
+    # (not commit messages). Backport PR bodies contain the correct sub-task key
+    # (e.g., "Fixes: SCYLLADB-1171"), but the cherry-picked commits still reference
+    # the parent issue (e.g., "Fixes: SCYLLADB-1114"). Scanning commits would cause
+    # the parent issue to be incorrectly transitioned to Done. (RELENG-464)
+    import re as _re
+    _is_backport_pr = bool(_re.match(r'\[Backport (manager-)?\d+\.\d+\]', pr_title))
+    if _is_backport_pr and triggering_label.startswith("promoted-to-"):
+        print("Backport PR with promoted-to-* label: scanning PR body only (skipping commit messages)")
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    else:
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                                 owner_repo=owner_repo,
+                                 pr_number=pr_number,
+                                 gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -378,10 +389,21 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    # For backport PRs, only extract keys from the PR body (not commit messages).
+    # Backport PR bodies contain the correct sub-task key (e.g., "Fixes: SCYLLADB-1171"),
+    # but the cherry-picked commits still reference the parent issue
+    # (e.g., "Fixes: SCYLLADB-1114"). Scanning commits would cause the parent issue
+    # to be incorrectly transitioned to Done. (RELENG-464)
+    import re as _re
+    _is_backport_pr = bool(_re.match(r'\[Backport (manager-)?\d+\.\d+\]', pr_title))
+    if _is_backport_pr:
+        print("Backport PR detected: scanning PR body only (skipping commit messages)")
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    else:
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                                 owner_repo=owner_repo,
+                                 pr_number=pr_number,
+                                 gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
