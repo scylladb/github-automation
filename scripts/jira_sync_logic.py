@@ -82,10 +82,7 @@ def manage_labeled_gh_event(
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -258,10 +255,7 @@ def manage_review_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -378,10 +372,7 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -531,10 +522,7 @@ def manage_opened_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -670,10 +658,7 @@ def manage_unlabeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth,
-                             owner_repo=owner_repo,
-                             pr_number=pr_number,
-                             gh_token=gh_token)
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
