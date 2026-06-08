@@ -113,6 +113,85 @@ class TestGetPrCommits:
             result = bp_module.get_pr_commits(repo, pr, "master")
         assert result == ["stable_branch_commit"]
 
+    def test_closed_pr_merge_commit_resolves_from_promoted_range(self, bp_module, make_pr, make_repo, make_commit):
+        """Closed (not merged) PR promoted via a merge commit resolves commits from the promoted range.
+
+        Regression test for scylladb/scylladb#30139: the PR was promoted by pushing a
+        2-parent "Merge '...' from <author>" commit directly to master, so the PR is
+        closed-but-not-merged and the only referenced event points at the merge commit.
+        Its title matches none of the PR's commit titles, so the title-equality path
+        finds nothing. The merge-commit path must instead resolve the PR's commits from
+        the first-parent..stable_branch range and match them by title.
+        """
+        repo = make_repo()
+        pr = make_pr(number=30139, state="closed", merged=False, merge_commit_sha=None)
+
+        # PR's individual commits.
+        pr_commit1 = MagicMock()
+        pr_commit1.commit.message = "sstables: introduce sstable format version mt\n\nDetails"
+        pr_commit2 = MagicMock()
+        pr_commit2.commit.message = "conf: use mt instead of ms as the default format"
+        pr.get_commits.return_value = [pr_commit1, pr_commit2]
+
+        # Only referenced event is the merge commit that closed the PR.
+        event = MagicMock()
+        event.event = "referenced"
+        event.commit_id = "merge_sha"
+        pr.get_issue_events.return_value = [event]
+
+        # The referenced commit is a 2-parent merge whose title matches no PR commit.
+        merge_commit = make_commit(
+            sha="merge_sha",
+            message="Merge 'sstables: supersede ms with mt' from Some Author",
+            parents=[MagicMock(), MagicMock()],
+        )
+        repo.get_commit.return_value = merge_commit
+
+        # The promoted range (first-parent..master) contains the rebased PR commits,
+        # which have different SHAs than pr.get_commits() but the same titles.
+        promoted1 = make_commit(sha="promoted_sha1", message="sstables: introduce sstable format version mt")
+        promoted2 = make_commit(sha="promoted_sha2", message="conf: use mt instead of ms as the default format")
+        comparison = MagicMock()
+        comparison.commits = [promoted1, promoted2]
+        repo.compare.return_value = comparison
+
+        result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before_sha")
+        assert result == ["promoted_sha1", "promoted_sha2"]
+        # The promoted range must be compared from the given start_commit, not the merge title.
+        repo.compare.assert_called_once_with("before_sha", "master")
+
+    def test_closed_pr_merge_commit_falls_back_to_first_parent(self, bp_module, make_pr, make_repo, make_commit):
+        """Merge-commit resolution uses the merge's first parent as base when no start_commit is given."""
+        repo = make_repo()
+        pr = make_pr(number=30139, state="closed", merged=False, merge_commit_sha=None)
+
+        pr_commit = MagicMock()
+        pr_commit.commit.message = "sstables: introduce sstable format version mt\n\nDetails"
+        pr.get_commits.return_value = [pr_commit]
+
+        event = MagicMock()
+        event.event = "referenced"
+        event.commit_id = "merge_sha"
+        pr.get_issue_events.return_value = [event]
+
+        first_parent = MagicMock()
+        first_parent.sha = "first_parent_sha"
+        merge_commit = make_commit(
+            sha="merge_sha",
+            message="Merge '...' from Some Author",
+            parents=[first_parent, MagicMock()],
+        )
+        repo.get_commit.return_value = merge_commit
+
+        promoted = make_commit(sha="promoted_sha", message="sstables: introduce sstable format version mt")
+        comparison = MagicMock()
+        comparison.commits = [promoted]
+        repo.compare.return_value = comparison
+
+        result = bp_module.get_pr_commits(repo, pr, "master")
+        assert result == ["promoted_sha"]
+        repo.compare.assert_called_once_with("first_parent_sha", "master")
+
     def test_closed_pr_skips_unrelated_referenced_commits(self, bp_module, make_pr, make_repo, make_commit):
         """Closed PR skips referenced commits whose titles don't match PR commits."""
         repo = make_repo()

@@ -1311,6 +1311,31 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
         for ref_sha in reversed(referenced_commits):
             try:
                 ref_commit = repo.get_commit(ref_sha)
+
+                # The closing commit may be a merge commit (ScyllaDB promotion style:
+                # the promoter rebases the PR and pushes a "Merge '...' from <author>"
+                # commit directly to the branch, so GitHub reports the PR as closed but
+                # not merged). In that case the PR's commits live on the merge's
+                # second-parent chain, not in the merge commit's own title, so the
+                # title-equality check below would never match. Resolve the commits
+                # from the promoted range (first-parent..stable_branch) and match them
+                # by title. We match by title rather than reusing pr.get_commits() SHAs
+                # because the rebase gives the on-branch commits different SHAs, and we
+                # need the SHAs that actually exist on the stable branch to cherry-pick.
+                if len(ref_commit.parents) > 1:
+                    base = start_commit or ref_commit.parents[0].sha
+                    promoted_commits = list(repo.compare(base, stable_branch).commits)
+                    for promoted_commit in promoted_commits:
+                        if promoted_commit.commit.message.splitlines()[0] in pr_commit_titles:
+                            commits.append(promoted_commit.sha)
+                    if commits:
+                        logging.info(f"Resolved {len(commits)} commit(s) for PR #{pr.number} "
+                                     f"from merge commit {ref_sha} via promoted range {base}..{stable_branch}")
+                        break
+                    logging.debug(f"Merge commit {ref_sha} for PR #{pr.number} introduced no commits "
+                                  f"matching PR commit titles in range {base}..{stable_branch}")
+                    continue
+
                 ref_title = ref_commit.commit.message.splitlines()[0]
                 if ref_title in pr_commit_titles:
                     # Validate that the referenced commit actually exists on the stable branch.
