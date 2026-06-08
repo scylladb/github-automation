@@ -76,7 +76,7 @@ jobs:
           echo "pull_request_number: ${{ inputs.pull_request_number }}"
           
       - name: Checkout shared automation repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: scylladb/github-automation
           ref: main
@@ -84,7 +84,7 @@ jobs:
           path: automation
           
       - name: Checkout calling repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.DEFAULT_BRANCH }}
@@ -288,7 +288,7 @@ jobs:
       issues: write
     steps:
       - name: Checkout calling repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.DEFAULT_BRANCH }}
