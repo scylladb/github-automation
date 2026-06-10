@@ -23,6 +23,8 @@ from jira_sync_modules import (
     add_comment_to_jira,
     remove_label_from_jira_issue,
     get_done_issue_keys,
+    enforce_backport_fixes_reference,
+    BACKPORT_LABEL_RE,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
@@ -71,6 +73,18 @@ def manage_labeled_gh_event(
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
+
+    # --- Enforce a valid Fixes: reference on backport labels ---
+    # backport/<release> labels are excluded from Jira sync (below), but when one
+    # is added we first require the PR body to link a valid issue. If it does not,
+    # this comments and strips the backport label(s); either way no Jira sync runs.
+    if BACKPORT_LABEL_RE.match(triggering_label):
+        print(f"Backport label '{triggering_label}' added: requiring a valid Fixes: reference in the PR body.")
+        enforce_backport_fixes_reference(
+            pr_title, pr_body, pr_number, triggering_label,
+            owner_repo, gh_token, jira_auth,
+        )
+        return
     
     # --- Early exit: excluded labels ---
     if _is_excluded_label(triggering_label):
