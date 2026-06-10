@@ -28,6 +28,7 @@ import re
 import sys
 import time
 from datetime import date
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
@@ -58,6 +59,18 @@ _CLOSING_KEYWORD_RE = re.compile(
 
 # Priority names recognised as Jira priority values
 _PRIORITY_NAMES = {"P0", "P1", "P2", "P3", "P4"}
+
+# Backport labels look like backport/2025.4 or backport/manager-3.4.
+# backport/none (the opt-out label) deliberately does not match, so it is never
+# enforced.
+BACKPORT_LABEL_RE = re.compile(r"^backport/(?:manager-)?\d+\.\d+$")
+
+# Message posted (verbatim, per RELENG-175) when a backport label is added to a
+# PR whose body does not link a valid issue.
+REQUIRED_FIXES_COMMENT = (
+    "PR body do not contain a Fixes reference to an issue and can not be backported\n"
+    "please update PR body with a valid ref to an issue and add the backport label again."
+)
 
 
 def _sanitize(text: str) -> str:
@@ -1281,3 +1294,181 @@ def get_done_issue_keys(details_csv: str) -> set[str]:
             done_keys.add(key)
 
     return done_keys
+
+
+# ---------------------------------------------------------------------------
+# enforce_backport_fixes_reference (RELENG-175)
+# ---------------------------------------------------------------------------
+
+
+def _jira_issue_exists(issue_key: str, jira_auth: str) -> bool | None:
+    """Return whether a Jira issue exists.
+
+    True  - the issue exists (HTTP 200).
+    False - the issue does not exist (HTTP 404).
+    None  - existence could not be determined (no credentials, or a transient
+            error); callers should fail open.
+    """
+    if not jira_auth:
+        return None
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}?fields=key"
+    encoded = base64.b64encode(jira_auth.encode()).decode()
+    req = Request(url)
+    req.add_header("Accept", "application/json")
+    req.add_header("Authorization", f"Basic {encoded}")
+    try:
+        with urlopen(req) as resp:
+            return resp.getcode() == 200
+    except HTTPError as exc:
+        if exc.code == 404:
+            return False
+        print(f"Warning: Jira issue lookup for {issue_key} failed: {exc}")
+        return None
+    except URLError as exc:
+        print(f"Warning: Jira issue lookup for {issue_key} failed: {exc}")
+        return None
+
+
+def _pr_body_links_existing_issue(pr_title: str, pr_body: str, jira_auth: str) -> bool:
+    """True if the PR body links a closing-keyword reference to an existing issue.
+
+    Builds on extract_jira_keys (closing-keyword detection + project-prefix
+    validation) and additionally confirms the referenced issue actually exists,
+    so a valid project with a bogus issue number (e.g. SCYLLADB-9898758758) is
+    rejected, not just an unknown project (e.g. AAA-123). If existence can not be
+    confirmed for any candidate key (Jira unreachable), fail open and treat the
+    reference as valid so a real PR is not penalised for a transient outage.
+    """
+    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    if keys == ["__NO_KEYS_FOUND__"]:
+        return False
+    statuses = [_jira_issue_exists(key, jira_auth) for key in keys]
+    if any(status is True for status in statuses):
+        return True
+    if any(status is None for status in statuses):
+        # Existence could not be determined (e.g. Jira unreachable or a non-404
+        # error from the API). Fail open so a transient outage never blocks a PR
+        # whose reference may well be valid.
+        return True
+    return False  # every candidate key was definitively absent (404)
+
+
+def _build_pr_mentions(pr: dict) -> str:
+    """Build a '@author @assignee...' prefix, de-duplicated and order-preserving.
+
+    The author comes first, then assignees; dict.fromkeys removes duplicates
+    while keeping first-seen order (the author is frequently also an assignee).
+    """
+    logins: list[str] = []
+    author = (pr.get("user") or {}).get("login")
+    if author:
+        logins.append(author)
+    for assignee in pr.get("assignees") or []:
+        login = assignee.get("login")
+        if login:
+            logins.append(login)
+    return " ".join(f"@{login}" for login in dict.fromkeys(logins))
+
+
+def _enforcement_comment_present(owner_repo: str, pr_number: int, gh_token: str) -> bool:
+    """Return True if the RELENG-175 enforcement comment is already on the PR.
+
+    Adding several backport labels at once fires one 'labeled' event each, so the
+    comment must be posted only once. A freshly-labeled PR has very few comments,
+    so the first 100 are enough to spot a prior enforcement comment.
+    """
+    code, body = _gh_api(
+        "GET",
+        f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}/comments?per_page=100",
+        gh_token,
+    )
+    if code != 200:
+        print(f"Warning: could not read comments on PR #{pr_number} (HTTP {code})")
+        return False
+    return any(REQUIRED_FIXES_COMMENT in (c.get("body") or "") for c in json.loads(body))
+
+
+def _remove_backport_labels(owner_repo: str, pr_number: int, gh_token: str) -> None:
+    """Remove every backport/<release> label currently on the PR."""
+    issue_api = f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}"
+    code, body = _gh_api("GET", f"{issue_api}/labels", gh_token)
+    if code != 200:
+        print(f"Warning: could not list labels on PR #{pr_number} (HTTP {code})")
+        return
+    for label in json.loads(body):
+        name = label.get("name", "")
+        if not BACKPORT_LABEL_RE.match(name):
+            continue
+        del_code, del_body = _gh_api(
+            "DELETE", f"{issue_api}/labels/{quote(name, safe='')}", gh_token
+        )
+        if del_code in (200, 204):
+            print(f"Removed backport label '{name}' from PR #{pr_number}")
+        else:
+            print(f"Warning: failed to remove '{name}' (HTTP {del_code}): {del_body[:200]}")
+
+
+def enforce_backport_fixes_reference(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    triggering_label: str,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> bool:
+    """Enforce a valid 'Fixes:' issue reference when a backport label is added (RELENG-175).
+
+    When a ``backport/<release>`` label is added to a PR whose body does not link
+    a valid issue, comment once - mentioning the author and assignee(s) - and
+    remove every backport label, so the PR can not be backported until its body
+    is fixed and the label re-added.
+
+    "Valid" reuses extract_jira_keys (closing-keyword reference to a Jira key
+    whose project prefix is a real ScyllaDB project) and additionally confirms
+    the referenced issue actually exists, so both an unknown project (AAA-123)
+    and a bogus issue number in a real project (SCYLLADB-9898758758) are
+    rejected. backport/none does not match BACKPORT_LABEL_RE and is therefore
+    never enforced.
+
+    Returns True when an enforcement action was taken (comment and/or label
+    removal), False otherwise.
+    """
+    if not BACKPORT_LABEL_RE.match(triggering_label):
+        print(f"Label '{triggering_label}' is not a backport/<release> label; nothing to enforce.")
+        return False
+
+    # Body-only scan: the requirement is about the PR body linking an issue, so
+    # commit messages are intentionally not scanned here.
+    if _pr_body_links_existing_issue(pr_title, pr_body, jira_auth):
+        print(f"PR #{pr_number} links a valid, existing issue; backport label '{triggering_label}' is allowed.")
+        return False
+
+    print(f"PR #{pr_number} body has no valid Fixes: reference; commenting and removing the backport label.")
+
+    code, body = _gh_api(
+        "GET", f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}", gh_token
+    )
+    pr = json.loads(body) if code == 200 else {}
+    if code != 200:
+        print(f"Warning: could not fetch PR #{pr_number} (HTTP {code}); commenting without mentions.")
+
+    mentions = _build_pr_mentions(pr)
+    comment = f"{mentions}\n\n{REQUIRED_FIXES_COMMENT}" if mentions else REQUIRED_FIXES_COMMENT
+
+    if _enforcement_comment_present(owner_repo, pr_number, gh_token):
+        print(f"Enforcement comment already present on PR #{pr_number}; not commenting again.")
+    else:
+        c_code, c_body = _gh_api(
+            "POST",
+            f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}/comments",
+            gh_token,
+            {"body": comment},
+        )
+        if c_code in (200, 201):
+            print(f"Posted enforcement comment on PR #{pr_number}")
+        else:
+            print(f"Warning: failed to comment on PR #{pr_number} (HTTP {c_code}): {c_body[:200]}")
+
+    _remove_backport_labels(owner_repo, pr_number, gh_token)
+    return True
