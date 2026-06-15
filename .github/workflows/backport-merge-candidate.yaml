@@ -1,0 +1,204 @@
+name: Backport merge candidate labeling (Reusable)
+
+# Reusable workflow that auto-labels backport PRs with status/merge_candidate
+# when all CI checks pass, and removes the label when CI fails or new commits
+# are pushed.
+#
+# Caller repos should create a workflow like:
+#
+#   on:
+#     status:
+#     pull_request_target:
+#       types: [synchronize]
+#       branches: [next, 'next-*.*', master, 'branch-*.*']
+#
+#   jobs:
+#     merge-candidate:
+#       uses: scylladb/github-automation/.github/workflows/backport-merge-candidate.yaml@main
+#       with:
+#         event_name: ${{ github.event_name }}
+#         event_action: ${{ github.event.action }}
+#         status_state: ${{ github.event.state }}
+#         commit_sha: ${{ github.event.commit.sha }}
+#         pr_number: ${{ github.event.pull_request.number }}
+#         pr_title: ${{ github.event.pull_request.title }}
+#       secrets:
+#         gh_token: ${{ secrets.AUTO_BACKPORT_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: 'github.event_name from the caller (status or pull_request_target)'
+        required: true
+        type: string
+      event_action:
+        description: 'github.event.action (synchronize for PR events, empty for status)'
+        required: false
+        type: string
+        default: ''
+      status_state:
+        description: 'github.event.state for status events (success, failure, error, pending)'
+        required: false
+        type: string
+        default: ''
+      commit_sha:
+        description: 'Commit SHA from the status event (github.event.commit.sha)'
+        required: false
+        type: string
+        default: ''
+      pr_number:
+        description: 'PR number for pull_request_target events'
+        required: false
+        type: number
+        default: 0
+      pr_title:
+        description: 'PR title for pull_request_target events'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      gh_token:
+        description: 'GitHub token with repo and PR write access'
+        required: true
+
+jobs:
+  add-label-on-ci-pass:
+    if: inputs.event_name == 'status' && inputs.status_state == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Label backport PRs with all checks passing
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          prs=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}/pulls" \
+            --header 'Accept: application/vnd.github.v3+json' \
+            --jq '.[] | select(.state == "open") | {number, title, head_sha: .head.sha}' 2>/dev/null || true)
+
+          if [ -z "$prs" ]; then
+            echo "No open PRs found for ${COMMIT_SHA:0:12}."
+            exit 0
+          fi
+
+          echo "$prs" | jq -s '.' | jq -c '.[]' | while IFS= read -r pr; do
+            pr_number=$(echo "$pr" | jq -r '.number')
+            pr_title=$(echo "$pr" | jq -r '.title')
+            head_sha=$(echo "$pr" | jq -r '.head_sha')
+
+            if ! echo "$pr_title" | grep -qiE '\[Backport[[:space:]]'; then
+              echo "PR #${pr_number} is not a backport, skipping."
+              continue
+            fi
+            echo "Backport PR #${pr_number}: ${pr_title}"
+
+            existing=$(gh api "repos/${REPO}/issues/${pr_number}/labels" \
+              --jq '.[].name' | grep -xF 'status/merge_candidate' || true)
+            if [ -n "$existing" ]; then
+              echo "  already labeled, skipping."
+              continue
+            fi
+
+            # Check combined commit status
+            overall=$(gh api "repos/${REPO}/commits/${head_sha}/status" --jq '.state')
+            echo "  combined status: ${overall}"
+            if [ "$overall" != "success" ]; then
+              echo "  not all green yet."
+              continue
+            fi
+
+            # Also check GitHub check runs
+            failed_or_pending=$(gh api "repos/${REPO}/commits/${head_sha}/check-runs" \
+              --jq '[.check_runs[] | select(
+                (.status != "completed") or
+                (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
+              )] | length')
+            if [ "${failed_or_pending:-0}" -gt 0 ]; then
+              echo "  some check runs not passing or pending."
+              continue
+            fi
+
+            echo "  all checks green, adding status/merge_candidate."
+            gh api "repos/${REPO}/issues/${pr_number}/labels" \
+              --method POST --field 'labels[]=status/merge_candidate' 2>/dev/null || {
+                # Label might not exist yet — create it
+                gh api "repos/${REPO}/labels" --method POST \
+                  --field 'name=status/merge_candidate' \
+                  --field 'color=0e8a16' \
+                  --field 'description=Backport PR with all CI checks passing, ready for maintainer merge' 2>/dev/null || true
+                gh api "repos/${REPO}/issues/${pr_number}/labels" \
+                  --method POST --field 'labels[]=status/merge_candidate'
+              }
+            echo "  label added."
+          done
+
+  remove-label-on-ci-failure:
+    if: inputs.event_name == 'status' && (inputs.status_state == 'failure' || inputs.status_state == 'error')
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Remove merge_candidate label on CI failure
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          prs=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}/pulls" \
+            --header 'Accept: application/vnd.github.v3+json' \
+            --jq '.[] | select(.state == "open") | {number, title}' 2>/dev/null || true)
+
+          [ -z "$prs" ] && exit 0
+
+          echo "$prs" | jq -s '.' | jq -c '.[]' | while IFS= read -r pr; do
+            pr_number=$(echo "$pr" | jq -r '.number')
+            pr_title=$(echo "$pr" | jq -r '.title')
+
+            echo "$pr_title" | grep -qiE '\[Backport[[:space:]]' || continue
+
+            has_label=$(gh api "repos/${REPO}/issues/${pr_number}/labels" \
+              --jq '.[].name' | grep -xF 'status/merge_candidate' || true)
+            [ -z "$has_label" ] && continue
+
+            echo "CI failed on backport PR #${pr_number}, removing status/merge_candidate."
+            gh api "repos/${REPO}/issues/${pr_number}/labels/status%2Fmerge_candidate" \
+              --method DELETE 2>/dev/null || true
+          done
+
+  remove-label-on-new-commits:
+    if: inputs.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Remove merge_candidate label on new commits
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_TITLE: ${{ inputs.pr_title }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo "$PR_TITLE" | grep -qiE '\[Backport[[:space:]]' || {
+            echo "Not a backport PR, skipping."
+            exit 0
+          }
+
+          has_label=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" \
+            --jq '.[].name' | grep -xF 'status/merge_candidate' || true)
+          [ -z "$has_label" ] && exit 0
+
+          echo "New commits on backport PR #${PR_NUMBER}, removing status/merge_candidate."
+          gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/status%2Fmerge_candidate" \
+            --method DELETE 2>/dev/null || true

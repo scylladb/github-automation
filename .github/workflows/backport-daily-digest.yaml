@@ -1,0 +1,119 @@
+name: Backport daily digest
+
+# Posts a daily Slack summary of backport PRs that have passed CI
+# (status/merge_candidate label) and are waiting for a maintainer
+# to merge. Covers all repos that use the backport automation.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1-5'  # 08:00 UTC weekdays
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - name: Collect merge-candidate PRs and post to Slack
+        env:
+          GH_TOKEN: ${{ secrets.AUTO_BACKPORT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          REPOS="scylladb/scylladb scylladb/scylla-pkg scylladb/scylla-manager scylladb/scylla-monitoring"
+          TOTAL=0
+          BLOCKS='[{"type":"header","text":{"type":"plain_text","text":"Backport Daily Digest"}},'
+
+          found_any=false
+
+          for repo in $REPOS; do
+            prs=$(gh pr list --repo "$repo" \
+              --label "status/merge_candidate" \
+              --state open \
+              --json number,title,url,createdAt \
+              --jq '.' 2>/dev/null || echo "[]")
+
+            count=$(echo "$prs" | jq 'length')
+            [ "$count" -eq 0 ] && continue
+
+            found_any=true
+            TOTAL=$((TOTAL + count))
+
+            section_text="*${repo}* (${count}):\\n"
+            while IFS= read -r pr; do
+              number=$(echo "$pr" | jq -r '.number')
+              title=$(echo "$pr" | jq -r '.title' | sed 's/"/\\"/g' | head -c 120)
+              url=$(echo "$pr" | jq -r '.url')
+              created=$(echo "$pr" | jq -r '.createdAt' | cut -dT -f1)
+              days_old=$(( ( $(date +%s) - $(date -d "$created" +%s) ) / 86400 ))
+
+              icon=""
+              if [ "$days_old" -gt 7 ]; then
+                icon=":warning: "
+              elif [ "$days_old" -gt 3 ]; then
+                icon=":hourglass: "
+              fi
+              section_text="${section_text}${icon}<${url}|#${number}> ${title} _(${days_old}d)_\\n"
+            done < <(echo "$prs" | jq -c '.[]')
+
+            BLOCKS="${BLOCKS}{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"${section_text}\"}},"
+          done
+
+          if [ "$found_any" = "false" ]; then
+            echo "No merge-candidate backport PRs found across any repo."
+            exit 0
+          fi
+
+          # Update header section with count
+          BLOCKS='[{"type":"header","text":{"type":"plain_text","text":"Backport Daily Digest"}},'
+          BLOCKS="${BLOCKS}{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"${TOTAL} backport PR(s) have passed CI and are waiting for a maintainer to merge.\"}},"
+          BLOCKS="${BLOCKS}{\"type\":\"divider\"},"
+
+          for repo in $REPOS; do
+            prs=$(gh pr list --repo "$repo" \
+              --label "status/merge_candidate" \
+              --state open \
+              --json number,title,url,createdAt \
+              --jq '.' 2>/dev/null || echo "[]")
+
+            count=$(echo "$prs" | jq 'length')
+            [ "$count" -eq 0 ] && continue
+
+            section_text="*${repo}* (${count}):\\n"
+            while IFS= read -r pr; do
+              number=$(echo "$pr" | jq -r '.number')
+              title=$(echo "$pr" | jq -r '.title' | sed 's/"/\\"/g' | head -c 120)
+              url=$(echo "$pr" | jq -r '.url')
+              created=$(echo "$pr" | jq -r '.createdAt' | cut -dT -f1)
+              days_old=$(( ( $(date +%s) - $(date -d "$created" +%s) ) / 86400 ))
+
+              icon=""
+              if [ "$days_old" -gt 7 ]; then
+                icon=":warning: "
+              elif [ "$days_old" -gt 3 ]; then
+                icon=":hourglass: "
+              fi
+              section_text="${section_text}${icon}<${url}|#${number}> ${title} _(${days_old}d)_\\n"
+            done < <(echo "$prs" | jq -c '.[]')
+
+            BLOCKS="${BLOCKS}{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"${section_text}\"}},"
+          done
+
+          BLOCKS="${BLOCKS}{\"type\":\"context\",\"elements\":[{\"type\":\"mrkdwn\",\"text\":\"PRs with \`status/merge_candidate\` label. :hourglass: >3d | :warning: >7d\"}]}]"
+
+          echo "Posting digest with ${TOTAL} PRs to Slack."
+          response=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            --data "$(jq -n \
+              --arg channel "#scylla-dev" \
+              --arg text "Backport Daily Digest: ${TOTAL} PR(s) waiting for merge" \
+              --argjson blocks "$BLOCKS" \
+              '{channel: $channel, text: $text, blocks: $blocks}')")
+
+          ok=$(echo "$response" | jq -r '.ok')
+          if [ "$ok" != "true" ]; then
+            echo "Slack post failed: $(echo "$response" | jq -r '.error')"
+            exit 1
+          fi
+          echo "Posted successfully."
