@@ -281,16 +281,34 @@ jobs:
             --chain-backport \
             --merged-pr "${{ inputs.pull_request_number }}"
 
+      - name: Check for conflicted backport PRs
+        id: check_conflicts
+        if: >-
+          inputs.event_type == 'push'
+          || (inputs.event_type == 'labeled' && inputs.label_name == 'conflicts')
+        env:
+          GH_TOKEN: ${{ secrets.gh_token }}
+        run: |
+          # Quick check: are there any draft PRs with the 'conflicts' label?
+          # This is cheap (single API call) and avoids spinning up the expensive
+          # Docker-based AI resolver when there's nothing to resolve.
+          CONFLICTED_COUNT=$(gh pr list --repo "${{ github.repository }}" \
+            --author scylladbbot --label conflicts --draft --json number --jq 'length' 2>/dev/null || echo "0")
+          echo "Conflicted draft PRs: ${CONFLICTED_COUNT}"
+          if [[ "$CONFLICTED_COUNT" -gt 0 ]]; then
+            echo "has_conflicts=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_conflicts=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Determine if a backport was actually performed
         id: set_backport_performed
         run: |
           # A backport is considered performed when the event could have created or
           # processed backport PRs. This is used to gate the resolve-conflicts job
           # so it does not run on irrelevant events (e.g., backport/none label,
-          # push to master, or non-backport chain merges).
-          # Push to master creates initial backport PRs -- conflicts there will be
-          # picked up on subsequent version-branch pushes or labeled events.
-          if [[ "${{ inputs.event_type }}" == "push" && "${{ steps.check_version_branch.outputs.is_version_branch }}" == "true" ]]; then
+          # push to master with no resulting conflicts, or non-backport chain merges).
+          if [[ "${{ steps.check_conflicts.outputs.has_conflicts }}" == "true" ]]; then
             echo "backport_performed=true" >> $GITHUB_OUTPUT
           elif [[ "${{ inputs.event_type }}" == "labeled" && "${{ steps.check_label.outputs.backport_label }}" == "true" \
             && "${{ inputs.pr_state }}" == "closed" && "${{ steps.check_concurrent.outputs.should_skip }}" != "true" ]]; then
