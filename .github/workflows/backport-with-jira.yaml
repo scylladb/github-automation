@@ -440,6 +440,11 @@ jobs:
 
             RESOLVE_STATUS=$?
 
+            # Reclaim ownership of the workspace after podman run.
+            # The container may create/modify files (especially under .git/) as a
+            # different UID, causing "Permission denied" on subsequent git operations.
+            sudo chown -R "$(id -u):$(id -g)" "${{ github.workspace }}/repo"
+
             # Post-resolution validation: ensure no conflict markers remain in tracked files
             if [ $RESOLVE_STATUS -eq 0 ]; then
               REMAINING_MARKERS=$(git grep -l '<<<<<<< ' -- ':(exclude).git' 2>/dev/null || true)
