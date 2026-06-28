@@ -52,10 +52,15 @@ _scylladb_repo_cache = None
 # Other repos (scylla-pkg, scylla-dtest, scylla-machine-image) gate via 'next-X.Y'.
 BRANCH_TARGET_REPOS = {SCYLLADB_REPO_NAME, SCYLLA_CLUSTER_TESTS_REPO_NAME}
 
-# Repositories that always backport in parallel (create a PR for every version at once,
-# rather than chaining highest->lowest). scylla-cluster-tests has independent branches
-# with no chained gating, so backports go to all target branches simultaneously.
+# Repositories that backport in parallel by default (create a PR for every version at
+# once, rather than chaining highest->lowest). scylla-cluster-tests has independent
+# branches with no chained gating, so backports go to all target branches simultaneously.
 PARALLEL_BACKPORT_REPOS = {SCYLLA_CLUSTER_TESTS_REPO_NAME}
+
+# Label that opts a parallel-by-default repo into chained (cascade) backports for a PR.
+CASCADE_BACKPORT_LABEL = "cascade_backport"
+# Label that opts a chained-by-default repo into parallel backports for a PR.
+PARALLEL_BACKPORT_LABEL = "parallel_backport"
 
 # A backport version token. Supported forms:
 #   X.Y          -> regular release branch  (branch-X.Y / next-X.Y)
@@ -1662,24 +1667,41 @@ def _replace_labels_with_pending(pr, backport_labels: List[str]):
         logging.warning(f"Failed to verify label cleanup on PR #{pr.number}: {e}")
 
 
+def is_parallel_backport(repo_name: str, label_names: List[str]) -> bool:
+    """
+    Decide whether backports are created in parallel (one PR per version at once)
+    or chained (highest version first, remaining versions tracked via labels).
+
+    - Repos in PARALLEL_BACKPORT_REPOS (e.g. scylla-cluster-tests) default to parallel;
+      a 'cascade_backport' label opts a PR into chained backports instead.
+    - All other repos default to chained; a 'parallel_backport' label opts a PR into
+      parallel backports.
+    """
+    if repo_name in PARALLEL_BACKPORT_REPOS:
+        return CASCADE_BACKPORT_LABEL not in label_names
+    return PARALLEL_BACKPORT_LABEL in label_names
+
+
 def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_jira_key: str, repo_name: str):
     """
     Perform backport with Jira sub-issue creation.
 
-    If 'parallel_backport' label is present on the PR, creates backport PRs for ALL versions
-    simultaneously (useful for security fixes that need to go to all branches at once).
-    Some repos (PARALLEL_BACKPORT_REPOS, e.g. scylla-cluster-tests) always backport in
-    parallel regardless of the label, since they have no chained gating branches.
-
-    Otherwise, creates sub-issues for all versions, then creates PR for the highest version only.
-    Remaining versions are tracked via backport labels on the created PR.
+    Backport mode is decided by is_parallel_backport():
+    - Parallel mode creates backport PRs for ALL versions simultaneously (useful for
+      security fixes that need to go to all branches at once). Repos in
+      PARALLEL_BACKPORT_REPOS (e.g. scylla-cluster-tests) use this by default; other
+      repos opt in via the 'parallel_backport' label.
+    - Chained mode creates sub-issues for all versions, then creates a PR for the highest
+      version only, with remaining versions tracked via backport labels on the created PR.
+      Parallel-by-default repos can opt a PR into this mode with the 'cascade_backport' label.
     """
-    # Check if parallel backport is requested (via label) or forced for the repo
     pr_labels = [label.name for label in pr.labels]
-    parallel_backport = "parallel_backport" in pr_labels or repo_name in PARALLEL_BACKPORT_REPOS
+    parallel_backport = is_parallel_backport(repo_name, pr_labels)
 
     if parallel_backport:
-        logging.info("parallel_backport label detected - will create backport PRs for ALL versions simultaneously")
+        logging.info("Parallel backport mode - will create backport PRs for ALL versions simultaneously")
+    else:
+        logging.info("Chained backport mode - will create a PR for the highest version and chain the rest")
     
     # Sort versions descending (highest first)
     sorted_versions = sort_versions_descending(versions)
@@ -2410,7 +2432,7 @@ def main():
         # Skip this check for parallel backports - they handle per-version dedup inside backport_with_jira
         sorted_versions = sort_versions_descending(versions)
         highest_version = sorted_versions[0] if sorted_versions else None
-        is_parallel = "parallel_backport" in labels or repo_name in PARALLEL_BACKPORT_REPOS
+        is_parallel = is_parallel_backport(repo_name, labels)
 
         if highest_version and not is_parallel:
             existing_pr = find_existing_backport_pr(repo, pr.number, highest_version, pr.title)

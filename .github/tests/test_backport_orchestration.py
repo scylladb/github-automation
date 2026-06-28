@@ -357,6 +357,33 @@ class TestBackportWithJiraParallelMode:
             for c in mock_bp.call_args_list:
                 assert c[1].get("remaining_backport_labels") is None
 
+    def test_cascade_label_switches_scylla_cluster_tests_to_chain(self, bp_module, make_pr, make_repo):
+        """For scylla-cluster-tests, a 'cascade_backport' label opts into chained mode:
+        only the highest version gets a PR, with the rest tracked via remaining labels."""
+        repo = make_repo(full_name="scylladb/scylla-cluster-tests", name="scylla-cluster-tests")
+        pr = make_pr(
+            number=10,
+            body="Fixes: SCYLLADB-123",
+            labels=["promoted-to-master", "backport/2025.4", "backport/2025.3", "cascade_backport"]
+        )
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
+             patch.object(bp_module, "_replace_labels_with_pending"), \
+             patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
+            bp_module.backport_with_jira(
+                repo, pr, ["2025.4", "2025.3"], ["abc123"], "SCYLLADB-123",
+                "scylladb/scylla-cluster-tests"
+            )
+
+            # Chained: only the highest version gets a PR, with the rest chained via labels
+            assert mock_bp.call_count == 1
+            call = mock_bp.call_args_list[0]
+            assert call[0][2] == "2025.4"  # version arg
+            assert call[1].get("remaining_backport_labels") == ["backport/2025.3"]
+
     def test_parallel_no_remaining_labels(self, bp_module, make_pr, make_repo):
         """In parallel mode, no remaining backport labels should be attached."""
         repo = make_repo()

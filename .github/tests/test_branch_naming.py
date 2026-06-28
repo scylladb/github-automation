@@ -150,6 +150,31 @@ class TestSortVersionsDescending:
             ["perf-v20", "perf-v15", "perf-v3"]
 
 
+class TestIsParallelBackport:
+    SCT = "scylladb/scylla-cluster-tests"
+    PKG = "scylladb/scylla-pkg"
+
+    def test_parallel_repo_defaults_to_parallel(self, bp_module):
+        assert bp_module.is_parallel_backport(self.SCT, []) is True
+
+    def test_parallel_repo_cascade_label_switches_to_chain(self, bp_module):
+        assert bp_module.is_parallel_backport(self.SCT, ["cascade_backport"]) is False
+
+    def test_parallel_repo_ignores_parallel_label(self, bp_module):
+        # Already parallel by default; parallel_backport label is a no-op (still parallel)
+        assert bp_module.is_parallel_backport(self.SCT, ["parallel_backport"]) is True
+
+    def test_other_repo_defaults_to_chain(self, bp_module):
+        assert bp_module.is_parallel_backport(self.PKG, []) is False
+
+    def test_other_repo_parallel_label_switches_to_parallel(self, bp_module):
+        assert bp_module.is_parallel_backport(self.PKG, ["parallel_backport"]) is True
+
+    def test_other_repo_ignores_cascade_label(self, bp_module):
+        # cascade_backport only affects parallel-by-default repos
+        assert bp_module.is_parallel_backport(self.PKG, ["cascade_backport"]) is False
+
+
 class TestBackportLabelAndTitlePatterns:
     def test_label_regular(self, bp_module):
         m = bp_module.BACKPORT_LABEL_RE.match("backport/2025.4")
