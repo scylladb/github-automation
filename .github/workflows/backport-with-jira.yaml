@@ -133,18 +133,11 @@ jobs:
         if: inputs.event_type == 'push'
         run: |
           branch_name="${{ inputs.base_branch }}"
-          # Match branch-X.Y, next-X.Y, or manager-X.Y patterns
-          if [[ "$branch_name" =~ ^refs/heads/(branch|next|manager)-[0-9]+\.[0-9]+$ ]]; then
+          # Match branch-X.Y, next-X.Y, manager-X.Y, or branch-perf-v<N> patterns
+          if [[ "$branch_name" =~ ^refs/heads/((branch|next)-[0-9]+\.[0-9]+|manager-[0-9]+\.[0-9]+|branch-perf-v[0-9]+)$ ]]; then
             echo "Push to version branch detected: $branch_name"
             echo "is_version_branch=true" >> $GITHUB_OUTPUT
-            # Extract the version (e.g., 2025.4 from refs/heads/branch-2025.4 or manager-3.4 from refs/heads/manager-3.4)
-            version=$(echo "$branch_name" | sed -E 's/refs\/heads\/(branch|next)-//')
-            # For manager branches, keep the full name (manager-X.Y)
-            if [[ "$branch_name" =~ ^refs/heads/manager- ]]; then
-              version=$(echo "$branch_name" | sed 's/refs\/heads\///')
-            fi
-            echo "version=$version" >> $GITHUB_OUTPUT
-            # Get the branch name without refs/heads/
+            # Get the branch name without refs/heads/ (the script derives the version from it)
             branch_short=$(echo "$branch_name" | sed 's/refs\/heads\///')
             echo "branch_short=$branch_short" >> $GITHUB_OUTPUT
           else
@@ -171,8 +164,8 @@ jobs:
         if: inputs.event_type == 'labeled'
         run: |
           label_name="${{ inputs.label_name }}"
-          # Match backport/X.Y or backport/manager-X.Y patterns
-          if [[ "$label_name" =~ ^backport/(manager-)?[0-9]+\.[0-9]+$ ]]; then
+          # Match backport/X.Y, backport/manager-X.Y, or backport/perf-v<N> patterns
+          if [[ "$label_name" =~ ^backport/(manager-[0-9]+\.[0-9]+|perf-v[0-9]+|[0-9]+\.[0-9]+)$ ]]; then
             echo "Label matches backport pattern."
             echo "backport_label=true" >> $GITHUB_OUTPUT
           else

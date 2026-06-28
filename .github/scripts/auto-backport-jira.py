@@ -43,8 +43,30 @@ GITHUB_RUN_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/"
 JIRA_FAILURE_LABEL = "jira-sub-issue-creation-failed"
 SCYLLADB_REPO_NAME = "scylladb/scylladb"
 SCYLLA_PKG_REPO_NAME = "scylladb/scylla-pkg"
+SCYLLA_CLUSTER_TESTS_REPO_NAME = "scylladb/scylla-cluster-tests"
 MILESTONE_REPOS = {SCYLLADB_REPO_NAME, SCYLLA_PKG_REPO_NAME}
 _scylladb_repo_cache = None
+
+# Repositories whose backport PRs target the stable 'branch-X.Y' directly because
+# they have no 'next-X.Y' gating branch (all merges go straight to master/branch-X.Y).
+# Other repos (scylla-pkg, scylla-dtest, scylla-machine-image) gate via 'next-X.Y'.
+BRANCH_TARGET_REPOS = {SCYLLADB_REPO_NAME, SCYLLA_CLUSTER_TESTS_REPO_NAME}
+
+# Repositories that always backport in parallel (create a PR for every version at once,
+# rather than chaining highest->lowest). scylla-cluster-tests has independent branches
+# with no chained gating, so backports go to all target branches simultaneously.
+PARALLEL_BACKPORT_REPOS = {SCYLLA_CLUSTER_TESTS_REPO_NAME}
+
+# A backport version token. Supported forms:
+#   X.Y          -> regular release branch  (branch-X.Y / next-X.Y)
+#   manager-X.Y  -> manager release branch  (manager-X.Y)
+#   perf-v<N>    -> performance branch      (branch-perf-v<N>), used by scylla-cluster-tests
+VERSION_TOKEN_RE = r'(?:manager-\d+\.\d+|perf-v\d+|\d+\.\d+)'
+# backport/<version> label, e.g. backport/2025.4, backport/manager-3.4, backport/perf-v15
+# Group 1 captures the version token (e.g. '2025.4', 'manager-3.4', 'perf-v15').
+BACKPORT_LABEL_RE = re.compile(rf'^backport/({VERSION_TOKEN_RE})$')
+# [Backport <version>] title prefix, capturing the version
+BACKPORT_TITLE_RE = re.compile(rf'\[Backport ({VERSION_TOKEN_RE})\]')
 
 
 def is_pull_request():
@@ -76,16 +98,17 @@ def parse_args():
 def get_branch_prefix(repo_name: str) -> str:
     """
     Get the branch prefix based on repository.
-    
-    scylladb/scylladb: Uses 'branch-X.Y' as target for backport PRs.
-                       Has gating for both master and releases:
-                       - Master: PR → next → master
-                       - Releases: PR → next-X.Y → branch-X.Y
-    
+
+    Repos in BRANCH_TARGET_REPOS (scylladb/scylladb, scylladb/scylla-cluster-tests):
+                       Use 'branch-X.Y' as target for backport PRs (no next-X.Y gating).
+                       - scylladb/scylladb gates master via 'next' but backports target branch-X.Y.
+                       - scylla-cluster-tests has no gating at all: PRs merge straight to
+                         master or branch-X.Y, and backports target branch-X.Y directly.
+
     Other repos: Use 'next-X.Y' as target for backport PRs.
                  Gating: PR → next-X.Y → branch-X.Y
     """
-    if repo_name == "scylladb/scylladb":
+    if repo_name in BRANCH_TARGET_REPOS:
         return "branch-"
     return "next-"
 
@@ -98,24 +121,42 @@ def is_manager_version(version: str) -> bool:
     return version.startswith("manager-")
 
 
+def is_perf_version(version: str) -> bool:
+    """
+    Check if the version is a performance version (e.g., 'perf-v15').
+    These map to 'branch-perf-v<N>' branches in scylla-cluster-tests.
+    """
+    return bool(re.match(r'^perf-v\d+$', version))
+
+
 def get_branch_name(repo_name: str, version: str) -> str:
     """
     Get the full branch name for a version.
     For manager versions (manager-X.Y), returns 'manager-X.Y'.
+    For perf versions (perf-v<N>), returns 'branch-perf-v<N>'.
     For regular versions, returns 'branch-X.Y' or 'next-X.Y' based on repo.
     """
     if is_manager_version(version):
         # Manager versions use the version as-is for branch name
         return version
+    if is_perf_version(version):
+        # Perf branches are always named 'branch-perf-v<N>'
+        return f"branch-{version}"
     prefix = get_branch_prefix(repo_name)
     return f"{prefix}{version}"
 
 
-def parse_version(version_str: str) -> Tuple[int, int]:
+def parse_version(version_str: str) -> Tuple[int, int, int]:
     """
-    Parse version string like '2025.4' or 'manager-3.4' into tuple for sorting.
-    Manager versions are sorted separately (lower priority than regular versions).
+    Parse version string like '2025.4', 'manager-3.4', or 'perf-v15' into a tuple for sorting.
+    Different kinds are sorted in separate tiers:
+      - manager versions: lowest priority (tier 0)
+      - regular versions: tier 1
+      - perf versions:    highest priority (tier 2)
     """
+    if is_perf_version(version_str):
+        # perf-v15 -> tier 2, sort by the numeric suffix
+        return (2, int(version_str.replace("perf-v", "")), 0)
     # Strip 'manager-' prefix if present for parsing
     clean_version = version_str.replace("manager-", "") if version_str.startswith("manager-") else version_str
     parts = clean_version.split('.')
@@ -127,9 +168,29 @@ def parse_version(version_str: str) -> Tuple[int, int]:
 def sort_versions_descending(versions: List[str]) -> List[str]:
     """
     Sort versions in descending order (highest first).
-    Regular versions (2025.4, 2025.3) come before manager versions (manager-3.4).
+    Regular versions (2025.4, 2025.3) come before manager versions (manager-3.4);
+    perf versions (perf-v15) sort in their own tier.
     """
     return sorted(versions, key=parse_version, reverse=True)
+
+
+def version_from_branch(branch_name: str) -> Optional[str]:
+    """
+    Extract the backport version from a stable branch name.
+      branch-2025.4   -> 2025.4
+      manager-3.4     -> manager-3.4
+      branch-perf-v15 -> perf-v15
+      master/main/next -> None
+    """
+    if branch_name in ('master', 'main', 'next'):
+        return None
+    if branch_name.startswith('manager-'):
+        return branch_name
+    perf_match = re.search(r'(perf-v\d+)$', branch_name)
+    if perf_match:
+        return perf_match.group(1)
+    version_match = re.search(r'(\d+\.\d+)$', branch_name)
+    return version_match.group(1) if version_match else None
 
 
 # ============================================================================
@@ -237,7 +298,7 @@ def resolve_master_milestone_title() -> Optional[str]:
 
 
 def resolve_backport_milestone_title(version: str) -> Optional[str]:
-    if not version or is_manager_version(version):
+    if not version or is_manager_version(version) or is_perf_version(version):
         return None
     try:
         repo = get_scylladb_repo()
@@ -857,8 +918,8 @@ def extract_main_jira_from_body(pr_body: str) -> Optional[str]:
 
 def is_backport_pr(pr_title: str, pr_body: str) -> bool:
     """Check if this PR is a backport PR created by automation."""
-    # Check title format: [Backport X.Y] or [Backport manager-X.Y] ...
-    if pr_title and re.match(r'\[Backport (manager-)?\d+\.\d+\]', pr_title):
+    # Check title format: [Backport X.Y], [Backport manager-X.Y], or [Backport perf-v<N>] ...
+    if pr_title and BACKPORT_TITLE_RE.match(pr_title):
         return True
     
     # Check body for new format
@@ -912,22 +973,24 @@ def get_root_original_pr(repo, pr, max_depth: int = 10) -> Optional[object]:
 
 def extract_original_title(pr_title: str) -> str:
     """
-    Extract the original PR title by stripping any [Backport X.Y] or [Backport manager-X.Y] prefixes.
+    Extract the original PR title by stripping any [Backport X.Y], [Backport manager-X.Y],
+    or [Backport perf-v<N>] prefixes.
     This prevents title stacking like '[Backport 2025.3] [Backport 2025.4] Original title'.
-    
+
     Examples:
         '[Backport 2025.4] Fix bug' -> 'Fix bug'
         '[Backport manager-3.4] Fix bug' -> 'Fix bug'
+        '[Backport perf-v15] Fix bug' -> 'Fix bug'
         '[Backport 2025.3] [Backport 2025.4] Fix bug' -> 'Fix bug'
         'Fix bug' -> 'Fix bug'
     """
     if not pr_title:
         return pr_title
-    
-    # Keep stripping [Backport X.Y] or [Backport manager-X.Y] prefixes until none remain
+
+    # Keep stripping [Backport <version>] prefixes until none remain
     result = pr_title
     while True:
-        match = re.match(r'\[Backport (manager-)?\d+\.\d+\]\s*', result)
+        match = re.match(rf'\[Backport {VERSION_TOKEN_RE}\]\s*', result)
         if match:
             result = result[match.end():]
         else:
@@ -1602,17 +1665,19 @@ def _replace_labels_with_pending(pr, backport_labels: List[str]):
 def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_jira_key: str, repo_name: str):
     """
     Perform backport with Jira sub-issue creation.
-    
+
     If 'parallel_backport' label is present on the PR, creates backport PRs for ALL versions
     simultaneously (useful for security fixes that need to go to all branches at once).
-    
+    Some repos (PARALLEL_BACKPORT_REPOS, e.g. scylla-cluster-tests) always backport in
+    parallel regardless of the label, since they have no chained gating branches.
+
     Otherwise, creates sub-issues for all versions, then creates PR for the highest version only.
     Remaining versions are tracked via backport labels on the created PR.
     """
-    # Check if parallel backport is requested
+    # Check if parallel backport is requested (via label) or forced for the repo
     pr_labels = [label.name for label in pr.labels]
-    parallel_backport = "parallel_backport" in pr_labels
-    
+    parallel_backport = "parallel_backport" in pr_labels or repo_name in PARALLEL_BACKPORT_REPOS
+
     if parallel_backport:
         logging.info("parallel_backport label detected - will create backport PRs for ALL versions simultaneously")
     
@@ -1786,8 +1851,8 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
         return
     
     # Extract the version that was just merged from the PR title
-    # Title format: "[Backport X.Y] Original title" or "[Backport manager-X.Y] Original title"
-    merged_version_match = re.search(r'\[Backport ((manager-)?\d+\.\d+)\]', merged_pr.title)
+    # Title format: "[Backport X.Y]", "[Backport manager-X.Y]", or "[Backport perf-v<N>] ..."
+    merged_version_match = BACKPORT_TITLE_RE.search(merged_pr.title)
     merged_version = merged_version_match.group(1) if merged_version_match else None
     
     # Trace back to the root original PR (not just the immediate parent) for label updates
@@ -1807,7 +1872,7 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
         replace_backport_label_with_done(repo, original_pr, merged_version)
     
     # Get remaining backport versions from the merged PR's labels
-    backport_label_pattern = re.compile(r'^backport/((manager-)?\d+\.\d+)$')
+    backport_label_pattern = BACKPORT_LABEL_RE
     merged_pr_labels = [label.name for label in merged_pr.labels]
     
     remaining_versions = []
@@ -1988,7 +2053,7 @@ def create_pr_comment_and_remove_label(pr):
     comment_body += ' and can not be backported\n\n'
     comment_body += 'The following labels were removed:\n'
     labels = pr.get_labels()
-    pattern = re.compile(r"backport/(manager-)?\d+\.\d+$")
+    pattern = BACKPORT_LABEL_RE
     for label in labels:
         if pattern.match(label.name):
             print(f"Removing label: {label.name}")
@@ -2057,12 +2122,9 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
     
     # Extract version from branch name
     # For manager branches (manager-X.Y), the version IS 'manager-X.Y'
+    # For perf branches (branch-perf-v<N>), the version is 'perf-v<N>'
     # For regular branches (branch-X.Y), extract just 'X.Y'
-    if branch_name.startswith('manager-'):
-        version = branch_name  # manager-3.4 -> manager-3.4
-    else:
-        version_match = re.search(r'(\d+\.\d+)$', branch_name)
-        version = version_match.group(1) if version_match else None
+    version = version_from_branch(branch_name)
     
     logging.info(f"Processing push to stable branch {branch_name}, version={version}, will add label '{promoted_label}' and continue chain")
     
@@ -2119,7 +2181,7 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
                 # This handles the case where a PR targets next-X.Y (or branch-X.Y)
                 # directly instead of going through master first.
                 if branch_name not in ('master', 'main'):
-                    backport_label_pattern = re.compile(r'backport/(manager-)?\d+\.\d+$')
+                    backport_label_pattern = BACKPORT_LABEL_RE
                     pr_labels = [label.name for label in pr.labels]
                     backport_labels = [label for label in pr_labels if backport_label_pattern.match(label)]
                     if backport_labels:
@@ -2266,7 +2328,7 @@ def main():
     # Determine branch prefix based on repository
     backport_branch = get_branch_prefix(repo_name)
     stable_branch = 'master' if base_branch in ('next', 'main') else base_branch.replace('next-', 'branch-', 1)
-    backport_label_pattern = re.compile(r'backport/(manager-)?\d+\.\d+$')
+    backport_label_pattern = BACKPORT_LABEL_RE
 
     g = Github(github_token)
     repo = g.get_repo(repo_name)
@@ -2345,11 +2407,12 @@ def main():
         
         # Check if this is triggered by a specific label and a backport already exists for the highest version
         # This prevents race conditions where the 'labeled' event triggers after chain backport has already started
-        # Skip this check for parallel_backport PRs - they handle per-version dedup inside backport_with_jira
+        # Skip this check for parallel backports - they handle per-version dedup inside backport_with_jira
         sorted_versions = sort_versions_descending(versions)
         highest_version = sorted_versions[0] if sorted_versions else None
-        
-        if highest_version and "parallel_backport" not in labels:
+        is_parallel = "parallel_backport" in labels or repo_name in PARALLEL_BACKPORT_REPOS
+
+        if highest_version and not is_parallel:
             existing_pr = find_existing_backport_pr(repo, pr.number, highest_version, pr.title)
             if existing_pr:
                 logging.info(f"Backport PR #{existing_pr.number} already exists for highest version {highest_version}")

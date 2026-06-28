@@ -332,6 +332,31 @@ class TestBackportWithJiraParallelMode:
             # Should create backport for BOTH versions
             assert mock_bp.call_count == 2
 
+    def test_forced_parallel_for_scylla_cluster_tests(self, bp_module, make_pr, make_repo):
+        """scylla-cluster-tests always backports in parallel, even without the label."""
+        repo = make_repo(full_name="scylladb/scylla-cluster-tests", name="scylla-cluster-tests")
+        pr = make_pr(
+            number=10,
+            body="Fixes: SCYLLADB-123",
+            # No 'parallel_backport' label present
+            labels=["promoted-to-master", "backport/2025.4", "backport/2025.3"]
+        )
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
+             patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
+            bp_module.backport_with_jira(
+                repo, pr, ["2025.4", "2025.3"], ["abc123"], "SCYLLADB-123",
+                "scylladb/scylla-cluster-tests"
+            )
+
+            # Both versions get a PR (parallel), and none carry remaining labels
+            assert mock_bp.call_count == 2
+            for c in mock_bp.call_args_list:
+                assert c[1].get("remaining_backport_labels") is None
+
     def test_parallel_no_remaining_labels(self, bp_module, make_pr, make_repo):
         """In parallel mode, no remaining backport labels should be attached."""
         repo = make_repo()
