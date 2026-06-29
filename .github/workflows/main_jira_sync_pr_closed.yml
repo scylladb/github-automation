@@ -1,0 +1,32 @@
+﻿name: Sync with Jira - PR Closed
+
+on:
+  workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
+
+jobs:
+  manage_closed_gh_event:
+    runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+
+      - name: Run pr-closed orchestrator
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          OWNER_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          JIRA_AUTH: ${{ secrets.caller_jira_auth }}
+        run: python3 scripts/jira_sync_logic.py --action manage_closed_gh_event
