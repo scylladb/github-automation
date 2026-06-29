@@ -1293,8 +1293,9 @@ def add_pr_weblink_to_jira(
         print("PR URL is empty; skipping Jira web-link sync.")
         return
 
-    if pr_title and pr_title.strip():
-        link_title = pr_title.strip()
+    stripped_title = pr_title.strip() if pr_title else ""
+    if stripped_title:
+        link_title = stripped_title
     else:
         link_title = normalized_pr_url
     payload = {
@@ -1326,8 +1327,6 @@ def add_pr_weblink_to_jira(
             if not isinstance(item, dict):
                 continue
             obj = item.get("object")
-            if obj is None:
-                obj = {}
             if not isinstance(obj, dict):
                 continue
             existing_url = _normalize_url(obj.get("url", ""))
