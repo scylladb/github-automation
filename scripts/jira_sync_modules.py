@@ -1247,7 +1247,7 @@ def add_pr_weblink_to_jira(
             skipped += 1
             continue
 
-        payload = {"object": {"url": pr_url, "title": link_title}}
+        payload = {"object": {"url": normalized_pr_url, "title": link_title}}
         code, body_text = _jira_post(remotelink_url, payload, jira_auth)
 
         if code in (200, 201):
