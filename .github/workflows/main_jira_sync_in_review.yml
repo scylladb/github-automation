@@ -1,4 +1,4 @@
-﻿name: Sync with Jira - In Review
+name: Sync with Jira - In Review
 
 on:
   workflow_call:
@@ -15,10 +15,10 @@ jobs:
       issues: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: scylladb/github-automation
-          ref: automation-staging-branch
+          ref: main
 
       - name: Run in-review orchestrator
         env:

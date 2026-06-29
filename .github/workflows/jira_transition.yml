@@ -156,7 +156,6 @@ jobs:
                 TODAY=$(date -u +%Y-%m-%d)
                 echo "Setting start date to ${TODAY} for ${key} (field: ${START_DATE_FIELD})"
                 
-                # Use custom field ID for start date
                 if [[ "$JIRA_AUTH" == Bearer\ * ]]; then
                   RESPONSE=$(curl -sS -w "\n%{http_code}" -X PUT \
                     -H "Authorization: $JIRA_AUTH" \
