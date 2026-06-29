@@ -14,6 +14,7 @@ Contains:
       apply_jira_labels_to_pr
       jira_status_transition
       add_comment_to_jira
+      add_pr_weblink_to_jira
 
 The orchestrator functions and CLI dispatcher live in jira_sync_logic.py
 which imports from this module.
@@ -587,7 +588,7 @@ DUE_DATE_FIELD = "duedate"
 _DETAIL_DELIM = ";"
 
 
-def _jira_get(url: str, jira_auth: str) -> dict | None:
+def _jira_get(url: str, jira_auth: str) -> dict | list | None:
     """GET JSON from a Jira REST endpoint. Returns parsed JSON or None on failure."""
     encoded_auth = base64.b64encode(jira_auth.encode()).decode()
 
@@ -1260,6 +1261,97 @@ def add_comment_to_jira(
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
         print(f"WARNING: {failed} comment(s) failed. Continuing.")
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize URL for stable comparisons."""
+    if not url:
+        return ""
+    return url.strip().rstrip("/")
+
+
+def add_pr_weblink_to_jira(
+    jira_keys_json: str,
+    pr_title: str,
+    pr_url: str,
+    jira_auth: str,
+) -> None:
+    """Ensure each Jira issue has a remote link to the PR URL (idempotent)."""
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        print("No Jira keys to sync web links for.")
+        return
+
+    normalized_pr_url = _normalize_url(pr_url)
+    if not normalized_pr_url:
+        print("PR URL is empty; skipping Jira web-link sync.")
+        return
+
+    stripped_title = pr_title.strip() if pr_title else ""
+    link_title = stripped_title or normalized_pr_url
+    payload = {
+        "object": {
+            "url": normalized_pr_url,
+            "title": link_title,
+        }
+    }
+
+    ok = 0
+    skipped = 0
+    failed = 0
+
+    for key in keys:
+        get_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/remotelink"
+        print(f"Fetching existing remote links for {key} ...")
+        existing = _jira_get(get_url, jira_auth)
+        if existing is None:
+            print(f"SKIP {key}: failed to fetch existing remote links.")
+            skipped += 1
+            continue
+        if not isinstance(existing, list):
+            print(f"SKIP {key}: unexpected remotelink response format.")
+            skipped += 1
+            continue
+
+        has_pr_link = False
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            obj = item.get("object")
+            if not isinstance(obj, dict):
+                continue
+            existing_url = _normalize_url(obj.get("url", ""))
+            if existing_url and existing_url == normalized_pr_url:
+                has_pr_link = True
+                break
+
+        if has_pr_link:
+            print(f"SKIP {key}: PR web link already exists.")
+            skipped += 1
+            continue
+
+        post_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/remotelink"
+        code, body_text = _jira_post(post_url, payload, jira_auth)
+        if code in (200, 201):
+            print(f"OK {key} ({code}) web link added.")
+            ok += 1
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
+            skipped += 1
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Web-link sync summary: ok={ok} skipped={skipped} failed={failed}")
+    if failed > 0:
+        print(f"WARNING: {failed} web-link update(s) failed. Continuing.")
 
 
 def get_done_issue_keys(details_csv: str) -> set[str]:
