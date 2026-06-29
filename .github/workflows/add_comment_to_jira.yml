@@ -1,0 +1,134 @@
+﻿name: Add Comment to Jira Issue
+
+on:
+  workflow_call:
+    inputs:
+      jira_key:
+        description: "The Jira issue key (e.g. STAG-17)"
+        required: true
+        type: string
+      comment:
+        description: "The comment text to add to the issue (prefix text before the link)"
+        required: true
+        type: string
+      link_text:
+        description: "Optional: Text to display as a clickable link"
+        required: false
+        type: string
+        default: ""
+      link_url:
+        description: "Optional: URL for the clickable link"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      jira_auth:
+        description: 'Plain "email:api_token" for Jira Cloud Basic auth'
+        required: true
+
+jobs:
+  add_comment:
+    runs-on: ubuntu-slim
+    env:
+      JIRA_BASE_URL: https://scylladb.atlassian.net
+      JIRA_KEY: ${{ inputs.jira_key }}
+      COMMENT_TEXT: ${{ inputs.comment }}
+      LINK_TEXT: ${{ inputs.link_text }}
+      LINK_URL: ${{ inputs.link_url }}
+      JIRA_AUTH: ${{ secrets.jira_auth }}
+
+    steps:
+      - name: Post comment to Jira issue
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$JIRA_KEY" ]; then
+            echo "JIRA_KEY is empty; nothing to do."
+            exit 0
+          fi
+
+          if [ -z "$COMMENT_TEXT" ]; then
+            echo "COMMENT_TEXT is empty; nothing to do."
+            exit 0
+          fi
+
+          echo "Adding comment to Jira issue: $JIRA_KEY"
+          echo "Comment: $COMMENT_TEXT"
+          echo "Link text: $LINK_TEXT"
+          echo "Link URL: $LINK_URL"
+
+          # Build ADF payload - with or without clickable link
+          if [ -n "$LINK_TEXT" ] && [ -n "$LINK_URL" ]; then
+            # Build ADF with clickable link
+            PAYLOAD=$(jq -n \
+              --arg prefix "$COMMENT_TEXT" \
+              --arg linkText "$LINK_TEXT" \
+              --arg linkUrl "$LINK_URL" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $prefix },
+                        {
+                          "type": "text",
+                          "text": $linkText,
+                          "marks": [
+                            { "type": "link", "attrs": { "href": $linkUrl } }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+              ')
+          else
+            # Build simple ADF with plain text
+            PAYLOAD=$(jq -n \
+              --arg text "$COMMENT_TEXT" \
+              '
+              {
+                body: {
+                  type: "doc",
+                  version: 1,
+                  content: [
+                    {
+                      type: "paragraph",
+                      content: [
+                        { "type": "text", "text": $text }
+                      ]
+                    }
+                  ]
+                }
+              }
+              ')
+          fi
+
+          echo "Payload to Jira:"
+          echo "$PAYLOAD"
+
+          ISSUE_URL="${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment"
+
+          HTTP_CODE=$(curl -sS -w "%{http_code}" -o response.json \
+            --user "$JIRA_AUTH" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            -X POST "$ISSUE_URL" \
+            --data "$PAYLOAD" || echo "000")
+
+          echo "Jira HTTP status: $HTTP_CODE"
+          echo "Jira response body:"
+          cat response.json || true
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Comment added to $JIRA_KEY"
+          else
+            echo "Failed to add comment to $JIRA_KEY (HTTP $HTTP_CODE)"
+            exit 1
+          fi

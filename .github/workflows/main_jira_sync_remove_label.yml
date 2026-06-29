@@ -1,0 +1,32 @@
+﻿name: Sync With Jira - Remove Label
+
+on:
+  workflow_call:
+    secrets:
+      caller_jira_auth:
+        required: true
+
+jobs:
+  sync:
+    name: Remove-label orchestration
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout scripts
+        uses: actions/checkout@v4
+        with:
+          repository: scylladb/github-automation
+          ref: automation-staging-branch
+          path: _automation
+
+      - name: Run manage_unlabeled_gh_event
+        env:
+          PR_TITLE:      ${{ github.event.pull_request.title }}
+          PR_BODY:       ${{ github.event.pull_request.body }}
+          PR_NUMBER:     ${{ github.event.pull_request.number }}
+          REMOVED_LABEL: ${{ github.event.label.name }}
+          OWNER_REPO:    ${{ github.repository }}
+          GITHUB_TOKEN:  ${{ secrets.GITHUB_TOKEN }}
+          JIRA_AUTH:     ${{ secrets.caller_jira_auth }}
+        run: |
+          cd _automation/scripts
+          python jira_sync_logic.py --action manage_unlabeled_gh_event
