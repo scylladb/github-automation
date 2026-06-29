@@ -16,6 +16,7 @@ import argparse
 
 from jira_sync_modules import (
     extract_jira_keys,
+    add_pr_weblink_to_jira,
     add_label_to_jira_issue,
     extract_jira_issue_details,
     apply_jira_labels_to_pr,
@@ -89,6 +90,13 @@ def manage_labeled_gh_event(
     if jira_keys_json == _NO_KEYS:
         print("No Jira keys found. Nothing to do.")
         return
+
+    # --- Step 1b: ensure PR URL exists as Jira issue web link ---
+    print("\n" + "=" * 60)
+    print(" Step 1b / add_pr_weblink_to_jira")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_pr_weblink_to_jira(jira_keys_json, pr_title, pr_url, jira_auth)
 
     # --- Step 2: add the triggering label ---
     print("\n" + "=" * 60)
@@ -263,6 +271,13 @@ def manage_review_gh_event(
         print("No Jira keys found. Nothing to do.")
         return
 
+    # --- Step 1b: ensure PR URL exists as Jira issue web link ---
+    print("\n" + "=" * 60)
+    print(" Step 1b / add_pr_weblink_to_jira")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_pr_weblink_to_jira(jira_keys_json, pr_title, pr_url, jira_auth)
+
     # --- Step 2: extract issue details ---
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
@@ -379,6 +394,13 @@ def manage_closed_gh_event(
     if jira_keys_json == _NO_KEYS:
         print("No Jira keys found. Nothing to do.")
         return
+
+    # --- Step 1b: ensure PR URL exists as Jira issue web link ---
+    print("\n" + "=" * 60)
+    print(" Step 1b / add_pr_weblink_to_jira")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_pr_weblink_to_jira(jira_keys_json, pr_title, pr_url, jira_auth)
 
     # --- Step 2: extract issue details ---
     print("\n" + "=" * 60)
@@ -530,6 +552,13 @@ def manage_opened_gh_event(
         print("No Jira keys found. Nothing to do.")
         return
 
+    # --- Step 1b: ensure PR URL exists as Jira issue web link ---
+    print("\n" + "=" * 60)
+    print(" Step 1b / add_pr_weblink_to_jira")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_pr_weblink_to_jira(jira_keys_json, pr_title, pr_url, jira_auth)
+
     # --- Step 2: extract issue details ---
     print("\n" + "=" * 60)
     print(" Step 2 / extract_jira_issue_details")
@@ -665,6 +694,13 @@ def manage_unlabeled_gh_event(
     if jira_keys_json == _NO_KEYS:
         print("No Jira keys found. Nothing to do.")
         return
+
+    # --- Step 1b: ensure PR URL exists as Jira issue web link ---
+    print("\n" + "=" * 60)
+    print(" Step 1b / add_pr_weblink_to_jira")
+    print("=" * 60)
+    pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+    add_pr_weblink_to_jira(jira_keys_json, pr_title, pr_url, jira_auth)
 
     # --- Step 2: remove label from Jira (skip priority labels) ---
     print("\n" + "=" * 60)

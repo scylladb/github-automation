@@ -1186,6 +1186,88 @@ def _build_adf_comment(comment: str, link_text: str, link_url: str) -> dict:
     }
 
 
+def _normalize_url(url: str) -> str:
+    """Normalize a URL for stable equality checks."""
+    return (url or "").strip().rstrip("/")
+
+
+def add_pr_weblink_to_jira(
+    jira_keys_json: str,
+    pr_title: str,
+    pr_url: str,
+    jira_auth: str,
+) -> None:
+    """Add the PR URL as a Jira issue web link if the link does not already exist."""
+    print(f"jira_keys_json={jira_keys_json}")
+
+    if not jira_auth:
+        print("Error: jira_auth is not set or empty.")
+        sys.exit(1)
+
+    keys = _parse_jira_keys_json(jira_keys_json)
+    if not keys:
+        print("No Jira keys to add web links to.")
+        return
+
+    if not pr_url:
+        print("PR URL is empty; nothing to add.")
+        return
+
+    normalized_pr_url = _normalize_url(pr_url)
+    link_title = pr_title or pr_url
+
+    print(f"Ensuring PR web link exists on {len(keys)} issue(s)")
+    print(f"PR title: {link_title}")
+    print(f"PR URL: {pr_url}")
+
+    ok = 0
+    skipped = 0
+    failed = 0
+
+    for key in keys:
+        remotelink_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/remotelink"
+        print(f"Checking web links on {key} ...")
+
+        existing_links = _jira_get(remotelink_url, jira_auth)
+        if existing_links is None:
+            print(f"FAIL {key}: could not fetch existing web links.")
+            failed += 1
+            continue
+
+        existing_urls = set()
+        if isinstance(existing_links, list):
+            for item in existing_links:
+                if isinstance(item, dict):
+                    obj = item.get("object")
+                    if isinstance(obj, dict):
+                        existing_urls.add(_normalize_url(obj.get("url", "")))
+
+        if normalized_pr_url in existing_urls:
+            print(f"SKIP {key}: PR URL already exists as an issue web link.")
+            skipped += 1
+            continue
+
+        payload = {"object": {"url": pr_url, "title": link_title}}
+        code, body_text = _jira_post(remotelink_url, payload, jira_auth)
+
+        if code in (200, 201):
+            print(f"OK {key} ({code})")
+            ok += 1
+        elif code == 404:
+            print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
+            skipped += 1
+        else:
+            print(f"FAIL {key} ({code}) First 400 chars:")
+            print(body_text[:400])
+            failed += 1
+
+        time.sleep(0.2)
+
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    if failed > 0:
+        print(f"WARNING: {failed} web link update(s) failed. Continuing.")
+
+
 def add_comment_to_jira(
     jira_keys_json: str,
     comment: str,
