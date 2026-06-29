@@ -1277,8 +1277,6 @@ def add_pr_weblink_to_jira(
     jira_auth: str,
 ) -> None:
     """Ensure each Jira issue has a remote link to the PR URL (idempotent)."""
-    print(f"jira_keys_json={jira_keys_json}")
-
     if not jira_auth:
         print("Error: jira_auth is not set or empty.")
         sys.exit(1)
@@ -1294,10 +1292,7 @@ def add_pr_weblink_to_jira(
         return
 
     stripped_title = pr_title.strip() if pr_title else ""
-    if stripped_title:
-        link_title = stripped_title
-    else:
-        link_title = normalized_pr_url
+    link_title = stripped_title or normalized_pr_url
     payload = {
         "object": {
             "url": normalized_pr_url,
