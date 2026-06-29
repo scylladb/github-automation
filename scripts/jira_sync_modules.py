@@ -1187,7 +1187,7 @@ def _build_adf_comment(comment: str, link_text: str, link_url: str) -> dict:
 
 
 def _normalize_url(url: str) -> str:
-    """Normalize a URL for stable equality checks."""
+    """Normalize a URL for stable equality checks (strip spaces and trailing slash)."""
     return (url or "").strip().rstrip("/")
 
 
