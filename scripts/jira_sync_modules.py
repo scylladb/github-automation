@@ -1214,11 +1214,11 @@ def add_pr_weblink_to_jira(
         return
 
     normalized_pr_url = _normalize_url(pr_url)
-    link_title = pr_title or pr_url
+    link_title = pr_title or normalized_pr_url
 
     print(f"Ensuring PR web link exists on {len(keys)} issue(s)")
     print(f"PR title: {link_title}")
-    print(f"PR URL: {pr_url}")
+    print(f"PR URL: {normalized_pr_url}")
 
     ok = 0
     skipped = 0

@@ -64,6 +64,28 @@ class AddPrWeblinkToJiraTests(unittest.TestCase):
     @patch("jira_sync_modules.time.sleep")
     @patch("jira_sync_modules._jira_post")
     @patch("jira_sync_modules._jira_get")
+    def test_skips_when_incoming_url_has_trailing_slash(self, mock_get, mock_post, _mock_sleep):
+        mock_get.return_value = [
+            {
+                "object": {
+                    "url": "https://github.com/scylladb/github-automation/pull/123",
+                    "title": "Existing link",
+                }
+            }
+        ]
+
+        jira_sync_modules.add_pr_weblink_to_jira(
+            '["PM-327"]',
+            "Fix race in scheduler",
+            "https://github.com/scylladb/github-automation/pull/123/",
+            "user:token",
+        )
+
+        mock_post.assert_not_called()
+
+    @patch("jira_sync_modules.time.sleep")
+    @patch("jira_sync_modules._jira_post")
+    @patch("jira_sync_modules._jira_get")
     def test_uses_pr_url_as_title_when_pr_title_empty(self, mock_get, mock_post, _mock_sleep):
         mock_get.return_value = []
         mock_post.return_value = (201, "")
