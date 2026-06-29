@@ -1265,7 +1265,9 @@ def add_comment_to_jira(
 
 def _normalize_url(url: str) -> str:
     """Normalize URL for stable comparisons."""
-    return (url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    return url.strip().rstrip("/")
 
 
 def add_pr_weblink_to_jira(
@@ -1291,7 +1293,10 @@ def add_pr_weblink_to_jira(
         print("PR URL is empty; skipping Jira web-link sync.")
         return
 
-    link_title = (pr_title or "").strip() or normalized_pr_url
+    if pr_title and pr_title.strip():
+        link_title = pr_title.strip()
+    else:
+        link_title = normalized_pr_url
     payload = {
         "object": {
             "url": normalized_pr_url,
@@ -1320,7 +1325,9 @@ def add_pr_weblink_to_jira(
         for item in existing:
             if not isinstance(item, dict):
                 continue
-            obj = item.get("object") or {}
+            obj = item.get("object")
+            if obj is None:
+                obj = {}
             if not isinstance(obj, dict):
                 continue
             existing_url = _normalize_url(obj.get("url", ""))
