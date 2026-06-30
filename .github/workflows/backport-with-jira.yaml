@@ -315,7 +315,13 @@ jobs:
 
   resolve-conflicts:
     needs: backport
-    if: always() && needs.backport.outputs.backport_performed == 'true'
+    # Opt-out list: repos that should NOT use the OpenCode AI conflict resolver.
+    # Their conflicted backports stay as drafts with the 'conflicts' label for
+    # manual resolution. Add repo full-names ("owner/name") to the JSON array.
+    if: >-
+      always()
+      && needs.backport.outputs.backport_performed == 'true'
+      && !contains(fromJSON('["scylladb/scylla-cluster-tests"]'), github.repository)
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       pull-requests: write
