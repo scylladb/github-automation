@@ -11,7 +11,7 @@ import logging
 import requests
 from typing import Optional, List, Dict, Tuple
 
-from github import Github, GithubException
+from github import Github, GithubException, GithubRetry
 from git import Repo, GitCommandError
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,6 +22,17 @@ try:
 except KeyError:
     print("Please set the 'GITHUB_TOKEN' environment variable")
     sys.exit(1)
+
+# PyGithub's default GithubRetry only retries 403 (its secondary-rate-limit
+# signature) and 5xx. GitHub sometimes signals the same secondary rate limit
+# via a plain 429 instead, which the default forcelist misses, causing the
+# whole run to abort on the first throttle. Add 429 and back off further.
+GITHUB_RETRY = GithubRetry(
+    total=5,
+    backoff_factor=60,
+    backoff_max=300,
+    status_forcelist=list(range(500, 600)) + [403, 429],
+)
 
 # Jira credentials (optional - only needed for Jira integration)
 # Supports USER_AND_KEY_FOR_JIRA_AUTOMATION in "user:token" format
@@ -205,7 +216,7 @@ def version_from_branch(branch_name: str) -> Optional[str]:
 def get_scylladb_repo():
     global _scylladb_repo_cache
     if _scylladb_repo_cache is None:
-        g = Github(github_token)
+        g = Github(github_token, retry=GITHUB_RETRY)
         _scylladb_repo_cache = g.get_repo(SCYLLADB_REPO_NAME)
     return _scylladb_repo_cache
 
@@ -2352,7 +2363,7 @@ def main():
     stable_branch = 'master' if base_branch in ('next', 'main') else base_branch.replace('next-', 'branch-', 1)
     backport_label_pattern = BACKPORT_LABEL_RE
 
-    g = Github(github_token)
+    g = Github(github_token, retry=GITHUB_RETRY)
     repo = g.get_repo(repo_name)
     
     # Handle push to version branch (chain continuation)
