@@ -93,6 +93,17 @@ class TestReplaceFixesInBody:
         assert "RELENG-121" not in result
         assert "RELENG-396" not in result
 
+    def test_replacement_without_colon(self, bp_module):
+        # PR bodies sometimes omit the colon, e.g. "Fixes SCYLLADB-123" instead
+        # of "Fixes: SCYLLADB-123". The replacement must still fire, otherwise
+        # backport PRs keep pointing at the parent issue instead of the
+        # version-specific sub-task.
+        body = "Some text\nFixes SCYLLADB-2114\nMore text"
+        mapping = {"SCYLLADB-2114": "SCYLLADB-2602"}
+        result = bp_module.replace_fixes_in_body(body, mapping)
+        assert "SCYLLADB-2602" in result
+        assert "SCYLLADB-2114" not in result
+
     def test_no_mapping_preserves_body(self, bp_module):
         body = "Fixes: SCYLLADB-123"
         result = bp_module.replace_fixes_in_body(body, {})

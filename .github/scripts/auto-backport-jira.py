@@ -1066,9 +1066,10 @@ def replace_fixes_in_body(original_body: str, jira_mapping: Dict[str, str]) -> s
     
     # Match Jira Fixes patterns:
     #   "Fixes: PROJ-123"
+    #   "Fixes PROJ-123"
     #   "Fixes: https://...browse/PROJ-123"
     #   "Fixes: [PROJ-123](https://...browse/PROJ-123)"
-    jira_pattern = r'([Ff]ixes:\s*)(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))'
+    jira_pattern = r'([Ff]ixes:?\s*)(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))'
     
     def replace_match(match):
         prefix = match.group(1)  # "Fixes: "
