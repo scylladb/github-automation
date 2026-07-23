@@ -2,7 +2,9 @@
 
 import re
 import requests
-from github import Github
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from github import Github, GithubRetry
 import argparse
 import sys
 import os
@@ -12,6 +14,37 @@ try:
 except KeyError:
     print("Please set the 'GITHUB_TOKEN' environment variable")
     sys.exit(1)
+
+# PyGithub's default GithubRetry only retries a handful of attempts before
+# giving up, which isn't enough to ride out a transient GitHub API outage
+# (e.g. a burst of 503s). Give it more attempts and a longer backoff so a
+# temporary blip doesn't abort the whole promoted-to-master labeling run.
+GITHUB_RETRY = GithubRetry(
+    total=8,
+    backoff_factor=10,
+    backoff_max=120,
+    status_forcelist=list(range(500, 600)) + [403, 429],
+)
+
+
+def requests_session_with_retries() -> requests.Session:
+    """Build a requests Session that retries transient errors (5xx/403/429)
+    for the plain 'requests' calls this script makes against the GitHub
+    REST API, mirroring the resilience given to the PyGithub client."""
+    session = requests.Session()
+    retry = Retry(
+        total=8,
+        backoff_factor=10,
+        status_forcelist=list(range(500, 600)) + [403, 429],
+        allowed_methods=frozenset(["GET", "POST", "DELETE"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+http = requests_session_with_retries()
 
 
 def parser():
@@ -54,7 +87,7 @@ def main():
         print(f"Skipping push to gating branch {branch} - waiting for promotion to stable branch")
         return
 
-    g = Github(github_token)
+    g = Github(github_token, retry=GITHUB_RETRY)
     repo = g.get_repo(args.repository, lazy=False)
     start_commit, end_commit = args.commits.split('..')
     commits = repo.compare(start_commit, end_commit).commits
@@ -71,7 +104,7 @@ def main():
             "Authorization": f"token {github_token}",
             "Accept": "application/vnd.github.v3+json"
         }
-        response = requests.get(search_url, headers=headers, params=params)
+        response = http.get(search_url, headers=headers, params=params)
         prs = response.json().get("items", [])
         # Fallback: if the commit message has "Closes" references, include those PRs too
         # This handles PRs closed by pushing a rebased commit directly (different SHA than the PR's head)
@@ -88,7 +121,7 @@ def main():
             pr_num = int(ref)
             if pr_num not in found_pr_numbers and pr_num not in processed_prs:
                 pr_url = f'https://api.github.com/repos/{args.repository}/pulls/{pr_num}'
-                pr_response = requests.get(pr_url, headers=headers)
+                pr_response = http.get(pr_url, headers=headers)
                 if pr_response.ok:
                     pr_data = pr_response.json()
                     if pr_data.get("state") == "closed":
@@ -112,7 +145,7 @@ def main():
                 del_data = {
                     "labels": [f'{label_to_remove}']
                 }
-                response = requests.delete(remove_label_url, headers=headers, json=del_data)
+                response = http.delete(remove_label_url, headers=headers, json=del_data)
                 if response.ok:
                     print(f'Label {label_to_remove} removed successfully')
                 else:
@@ -124,7 +157,7 @@ def main():
                 "labels": [f'{label_to_add}']
             }
             add_label_url = f'https://api.github.com/repos/{args.repository}/issues/{pr_number}/labels'
-            response = requests.post(add_label_url, headers=headers, json=data)
+            response = http.post(add_label_url, headers=headers, json=data)
             if response.ok:
                 print(f"Label added successfully to {add_label_url}")
             else:
