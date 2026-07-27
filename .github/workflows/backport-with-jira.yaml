@@ -254,8 +254,10 @@ jobs:
         env:
           PR_BODY: ${{ inputs.pr_body }}
         run: |
-          # Check if this is a backport PR (has "backport of PR" in body or [Backport X.Y] in title)
-          if echo "$PR_BODY" | grep -qi "backport of PR"; then
+          # Check if this is a backport PR. Body may use either the new format
+          # ("backport of PR ...") or the old format ("Parent PR: #1234") --
+          # keep this in sync with is_backport_pr() in auto-backport-jira.py.
+          if echo "$PR_BODY" | grep -qiE "backport of PR|Parent PR:\s*#[0-9]+"; then
             echo "is_backport_pr=true" >> $GITHUB_OUTPUT
           else
             echo "is_backport_pr=false" >> $GITHUB_OUTPUT
