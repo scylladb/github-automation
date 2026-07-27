@@ -50,8 +50,12 @@ GITHUB_RUN_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/"
                  os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + \
                  os.environ.get("GITHUB_RUN_ID", "")
 
-# Label for Jira sub-issue creation failure
+# Label for Jira backport issue creation failure
 JIRA_FAILURE_LABEL = "jira-sub-issue-creation-failed"
+# Issue type used for newly created backport issues (linked to the original via BACKPORT_LINK_TYPE,
+# instead of Jira's native sub-task hierarchy)
+BACKPORT_ISSUE_TYPE = "Task"
+BACKPORT_LINK_TYPE = "Relates"
 SCYLLADB_REPO_NAME = "scylladb/scylladb"
 SCYLLA_PKG_REPO_NAME = "scylladb/scylla-pkg"
 SCYLLA_CLUSTER_TESTS_REPO_NAME = "scylladb/scylla-cluster-tests"
@@ -399,6 +403,22 @@ def get_jira_issue(issue_key: str) -> Optional[dict]:
     return jira_api_request("GET", f"issue/{issue_key}")
 
 
+def create_jira_issue_link(from_key: str, to_key: str, link_type: str = BACKPORT_LINK_TYPE) -> bool:
+    """Create a Jira issue link between two issues (e.g. 'Relates to')."""
+    link_data = {
+        "type": {"name": link_type},
+        "inwardIssue": {"key": from_key},
+        "outwardIssue": {"key": to_key}
+    }
+    result = jira_api_request("POST", "issueLink", link_data)
+    if result is not None:
+        logging.info(f"Linked Jira issue {from_key} to {to_key} ({link_type})")
+        return True
+
+    logging.error(f"Failed to link Jira issue {from_key} to {to_key}")
+    return False
+
+
 def find_jira_user_by_email(email: str) -> Optional[str]:
     """
     Find a Jira user's accountId by their email address.
@@ -553,50 +573,63 @@ def extract_project_from_jira_key(jira_key: str) -> str:
     return jira_key.split('-')[0]
 
 
-def find_existing_sub_issue(parent_key: str, version: str) -> Optional[str]:
+def _summary_matches_version(summary: str, version: str) -> bool:
+    """Check if a backport issue summary matches a complete version number
+    (avoids matching 2025.4 when looking for 2025.40)."""
+    return (f"Backport {version}]" in summary or f"Backport {version} " in summary
+            or summary.endswith(f"Backport {version}"))
+
+
+def find_existing_linked_issue(parent_key: str, version: str) -> Optional[str]:
     """
-    Search for an existing sub-issue for a specific backport version.
+    Search for an existing backport issue for a specific version.
     Returns the issue key if found, None otherwise.
-    
-    Uses the parent issue's subtasks field (direct REST API) as the primary method,
-    with JQL search as a fallback. The subtasks field is always consistent (no index delay),
-    unlike JQL which has eventual consistency and may miss recently created issues.
+
+    Checks two places:
+      1. Legacy Jira sub-tasks under the (grand)parent -- for backward compatibility
+         with backport issues created before the switch to issue links. Uses the
+         parent's subtasks field (no JQL index delay).
+      2. Issues linked to parent_key via a Jira issue link (current method), found
+         via JQL. JQL has eventual consistency and may miss recently created issues.
     """
     if not JIRA_USER or not JIRA_API_TOKEN:
         return None
-    
+
     try:
-        # Primary method: fetch subtasks directly from the parent issue.
-        # This is always consistent (no JQL index delay).
         parent_issue = get_jira_issue(parent_key)
-        if parent_issue:
-            subtasks = parent_issue.get("fields", {}).get("subtasks", [])
-            for subtask in subtasks:
+        if parent_issue is None:
+            logging.info(f"No existing backport issue found for {parent_key} version {version}")
+            return None
+
+        # Legacy sub-tasks live under the grandparent if parent_key is itself a sub-task
+        # (Jira only allows 2 levels of sub-task hierarchy).
+        grandparent_key = get_parent_key_if_subtask(parent_issue)
+        legacy_parent_issue = get_jira_issue(grandparent_key) if grandparent_key else parent_issue
+
+        if legacy_parent_issue:
+            for subtask in legacy_parent_issue.get("fields", {}).get("subtasks", []):
                 summary = subtask.get("fields", {}).get("summary", "")
-                if f"Backport {version}]" in summary or f"Backport {version} " in summary or summary.endswith(f"Backport {version}"):
+                if _summary_matches_version(summary, version):
                     existing_key = subtask["key"]
-                    logging.info(f"Found existing Jira sub-issue for {parent_key} version {version}: {existing_key} (via parent subtasks)")
+                    logging.info(f"Found existing legacy Jira sub-task for {parent_key} version {version}: {existing_key}")
                     return existing_key
-        
-        # Fallback: JQL search (may have eventual consistency delay, but catches
-        # edge cases where the parent's subtasks field is truncated or unavailable)
-        jql = f'parent = {parent_key} AND summary ~ "Backport {version}" AND issuetype = Sub-task'
+
+        # Current method: issues linked to parent_key
+        jql = f'issue in linkedIssues("{parent_key}") AND summary ~ "Backport {version}"'
         result = jira_api_request("POST", "search/jql", data={"jql": jql, "maxResults": 10})
-        
+
         if result and result.get("issues"):
-            # Check for exact version match to avoid matching 2025.4 when looking for 2025.40
             for issue in result["issues"]:
                 summary = issue["fields"]["summary"]
-                # Check if the version appears as a complete version number
-                if f"Backport {version}]" in summary or f"Backport {version} " in summary or summary.endswith(f"Backport {version}"):
+                if _summary_matches_version(summary, version):
                     existing_key = issue["key"]
-                    logging.info(f"Found existing Jira sub-issue for {parent_key} version {version}: {existing_key} (via JQL fallback)")
+                    logging.info(f"Found existing linked Jira issue for {parent_key} version {version}: {existing_key} (via JQL)")
                     return existing_key
-        
-        logging.info(f"No existing Jira sub-issue found for {parent_key} version {version}")
+
+        logging.info(f"No existing backport issue found for {parent_key} version {version}")
     except Exception as e:
-        logging.warning(f"Error searching for existing sub-issue: {e}")
-        
+        logging.warning(f"Error searching for existing backport issue: {e}")
+
     return None
 
 
@@ -634,156 +667,92 @@ def get_parent_key_if_subtask(issue: dict) -> Optional[str]:
     return None
 
 
-def create_jira_sub_issue(parent_key: str, version: str, original_title: str, assignee_account_id: str = None) -> Optional[str]:
+def create_jira_linked_issue(parent_key: str, version: str, original_title: str, assignee_account_id: str = None) -> Optional[str]:
     """
-    Create a Jira sub-issue for a backport.
-    
-    If the parent issue is already a sub-task (Jira only allows 2 levels of hierarchy),
-    the new sub-task will be created under the parent's parent instead, with the
-    description updated to reference the original sub-task.
-    
+    Create a Jira issue for a backport, linked to the original via a
+    "Relates" issue link (rather than Jira's native sub-task hierarchy).
+
+    Unlike sub-tasks, linked issues aren't limited to 2 levels of hierarchy,
+    so the new issue links directly to parent_key even if parent_key is itself
+    a (legacy) sub-task.
+
     Args:
-        parent_key: The parent Jira issue key (e.g., 'PROJ-123')
+        parent_key: The original Jira issue key to link to (e.g., 'PROJ-123')
         version: The backport version (e.g., '2025.4')
         original_title: The original issue/PR title
-        assignee_account_id: Optional Jira accountId to assign the sub-issue to
-        
-    Returns the new issue key or None on failure.
+        assignee_account_id: Optional Jira accountId to assign the new issue to
+
+    Returns the new (or existing) issue key or None on failure.
     """
-    # Get the issue to check if it's a sub-task
-    original_issue = get_jira_issue(parent_key)
-    if not original_issue:
-        logging.error(f"Failed to fetch Jira issue: {parent_key}")
-        return None
-    
-    # Determine the actual parent for the new sub-task
-    # If the original issue is already a sub-task, use its parent instead
-    actual_parent_key = parent_key
-    original_was_subtask = False
-    grandparent_key = get_parent_key_if_subtask(original_issue)
-    
-    if grandparent_key:
-        original_was_subtask = True
-        actual_parent_key = grandparent_key
-        logging.info(f"Issue {parent_key} is already a sub-task of {grandparent_key}. "
-                     f"Creating new sub-task under {grandparent_key} instead.")
-    
-    # First check if sub-issue already exists under the actual parent
-    existing_key = find_existing_sub_issue(actual_parent_key, version)
+    # First check if a backport issue already exists (legacy sub-task or linked issue)
+    existing_key = find_existing_linked_issue(parent_key, version)
     if existing_key:
-        # If sub-issue exists but we have an assignee, try to assign it
+        # If it exists but we have an assignee, try to assign it
         if assignee_account_id:
             assign_jira_issue(existing_key, assignee_account_id)
         return existing_key
-    
-    project_key = extract_project_from_jira_key(actual_parent_key)
-    
-    sub_issue_title = f"[Backport {version}] - {original_title}"
-    
-    # Build description based on whether original was a sub-task
-    if original_was_subtask:
-        description = {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Backporting of "
-                        },
-                        {
-                            "type": "text",
-                            "text": parent_key,
-                            "marks": [
-                                {
-                                    "type": "link",
-                                    "attrs": {
-                                        "href": f"{JIRA_BASE_URL}/browse/{parent_key}"
-                                    }
+
+    project_key = extract_project_from_jira_key(parent_key)
+
+    issue_title = f"[Backport {version}] - {original_title}"
+
+    description = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Backporting of "
+                    },
+                    {
+                        "type": "text",
+                        "text": parent_key,
+                        "marks": [
+                            {
+                                "type": "link",
+                                "attrs": {
+                                    "href": f"{JIRA_BASE_URL}/browse/{parent_key}"
                                 }
-                            ]
-                        },
-                        {
-                            "type": "text",
-                            "text": " (sub-task of "
-                        },
-                        {
-                            "type": "text",
-                            "text": actual_parent_key,
-                            "marks": [
-                                {
-                                    "type": "link",
-                                    "attrs": {
-                                        "href": f"{JIRA_BASE_URL}/browse/{actual_parent_key}"
-                                    }
-                                }
-                            ]
-                        },
-                        {
-                            "type": "text",
-                            "text": f") to version {version}"
-                        }
-                    ]
-                }
-            ]
-        }
-    else:
-        description = {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Backporting of "
-                        },
-                        {
-                            "type": "text",
-                            "text": parent_key,
-                            "marks": [
-                                {
-                                    "type": "link",
-                                    "attrs": {
-                                        "href": f"{JIRA_BASE_URL}/browse/{parent_key}"
-                                    }
-                                }
-                            ]
-                        },
-                        {
-                            "type": "text",
-                            "text": f" to version {version}"
-                        }
-                    ]
-                }
-            ]
-        }
-    
-    # Create the sub-task
+                            }
+                        ]
+                    },
+                    {
+                        "type": "text",
+                        "text": f" to version {version}"
+                    }
+                ]
+            }
+        ]
+    }
+
     issue_data = {
         "fields": {
             "project": {"key": project_key},
-            "parent": {"key": actual_parent_key},
-            "summary": sub_issue_title,
+            "summary": issue_title,
             "description": description,
-            "issuetype": {"name": "Sub-task"}
+            "issuetype": {"name": BACKPORT_ISSUE_TYPE}
         }
     }
-    
+
     # Add assignee if provided
     if assignee_account_id:
         issue_data["fields"]["assignee"] = {"accountId": assignee_account_id}
-    
+
     result = jira_api_request("POST", "issue", issue_data)
-    if result and "key" in result:
-        logging.info(f"Created Jira sub-issue: {result['key']} under parent {actual_parent_key}")
-        return result["key"]
-    
-    logging.error(f"Failed to create Jira sub-issue for {parent_key} version {version}")
-    return None
+    if not result or "key" not in result:
+        logging.error(f"Failed to create Jira backport issue for {parent_key} version {version}")
+        return None
+
+    new_key = result["key"]
+    logging.info(f"Created Jira backport issue: {new_key}")
+
+    if not create_jira_issue_link(new_key, parent_key):
+        logging.warning(f"Created {new_key} but failed to link it to {parent_key}")
+
+    return new_key
 
 
 def add_jira_comment(issue_key: str, comment: str) -> bool:
@@ -846,8 +815,8 @@ def add_jira_comment(issue_key: str, comment: str) -> bool:
 
 
 def report_jira_failure(main_jira_key: str, version: str):
-    """Report Jira sub-issue creation failure by adding a comment to the main issue."""
-    comment = f"Failed to create backport sub-issue for version {version}. [View workflow run|{GITHUB_RUN_URL}]"
+    """Report Jira backport issue creation failure by adding a comment to the main issue."""
+    comment = f"Failed to create backport issue for version {version}. [View workflow run|{GITHUB_RUN_URL}]"
     if add_jira_comment(main_jira_key, comment):
         logging.info(f"Added failure comment to {main_jira_key}")
     else:
@@ -1728,24 +1697,24 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
     if all_jira_keys:
         logging.info(f"Found {len(all_jira_keys)} Jira issue(s) in PR body: {all_jira_keys}")
     
-    # Use the PR title for sub-issue naming (strip any existing [Backport X.Y] prefix)
+    # Use the PR title for backport issue naming (strip any existing [Backport X.Y] prefix)
     original_title = extract_original_title(pr.title)
-    
+
     # Determine if we should warn about missing Fixes reference (scylladb/scylladb only)
     warn_missing_fixes = repo_name == "scylladb/scylladb" and not has_fixes_reference(pr.body)
 
-    # Get Jira accountId for the original PR author to assign sub-issues
+    # Get Jira accountId for the original PR author to assign backport issues
     # Trace back to the root original PR to get the actual author (not a bot)
     root_pr = get_root_original_pr(repo, pr)
     root_author = root_pr.user if root_pr else pr.user
     assignee_account_id = get_jira_user_from_github_user(root_author)
     if assignee_account_id:
-        logging.info(f"Will assign Jira sub-issues to accountId: {assignee_account_id} (author: {root_author.login})")
+        logging.info(f"Will assign Jira backport issues to accountId: {assignee_account_id} (author: {root_author.login})")
     else:
-        logging.warning(f"Could not find Jira user for GitHub user {root_author.login}, sub-issues will be unassigned")
-    
-    # Create Jira sub-issues for ALL parent issues and ALL versions
-    # Structure: version_to_jira_mapping[version] = {original_key: sub_task_key}
+        logging.warning(f"Could not find Jira user for GitHub user {root_author.login}, backport issues will be unassigned")
+
+    # Create Jira backport issues for ALL parent issues and ALL versions, linked to the original
+    # Structure: version_to_jira_mapping[version] = {original_key: linked_issue_key}
     version_to_jira_mapping = {}
     jira_failures = []
     
@@ -1754,10 +1723,10 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
         
         for parent_jira_key in all_jira_keys:
             if JIRA_USER and JIRA_API_TOKEN:
-                sub_issue_key = create_jira_sub_issue(parent_jira_key, version, original_title, assignee_account_id)
-                if sub_issue_key:
-                    version_to_jira_mapping[version][parent_jira_key] = sub_issue_key
-                    logging.info(f"Created sub-issue {sub_issue_key} for {parent_jira_key} version {version}")
+                linked_issue_key = create_jira_linked_issue(parent_jira_key, version, original_title, assignee_account_id)
+                if linked_issue_key:
+                    version_to_jira_mapping[version][parent_jira_key] = linked_issue_key
+                    logging.info(f"Created backport issue {linked_issue_key} for {parent_jira_key} version {version}")
                 else:
                     jira_failures.append((version, parent_jira_key))
                     report_jira_failure(parent_jira_key, version)
@@ -1955,30 +1924,22 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     if not all_jira_keys and main_jira_key:
         all_jira_keys = [main_jira_key]
     
-    # Look up existing Jira sub-issues (already created by the main PR flow)
-    # Do NOT create new sub-tasks from backport PRs to avoid duplicates
+    # Look up existing Jira backport issues (already created by the main PR flow)
+    # Do NOT create new backport issues from backport PRs to avoid duplicates
     jira_mapping = {}
     if all_jira_keys:
         for parent_jira_key in all_jira_keys:
             if JIRA_USER and JIRA_API_TOKEN:
-                # Resolve actual parent (in case the key is a sub-task, search under grandparent)
-                actual_parent_key = parent_jira_key
-                original_issue = get_jira_issue(parent_jira_key)
-                if original_issue:
-                    grandparent_key = get_parent_key_if_subtask(original_issue)
-                    if grandparent_key:
-                        actual_parent_key = grandparent_key
-
-                existing_key = find_existing_sub_issue(actual_parent_key, next_version)
+                existing_key = find_existing_linked_issue(parent_jira_key, next_version)
                 if existing_key:
                     jira_mapping[parent_jira_key] = existing_key
-                    logging.info(f"Found existing sub-issue {existing_key} for {parent_jira_key} version {next_version}")
+                    logging.info(f"Found existing backport issue {existing_key} for {parent_jira_key} version {next_version}")
                     if assignee_account_id:
                         assign_jira_issue(existing_key, assignee_account_id)
                 else:
-                    # Sub-issue not found - use parent key as fallback
+                    # Backport issue not found - use parent key as fallback
                     jira_mapping[parent_jira_key] = parent_jira_key
-                    logging.info(f"No existing sub-issue found for {parent_jira_key} version {next_version}, using parent key")
+                    logging.info(f"No existing backport issue found for {parent_jira_key} version {next_version}, using parent key")
             else:
                 jira_mapping[parent_jira_key] = parent_jira_key
     

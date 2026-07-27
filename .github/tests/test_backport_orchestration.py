@@ -188,7 +188,7 @@ class TestBackportWithJiraChainedMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value="user-id"), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=mock_backport_pr) as mock_bp:
             bp_module.backport_with_jira(
@@ -213,7 +213,7 @@ class TestBackportWithJiraChainedMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=mock_backport_pr):
             bp_module.backport_with_jira(
@@ -234,7 +234,7 @@ class TestBackportWithJiraChainedMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value="user-id"), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999") as mock_create, \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999") as mock_create, \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             bp_module.backport_with_jira(
@@ -251,7 +251,7 @@ class TestBackportWithJiraChainedMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=existing_pr), \
              patch.object(bp_module, "backport") as mock_bp:
             result = bp_module.backport_with_jira(
@@ -322,7 +322,7 @@ class TestBackportWithJiraParallelMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", side_effect=mock_backport_fn) as mock_bp:
             bp_module.backport_with_jira(
@@ -344,7 +344,7 @@ class TestBackportWithJiraParallelMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.backport_with_jira(
@@ -369,7 +369,7 @@ class TestBackportWithJiraParallelMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "_replace_labels_with_pending"), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
@@ -395,7 +395,7 @@ class TestBackportWithJiraParallelMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.backport_with_jira(
@@ -421,7 +421,7 @@ class TestBackportWithJiraParallelMode:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", side_effect=side_effect), \
              patch.object(bp_module, "backport", return_value=make_pr(number=43)) as mock_bp:
             bp_module.backport_with_jira(
@@ -465,7 +465,7 @@ class TestBackportWithJiraSubIssueFailure:
     """Test Jira sub-issue creation failure path in backport_with_jira (lines 1389-1396)."""
 
     def test_jira_failure_records_and_falls_back(self, bp_module, make_pr, make_repo):
-        """When create_jira_sub_issue returns None, should record failure, call report_jira_failure, and fallback to parent key."""
+        """When create_jira_linked_issue returns None, should record failure, call report_jira_failure, and fallback to parent key."""
         repo = make_repo()
         pr = make_pr(
             number=10,
@@ -475,7 +475,7 @@ class TestBackportWithJiraSubIssueFailure:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value=None) as mock_create, \
+             patch.object(bp_module, "create_jira_linked_issue", return_value=None) as mock_create, \
              patch.object(bp_module, "report_jira_failure") as mock_report, \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
@@ -504,13 +504,13 @@ class TestBackportWithJiraSubIssueFailure:
              patch.object(bp_module, "JIRA_USER", ""), \
              patch.object(bp_module, "JIRA_API_TOKEN", ""), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue") as mock_create, \
+             patch.object(bp_module, "create_jira_linked_issue") as mock_create, \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.backport_with_jira(
                 repo, pr, ["2025.4"], ["abc123"], "SCYLLADB-123", "scylladb/scylladb"
             )
 
-            # create_jira_sub_issue should NOT be called when no Jira integration
+            # create_jira_linked_issue should NOT be called when no Jira integration
             mock_create.assert_not_called()
             mock_bp.assert_called_once()
 
@@ -580,7 +580,7 @@ class TestBackportWithJiraPendingLabelException:
 
         with patch.object(bp_module, "get_root_original_pr", return_value=pr), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "create_jira_sub_issue", return_value="SCYLLADB-999"), \
+             patch.object(bp_module, "create_jira_linked_issue", return_value="SCYLLADB-999"), \
              patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
              patch.object(bp_module, "backport", return_value=mock_backport_pr):
             # Should not raise even though label ops fail

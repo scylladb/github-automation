@@ -24,18 +24,29 @@ fi
 
 echo "pre-commit: backport-related files changed, running tests..."
 
-if ! command -v python3 &>/dev/null; then
-    echo "WARNING: python3 not found, skipping pre-commit tests"
+# Some scripts under .github/scripts/ use 3.10+ syntax (e.g. PEP 604 unions).
+# Prefer a modern versioned interpreter over a plain "python3" that may resolve
+# to an older system Python (e.g. macOS's /usr/bin/python3, still 3.9).
+PYTHON_BIN=""
+for candidate in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" &>/dev/null; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "WARNING: no python3 found, skipping pre-commit tests"
     exit 0
 fi
 
-if ! python3 -m pytest --version &>/dev/null; then
-    echo "WARNING: pytest not installed, skipping pre-commit tests"
-    echo "  Install with: pip3 install -r .github/tests/requirements-test.txt"
+if ! "$PYTHON_BIN" -m pytest --version &>/dev/null; then
+    echo "WARNING: pytest not installed for $PYTHON_BIN, skipping pre-commit tests"
+    echo "  Install with: $PYTHON_BIN -m pip install -r .github/tests/requirements-test.txt"
     exit 0
 fi
 
-if ! python3 -m pytest .github/tests/ -q --tb=short; then
+if ! "$PYTHON_BIN" -m pytest .github/tests/ -q --tb=short; then
     echo ""
     echo "pre-commit: TESTS FAILED -- commit aborted."
     exit 1

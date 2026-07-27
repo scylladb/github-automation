@@ -1,25 +1,25 @@
 # GitHub Automation - Backport with Jira Integration
 
-This document describes the automated backport system with Jira sub-issue integration for ScyllaDB repositories.
+This document describes the automated backport system with Jira integration for ScyllaDB repositories.
 
 ## Overview
 
 The backport automation system handles:
 1. Creating backport PRs when the `backport/X.Y` label is added to a promoted PR
-2. Creating Jira sub-issues for each backport version
+2. Creating a Jira issue for each backport version, linked to the original issue
 3. Chaining backports from higher to lower versions to avoid repeated conflict resolution
 4. Managing labels throughout the backport lifecycle
 5. Setting milestones on PRs (for scylladb/scylladb and scylladb/scylla-pkg)
 
 ## Features
 
-### 1. Jira Sub-Issue Creation
+### 1. Jira Backport Issue Creation
 
 When a backport PR is created, the system automatically:
 - Extracts all Jira issue keys from the `Fixes:` line in the PR body
-- Creates a sub-issue under each Jira parent for the backport version
-- Updates the backport PR body to reference the sub-issue instead of the parent
-- Assigns the sub-issue to the original PR author (by matching GitHub email to Jira)
+- Creates a new Jira issue (type `Task`) for the backport version, linked to the original issue via a "Relates" issue link
+- Updates the backport PR body to reference the new issue instead of the original
+- Assigns the new issue to the original PR author (by matching GitHub email to Jira)
 
 **Supported Fixes formats:**
 ```
@@ -29,13 +29,13 @@ Fixes: SCYLLADB-12345
 Fixes: SCYLLADB-67890
 ```
 
-**Sub-issue naming:**
+**Backport issue naming:**
 ```
 [Backport 2025.4] - Original Issue Title
 ```
 
-**Jira hierarchy handling:**
-If the referenced Jira issue is already a sub-task (Jira only allows 2 levels), the new sub-task is created under the parent's parent with a description referencing the original sub-task.
+**Legacy sub-tasks:**
+Prior to this, backport issues were created as Jira sub-tasks under the original issue (or, if the original was already a sub-task, under its parent -- Jira only allows 2 levels of sub-task hierarchy). Existing sub-tasks created this way are not migrated; the automation still recognizes and reuses them when checking for an already-created backport issue, so it won't create a duplicate.
 
 ### 2. Chained Backports
 
@@ -116,7 +116,7 @@ on:
 ```
 - Searches for promoted PRs with backport labels
 - Creates backport PR for highest version
-- Triggers Jira sub-issue creation
+- Triggers Jira backport issue creation
 
 ### Label Added to PR
 ```yaml
@@ -161,7 +161,7 @@ on:
 - `Fixes: SCYLLADB-12345`
 
 **Step 1:** System creates:
-- Jira sub-issues: `SCYLLADB-12346` (2025.4), `SCYLLADB-12347` (2025.3), `SCYLLADB-12348` (2025.2)
+- Jira backport issues (linked to `SCYLLADB-12345`): `SCYLLADB-12346` (2025.4), `SCYLLADB-12347` (2025.3), `SCYLLADB-12348` (2025.2)
 - Backport PR #101 targeting `branch-2025.4` with labels:
   - `backport/2025.3`
   - `backport/2025.2`
@@ -232,8 +232,8 @@ Fixes: SCYLLADB-22222
 
 ### Example 5: Jira API Failure
 
-**If Jira sub-issue creation fails:**
-- Comment added to main Jira issue: `Failed to create backport sub-issue for version 2025.4. [View workflow run]`
+**If Jira backport issue creation fails:**
+- Comment added to main Jira issue: `Failed to create backport issue for version 2025.4. [View workflow run]`
 - `jira-sub-issue-creation-failed` label added to backport PR
 - Backport PR is still created (uses parent Jira key in Fixes line)
 
@@ -303,7 +303,7 @@ jobs:
 3. Check GitHub Actions logs for errors
 4. Verify the target branch exists (e.g., `branch-2025.4`)
 
-### Jira sub-issue not created
+### Jira backport issue not created
 1. Verify `JIRA_AUTH` secret is set correctly
 2. Check if the Jira issue key format is valid
 3. Review workflow logs for Jira API errors

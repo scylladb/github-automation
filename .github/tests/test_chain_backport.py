@@ -54,7 +54,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -101,7 +101,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -137,7 +137,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -174,7 +174,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -213,7 +213,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -238,7 +238,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -262,9 +262,9 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value="user-id"), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-888") as mock_find, \
+             patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-888") as mock_find, \
              patch.object(bp_module, "assign_jira_issue") as mock_assign, \
-             patch.object(bp_module, "create_jira_sub_issue") as mock_create, \
+             patch.object(bp_module, "create_jira_linked_issue") as mock_create, \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -305,7 +305,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="DTEST-162"), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value="DTEST-162"), \
              patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylla-dtest")
 
@@ -343,7 +343,7 @@ class TestProcessChainBackport:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", side_effect=capture_backport):
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -643,14 +643,15 @@ class TestProcessChainBackportEdgeCases:
              patch.object(bp_module, "extract_all_jira_keys_from_pr_body", return_value=[]), \
              patch.object(bp_module, "extract_main_jira_from_body", return_value="SCYLLADB-123"), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)) as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
             mock_bp.assert_called_once()
 
     def test_grandparent_key_lookup(self, bp_module, make_pr, make_repo):
-        """When parent key is a subtask, should look up under grandparent (line 1596-1598)."""
+        """The parent Jira key is passed as-is to find_existing_linked_issue, which
+        resolves legacy sub-task grandparents internally (line 1596-1598)."""
         repo = make_repo()
         original = make_pr(number=1, title="Fix bug", body="Fixes: SCYLLADB-100")
         merged_pr = make_pr(
@@ -662,20 +663,14 @@ class TestProcessChainBackportEdgeCases:
             labels=["backport/2025.3"]
         )
 
-        # Simulate: SCYLLADB-100 is a subtask of SCYLLADB-50
-        jira_issue = {"fields": {"issuetype": {"subtask": True}, "parent": {"key": "SCYLLADB-50"}}}
-
         with patch.object(bp_module, "get_root_original_pr", return_value=original), \
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
-             patch.object(bp_module, "get_jira_issue", return_value=jira_issue), \
-             patch.object(bp_module, "get_parent_key_if_subtask", return_value="SCYLLADB-50") as mock_parent, \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-888") as mock_find, \
+             patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-888") as mock_find, \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
-            # Should search under grandparent SCYLLADB-50
-            mock_find.assert_called_once_with("SCYLLADB-50", "2025.3")
+            mock_find.assert_called_once_with("SCYLLADB-100", "2025.3")
 
     def test_no_jira_integration_branch(self, bp_module, make_pr, make_repo):
         """When JIRA_USER/JIRA_API_TOKEN are empty, uses parent key as-is (line 1611)."""
@@ -719,7 +714,7 @@ class TestProcessChainBackportEdgeCases:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value=None), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "get_pr_commits", return_value=["commit123"]) as mock_get_commits, \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
@@ -743,7 +738,7 @@ class TestProcessChainBackportEdgeCases:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value=None), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport") as mock_bp:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
@@ -767,7 +762,7 @@ class TestProcessChainBackportEdgeCases:
              patch.object(bp_module, "replace_backport_label_with_done"), \
              patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
              patch.object(bp_module, "get_jira_issue", return_value=None), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "backport", return_value=make_pr(number=42)):
             # Should not raise despite label exception
             result = bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
@@ -1238,7 +1233,7 @@ class TestProcessChainBackportSuperseded:
              patch.object(bp_module, "extract_main_jira_from_body", return_value="SCYLLADB-100"), \
              patch.object(bp_module, "extract_main_pr_link_from_body", return_value="#1"), \
              patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-200"), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-200"), \
              patch.object(bp_module, "generate_backport_pr_body", return_value="body"), \
              patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp, \
              patch.object(bp_module, "_replace_labels_with_pending"):

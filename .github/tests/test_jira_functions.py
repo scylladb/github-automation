@@ -11,10 +11,11 @@ Tests:
   - extract_all_jira_keys_from_pr_body
   - has_fixes_reference
   - extract_project_from_jira_key
-  - find_existing_sub_issue
+  - find_existing_linked_issue
   - is_subtask_issue
   - get_parent_key_if_subtask
-  - create_jira_sub_issue
+  - create_jira_linked_issue
+  - create_jira_issue_link
   - add_jira_comment
 """
 
@@ -329,9 +330,9 @@ class TestAssignJiraIssue:
             assert result is False
 
 
-class TestFindExistingSubIssue:
-    def test_found_via_parent_subtasks(self, bp_module):
-        """Primary path: finds existing sub-issue via parent's subtasks field."""
+class TestFindExistingLinkedIssue:
+    def test_found_via_legacy_subtasks(self, bp_module):
+        """Backward-compat path: finds an existing legacy sub-task via the parent's subtasks field."""
         parent_issue = {
             "fields": {
                 "subtasks": [
@@ -340,11 +341,11 @@ class TestFindExistingSubIssue:
             }
         }
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result == "SCYLLADB-999"
 
-    def test_found_via_jql_fallback(self, bp_module):
-        """Fallback path: parent subtasks field doesn't have it, but JQL finds it."""
+    def test_found_via_jql_linked_issues(self, bp_module):
+        """Current path: no legacy sub-task, but JQL finds an issue linked to the parent."""
         parent_issue = {"fields": {"subtasks": []}}
         jql_result = {
             "issues": [
@@ -352,27 +353,22 @@ class TestFindExistingSubIssue:
             ]
         }
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "jira_api_request", return_value=jql_result):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+             patch.object(bp_module, "jira_api_request", return_value=jql_result) as mock_jql:
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result == "SCYLLADB-999"
-
-    def test_found_exact_match(self, bp_module):
-        parent_issue = {"fields": {"subtasks": []}}
-        result_data = {
-            "issues": [
-                {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
-            ]
-        }
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "jira_api_request", return_value=result_data):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
-            assert result == "SCYLLADB-999"
+            jql_arg = mock_jql.call_args.kwargs["data"]["jql"]
+            assert 'linkedIssues("SCYLLADB-100")' in jql_arg
 
     def test_not_found(self, bp_module):
         parent_issue = {"fields": {"subtasks": []}}
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
              patch.object(bp_module, "jira_api_request", return_value={"issues": []}):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
+            assert result is None
+
+    def test_parent_fetch_fails(self, bp_module):
+        with patch.object(bp_module, "get_jira_issue", return_value=None):
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result is None
 
     def test_no_jira_credentials(self, bp_module):
@@ -381,7 +377,7 @@ class TestFindExistingSubIssue:
         try:
             bp_module.JIRA_USER = None
             bp_module.JIRA_API_TOKEN = None
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result is None
         finally:
             bp_module.JIRA_USER = original_user
@@ -403,11 +399,11 @@ class TestFindExistingSubIssue:
         }
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
              patch.object(bp_module, "jira_api_request", return_value=jql_result):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result is None
 
-    def test_parent_subtasks_takes_priority_over_jql(self, bp_module):
-        """If found in parent subtasks, JQL should not be called."""
+    def test_legacy_subtasks_take_priority_over_jql(self, bp_module):
+        """If found via legacy sub-tasks, JQL should not be called."""
         parent_issue = {
             "fields": {
                 "subtasks": [
@@ -417,69 +413,114 @@ class TestFindExistingSubIssue:
         }
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
              patch.object(bp_module, "jira_api_request") as mock_jql:
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result == "SCYLLADB-888"
             mock_jql.assert_not_called()
 
-
-class TestCreateJiraSubIssue:
-    def test_create_new_subtask(self, bp_module):
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
-             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}):
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result == "SCYLLADB-999"
-
-    def test_existing_subtask_returned(self, bp_module):
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-888"):
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result == "SCYLLADB-888"
-
-    def test_parent_is_subtask_uses_grandparent(self, bp_module):
-        """When parent is already a sub-task, create under grandparent."""
-        parent_issue = {
+    def test_resolves_grandparent_for_legacy_subtask_parent(self, bp_module):
+        """If parent_key is itself a legacy sub-task, legacy sub-tasks are looked up under its parent."""
+        subtask_issue = {"fields": {"issuetype": {"subtask": True}, "parent": {"key": "SCYLLADB-50"}}}
+        grandparent_issue = {
             "fields": {
-                "issuetype": {"subtask": True},
-                "parent": {"key": "SCYLLADB-50"}
+                "subtasks": [
+                    {"key": "SCYLLADB-999", "fields": {"summary": "[Backport 2025.4] - Fix bug"}}
+                ]
             }
         }
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
-             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api:
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result == "SCYLLADB-999"
-            # Verify it was created under the grandparent
-            call_data = mock_api.call_args[0][2]
-            assert call_data["fields"]["parent"]["key"] == "SCYLLADB-50"
 
-    def test_parent_fetch_fails(self, bp_module):
-        with patch.object(bp_module, "get_jira_issue", return_value=None):
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result is None
+        def fake_get_jira_issue(key):
+            return subtask_issue if key == "SCYLLADB-100" else grandparent_issue
+
+        with patch.object(bp_module, "get_jira_issue", side_effect=fake_get_jira_issue):
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
+            assert result == "SCYLLADB-999"
+
+
+class TestCreateJiraIssueLink:
+    def test_success(self, bp_module):
+        with patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            result = bp_module.create_jira_issue_link("SCYLLADB-999", "SCYLLADB-100")
+            assert result is True
+            call_args = mock_api.call_args[0]
+            assert call_args[0] == "POST"
+            assert call_args[1] == "issueLink"
+            link_data = call_args[2]
+            assert link_data["type"]["name"] == bp_module.BACKPORT_LINK_TYPE
+            assert link_data["inwardIssue"]["key"] == "SCYLLADB-999"
+            assert link_data["outwardIssue"]["key"] == "SCYLLADB-100"
+
+    def test_failure(self, bp_module):
+        with patch.object(bp_module, "jira_api_request", return_value=None):
+            result = bp_module.create_jira_issue_link("SCYLLADB-999", "SCYLLADB-100")
+            assert result is False
+
+
+class TestCreateJiraLinkedIssue:
+    def test_create_new_issue(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}), \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result == "SCYLLADB-999"
+
+    def test_existing_issue_returned(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-888"):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result == "SCYLLADB-888"
+
+    def test_links_new_issue_to_parent(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}), \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True) as mock_link:
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result == "SCYLLADB-999"
+            mock_link.assert_called_once_with("SCYLLADB-999", "SCYLLADB-100")
+
+    def test_uses_task_issue_type_no_parent_field(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            call_data = mock_api.call_args[0][2]
+            assert call_data["fields"]["issuetype"]["name"] == bp_module.BACKPORT_ISSUE_TYPE
+            assert "parent" not in call_data["fields"]
 
     def test_with_assignee(self, bp_module):
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        created = {"key": "SCYLLADB-999"}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
-             patch.object(bp_module, "jira_api_request", return_value=created) as mock_api:
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug", "user-account-id")
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug", "user-account-id")
             assert result == "SCYLLADB-999"
             call_data = mock_api.call_args[0][2]
             assert call_data["fields"]["assignee"]["accountId"] == "user-account-id"
 
-    def test_existing_subtask_gets_assigned(self, bp_module):
-        """If subtask exists and assignee provided, should assign."""
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value="SCYLLADB-888"), \
+    def test_existing_issue_gets_assigned(self, bp_module):
+        """If a backport issue already exists and an assignee is provided, it should get assigned."""
+        with patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-888"), \
              patch.object(bp_module, "assign_jira_issue") as mock_assign:
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug", "user-account-id")
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug", "user-account-id")
             assert result == "SCYLLADB-888"
             mock_assign.assert_called_once_with("SCYLLADB-888", "user-account-id")
+
+    def test_api_returns_no_key(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"error": "something"}):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result is None
+
+    def test_api_returns_none(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value=None):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result is None
+
+    def test_link_failure_still_returns_new_key(self, bp_module):
+        """If the issue is created but linking fails, the new key is still returned (a warning is logged)."""
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}), \
+             patch.object(bp_module, "create_jira_issue_link", return_value=False):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result == "SCYLLADB-999"
 
 
 class TestAddJiraComment:
@@ -572,11 +613,11 @@ class TestAssignJiraIssueErrors:
             assert result is False
 
 
-class TestFindExistingSubIssueErrors:
+class TestFindExistingLinkedIssueErrors:
     def test_exception_returns_none(self, bp_module):
-        """Exception in find_existing_sub_issue returns None."""
+        """Exception in find_existing_linked_issue returns None."""
         with patch.object(bp_module, "get_jira_issue", side_effect=Exception("boom")):
-            result = bp_module.find_existing_sub_issue("SCYLLADB-100", "2025.4")
+            result = bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
             assert result is None
 
 
@@ -586,23 +627,3 @@ class TestGetParentKeyIfSubtaskErrors:
         # Pass something that will cause an exception during processing
         result = bp_module.get_parent_key_if_subtask("not-a-dict")
         assert result is None
-
-
-class TestCreateJiraSubIssueFailure:
-    def test_api_returns_no_key(self, bp_module):
-        """Line 682-683: jira_api_request returns result without 'key'."""
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
-             patch.object(bp_module, "jira_api_request", return_value={"error": "something"}):
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result is None
-
-    def test_api_returns_none(self, bp_module):
-        """Line 682-683: jira_api_request returns None."""
-        parent_issue = {"fields": {"issuetype": {"subtask": False}}}
-        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
-             patch.object(bp_module, "find_existing_sub_issue", return_value=None), \
-             patch.object(bp_module, "jira_api_request", return_value=None):
-            result = bp_module.create_jira_sub_issue("SCYLLADB-100", "2025.4", "Fix bug")
-            assert result is None
