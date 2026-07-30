@@ -45,17 +45,47 @@ jobs:
           INVALID_COUNT=0
 
           # Load known external contributors from the allow-list file (fetched from github-automation repo).
-          # Lines starting with '#' and blank lines are ignored.
+          # Lines starting with '#' and blank lines are ignored. Entries are lower-cased and
+          # trimmed so that comparison is case- and whitespace-insensitive; a contributor whose
+          # git email is capitalised differently than the list entry must still be allowed.
           ALLOWED_EMAILS_FILE="${GITHUB_WORKSPACE}/_github_automation/.github/workflows/allowed_emails.txt"
-          mapfile -t ALLOWED_EMAILS < <(grep -v '^\s*#' "$ALLOWED_EMAILS_FILE" | grep -v '^\s*$')
+          mapfile -t ALLOWED_EMAILS < <(grep -v '^\s*#' "$ALLOWED_EMAILS_FILE" | grep -v '^\s*$' | tr 'A-Z' 'a-z' | xargs -n1 2>/dev/null)
 
           is_allowed_email() {
-            local email="$1"
+            local email="${1,,}"
             for allowed in "${ALLOWED_EMAILS[@]}"; do
               if [[ "$email" == "$allowed" ]]; then
                 return 0
               fi
             done
+            return 1
+          }
+
+          # Domain check, case-insensitive: git config user.email is free-form, so
+          # Dev@ScyllaDB.com is the same address as dev@scylladb.com.
+          is_scylladb_email() {
+            [[ "${1,,}" =~ @scylladb\.com$ ]]
+          }
+
+          # Bot-owned addresses that are exempt from the @scylladb.com requirement.
+          # This must NOT match plain users.noreply.github.com addresses (the
+          # <id>+<login>@users.noreply.github.com form GitHub hands out when a user
+          # enables email privacy) - those belong to humans and must be validated.
+          is_bot_email() {
+            local email="${1,,}"
+            case "$email" in
+              action@github.com|noreply@github.com|notification@github.com|copilot@github.com)
+                return 0
+                ;;
+            esac
+            # Copilot: 198982749+Copilot@users.noreply.github.com
+            if [[ "$email" =~ ^[0-9]+\+copilot@users\.noreply\.github\.com$ ]]; then
+              return 0
+            fi
+            # Other GitHub App bots: 49699333+dependabot[bot]@users.noreply.github.com
+            if [[ "$email" =~ ^[0-9]+\+[a-z0-9._-]+\[bot\]@users\.noreply\.github\.com$ ]]; then
+              return 0
+            fi
             return 1
           }
 
@@ -65,30 +95,19 @@ jobs:
             COMMITTER_EMAIL=$(git log -1 --format="%ce" $commit)
             COMMIT_MSG=$(git log -1 --format="%s" $commit)
             
-            # Skip GitHub Actions commits
-            if [[ "$COMMITTER_EMAIL" == "action@github.com" ]]; then
-              continue
-            fi
-
-            # Skip GitHub Copilot commits (includes noreply addresses used by Copilot and co-authored commits)
-            # Copilot uses the format: 198982749+Copilot@users.noreply.github.com (note: users.noreply.github.com)
-            if [[ "$COMMITTER_EMAIL" == *"noreply.github.com"* ]] || [[ "$COMMITTER_EMAIL" == "copilot@github.com" ]] || [[ "$COMMITTER_EMAIL" == "notification@github.com" ]] || [[ "$AUTHOR_EMAIL" == *"noreply.github.com"* ]]; then
-              continue
-            fi
-            
             INVALID=""
 
-            # Check author email
-            if [[ ! "$AUTHOR_EMAIL" =~ @scylladb\.com$ ]] && ! is_allowed_email "$AUTHOR_EMAIL"; then
+            # Check author email (bot-authored commits are exempt)
+            if ! is_bot_email "$AUTHOR_EMAIL" && ! is_scylladb_email "$AUTHOR_EMAIL" && ! is_allowed_email "$AUTHOR_EMAIL"; then
               INVALID="${INVALID}Author: $AUTHOR_EMAIL"
             fi
 
-            # Check committer email
-            if [[ ! "$COMMITTER_EMAIL" =~ @scylladb\.com$ ]] && ! is_allowed_email "$COMMITTER_EMAIL"; then
+            # Check committer email (bot-committed commits are exempt)
+            if ! is_bot_email "$COMMITTER_EMAIL" && ! is_scylladb_email "$COMMITTER_EMAIL" && ! is_allowed_email "$COMMITTER_EMAIL"; then
               if [ -n "$INVALID" ]; then
                 INVALID="${INVALID}, "
               fi
-              INVALID="${INVALID} Committer: $COMMITTER_EMAIL"
+              INVALID="${INVALID}Committer: $COMMITTER_EMAIL"
             fi
             
             if [ -n "$INVALID" ]; then
@@ -104,17 +123,29 @@ jobs:
           
           if [ $INVALID_COUNT -gt 0 ]; then
             echo "found_invalid=true" >> $GITHUB_OUTPUT
-            # Build comment body using heredoc
-            cat >> $GITHUB_OUTPUT <<'EOF'
-          comment_body<<EOFCOMMENT
+            # Build comment body. The offending-commit list is interpolated, so use a
+            # randomized delimiter and drop any line that could close it early.
+            DELIM="EOFCOMMENT_${RANDOM}${RANDOM}"
+            INVALID_COMMITS=$(grep -v "^${DELIM}$" <<< "$INVALID_COMMITS")
+            {
+            echo "comment_body<<${DELIM}"
+            cat <<'EOF'
           ## ⚠️ Non-@scylladb.com Email Addresses Detected
-          
+
           Found commit(s) with author or committer emails that don't end with `@scylladb.com`.
-          
+
           This indicates either:
           - An external contributor (acceptable, but maintainer should be aware)
           - A developer who hasn't configured their git email correctly
-          
+          - A `@users.noreply.github.com` address, which GitHub uses when
+            "Keep my email addresses private" is enabled or when committing from
+            the GitHub web UI - it hides the real address, so it cannot be validated
+
+          ### Offending commit(s):
+          EOF
+            echo "$INVALID_COMMITS"
+            cat <<'EOF'
+
           ### For ScyllaDB developers:
           If you're a ScyllaDB associate, please configure your git email globally:
           ```bash
@@ -136,8 +167,9 @@ jobs:
           # Repeat for each invalid commit
           git push --force
           ```
-          EOFCOMMENT
           EOF
+            echo "${DELIM}"
+            } >> $GITHUB_OUTPUT
             exit 1
           else
             echo "found_invalid=false" >> $GITHUB_OUTPUT
