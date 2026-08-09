@@ -56,6 +56,10 @@ JIRA_FAILURE_LABEL = "jira-sub-issue-creation-failed"
 # instead of Jira's native sub-task hierarchy)
 BACKPORT_ISSUE_TYPE = "Task"
 BACKPORT_LINK_TYPE = "Relates"
+# Custom field ids on scylladb.atlassian.net. Custom field ids are site-global in
+# Jira Cloud, so these hold for every project the automation touches (RELENG,
+# SCYLLADB, DTEST, ...), as long as the field is on that project's screen.
+JIRA_TEAM_FIELD = "customfield_10001"
 SCYLLADB_REPO_NAME = "scylladb/scylladb"
 SCYLLA_PKG_REPO_NAME = "scylladb/scylla-pkg"
 SCYLLA_CLUSTER_TESTS_REPO_NAME = "scylladb/scylla-cluster-tests"
@@ -670,6 +674,46 @@ def get_parent_key_if_subtask(issue: dict) -> Optional[str]:
     return None
 
 
+def get_issue_team_id(issue: dict) -> Optional[str]:
+    """
+    Read the Team field of a Jira issue.
+
+    The 'atlassian-team' field reads back as an object ({'id': ..., 'name': ...})
+    but is written as the bare team id.
+    """
+    try:
+        team = issue.get("fields", {}).get(JIRA_TEAM_FIELD)
+    except Exception:
+        return None
+    if isinstance(team, dict):
+        return team.get("id")
+    # Older/simpler configurations store the id directly
+    return team if isinstance(team, str) else None
+
+
+def resolve_parent_team_id(parent_key: str) -> Optional[str]:
+    """
+    Find the Team a backport issue should inherit, starting from parent_key and
+    falling back to its parent when parent_key is a legacy sub-task that carries
+    no Team of its own.
+    """
+    parent_issue = get_jira_issue(parent_key)
+    if not parent_issue:
+        return None
+
+    team_id = get_issue_team_id(parent_issue)
+    if team_id:
+        return team_id
+
+    grandparent_key = get_parent_key_if_subtask(parent_issue)
+    if grandparent_key:
+        grandparent_issue = get_jira_issue(grandparent_key)
+        if grandparent_issue:
+            return get_issue_team_id(grandparent_issue)
+
+    return None
+
+
 def create_jira_linked_issue(parent_key: str, version: str, original_title: str, assignee_account_id: str = None) -> Optional[str]:
     """
     Create a Jira issue for a backport, linked to the original via a
@@ -744,7 +788,23 @@ def create_jira_linked_issue(parent_key: str, version: str, original_title: str,
     if assignee_account_id:
         issue_data["fields"]["assignee"] = {"accountId": assignee_account_id}
 
+    # Inherit the Team from the issue being backported. Backport issues used to be
+    # Jira sub-tasks, which inherited Team implicitly; as standalone linked issues
+    # they no longer do, and drop out of team-based filters unless we copy it over.
+    team_id = resolve_parent_team_id(parent_key)
+    if team_id:
+        issue_data["fields"][JIRA_TEAM_FIELD] = team_id
+        logging.info(f"Backport issue for {parent_key} will inherit team {team_id}")
+    else:
+        logging.info(f"No Team field on {parent_key}, backport issue will be created without one")
+
     result = jira_api_request("POST", "issue", issue_data)
+    if (not result or "key" not in result) and team_id:
+        # The Team field may not be on this project's create screen; a backport issue
+        # without a Team still beats no backport issue at all.
+        logging.warning(f"Creating backport issue for {parent_key} with a Team failed, retrying without it")
+        del issue_data["fields"][JIRA_TEAM_FIELD]
+        result = jira_api_request("POST", "issue", issue_data)
     if not result or "key" not in result:
         logging.error(f"Failed to create Jira backport issue for {parent_key} version {version}")
         return None

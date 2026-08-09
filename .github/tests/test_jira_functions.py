@@ -645,3 +645,73 @@ class TestGetParentKeyIfSubtaskErrors:
         # Pass something that will cause an exception during processing
         result = bp_module.get_parent_key_if_subtask("not-a-dict")
         assert result is None
+
+
+class TestTeamInheritance:
+    """Backport issues are standalone linked issues, not sub-tasks, so they only end up
+    in team-based filters if the Team field is copied from the issue being backported.
+    """
+
+    TEAM = "f9cc1fd6-beaf-40ee-b7a1-0b51f09038d9"
+
+    def test_get_issue_team_id_from_object(self, bp_module):
+        issue = {"fields": {bp_module.JIRA_TEAM_FIELD: {"id": self.TEAM, "name": "Release Engineering"}}}
+        assert bp_module.get_issue_team_id(issue) == self.TEAM
+
+    def test_get_issue_team_id_from_plain_string(self, bp_module):
+        issue = {"fields": {bp_module.JIRA_TEAM_FIELD: self.TEAM}}
+        assert bp_module.get_issue_team_id(issue) == self.TEAM
+
+    def test_get_issue_team_id_when_unset(self, bp_module):
+        assert bp_module.get_issue_team_id({"fields": {bp_module.JIRA_TEAM_FIELD: None}}) is None
+        assert bp_module.get_issue_team_id({"fields": {}}) is None
+        assert bp_module.get_issue_team_id({}) is None
+
+    def test_resolve_falls_back_to_grandparent_for_subtask(self, bp_module):
+        """A legacy sub-task parent may carry no Team of its own."""
+        subtask = {
+            "fields": {
+                "issuetype": {"subtask": True},
+                "parent": {"key": "SCYLLADB-1"},
+                bp_module.JIRA_TEAM_FIELD: None,
+            }
+        }
+        root = {"fields": {bp_module.JIRA_TEAM_FIELD: {"id": self.TEAM}}}
+        with patch.object(bp_module, "get_jira_issue", side_effect=[subtask, root]):
+            assert bp_module.resolve_parent_team_id("SCYLLADB-2") == self.TEAM
+
+    def test_resolve_returns_none_when_nothing_has_a_team(self, bp_module):
+        issue = {"fields": {"issuetype": {"subtask": False}, bp_module.JIRA_TEAM_FIELD: None}}
+        with patch.object(bp_module, "get_jira_issue", return_value=issue):
+            assert bp_module.resolve_parent_team_id("SCYLLADB-100") is None
+
+    def test_created_issue_inherits_team(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "resolve_parent_team_id", return_value=self.TEAM), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            call_data = mock_api.call_args[0][2]
+            assert call_data["fields"][bp_module.JIRA_TEAM_FIELD] == self.TEAM
+
+    def test_no_team_field_when_parent_has_none(self, bp_module):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "resolve_parent_team_id", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            call_data = mock_api.call_args[0][2]
+            assert bp_module.JIRA_TEAM_FIELD not in call_data["fields"]
+
+    def test_retries_without_team_when_creation_rejected(self, bp_module):
+        """Projects that don't have Team on their create screen must still get a backport issue."""
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "resolve_parent_team_id", return_value=self.TEAM), \
+             patch.object(bp_module, "jira_api_request",
+                          side_effect=[None, {"key": "SCYLLADB-999"}]) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            assert result == "SCYLLADB-999"
+            assert mock_api.call_count == 2
+            retry_data = mock_api.call_args[0][2]
+            assert bp_module.JIRA_TEAM_FIELD not in retry_data["fields"]
