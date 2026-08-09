@@ -348,7 +348,7 @@ def manage_closed_gh_event(
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
       4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
-      5.  if merged: jira_status_transition -> "Merged" (id 10575)
+      5.  if merged: jira_status_transition -> "Merged" (transition id 7)
     """
     print("=" * 60)
     print(" manage_closed_gh_event  input parameters")
