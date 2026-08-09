@@ -24,6 +24,7 @@ from jira_sync_modules import (
     remove_label_from_jira_issue,
     get_done_issue_keys,
     enforce_backport_fixes_reference,
+    enforce_backport_fixes_on_body_change,
     BACKPORT_LABEL_RE,
 )
 
@@ -545,6 +546,7 @@ def manage_opened_gh_event(
 
     Replicates the full job graph of main_jira_sync_pr_opened.yml:
 
+      0.  enforce_backport_fixes_on_body_change (RELENG-81)
       1.  extract_jira_keys
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
@@ -559,6 +561,20 @@ def manage_opened_gh_event(
     print(f"  pr_event   = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
+
+    # --- Step 0: re-check the Fixes: reference while backport labels are set ---
+    # The 'labeled' handler enforces this when a backport label is added, but the
+    # body can be edited afterwards to drop the reference. Re-checking here (this
+    # handler serves both 'opened' and 'edited') catches that early instead of at
+    # backport time, after the merge. (RELENG-81)
+    print("\n" + "=" * 60)
+    print(" Step 0 / enforce_backport_fixes_on_body_change")
+    print("=" * 60)
+    if enforce_backport_fixes_on_body_change(
+        pr_title, pr_body, pr_number, owner_repo, gh_token, jira_auth,
+    ):
+        print("Backport label(s) removed. Please add to the PR body a link ('Fixes:') to a valid Jira issue and only then re-label the PR for backport.")
+        return
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)

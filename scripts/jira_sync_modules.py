@@ -1472,3 +1472,49 @@ def enforce_backport_fixes_reference(
 
     _remove_backport_labels(owner_repo, pr_number, gh_token)
     return True
+
+
+def enforce_backport_fixes_on_body_change(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> bool:
+    """Re-check the Fixes: reference when the PR body changes (RELENG-81).
+
+    enforce_backport_fixes_reference only runs on the 'labeled' event, so a PR
+    that was labelled while its body linked a valid issue keeps the label even
+    if the reference is later edited away - and the missing 'Fixes:' only
+    surfaces when the backport runs, long after the merge.
+
+    On 'opened'/'edited' this reads the backport/<release> labels currently on
+    the PR and, when there is at least one, applies the same enforcement. PRs
+    with no backport label (or only backport/none) are never asked for a Fixes:
+    reference, so plain feature or cleanup PRs are unaffected.
+
+    Returns True when an enforcement action was taken, False otherwise.
+    """
+    code, body = _gh_api(
+        "GET",
+        f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}/labels",
+        gh_token,
+    )
+    if code != 200:
+        print(f"Warning: could not list labels on PR #{pr_number} (HTTP {code}); skipping Fixes: re-check.")
+        return False
+
+    backport_labels = [
+        name for name in (label.get("name", "") for label in json.loads(body))
+        if BACKPORT_LABEL_RE.match(name)
+    ]
+    if not backport_labels:
+        print(f"PR #{pr_number} carries no backport/<release> label; no Fixes: reference required.")
+        return False
+
+    print(f"PR #{pr_number} carries backport label(s) {backport_labels}; re-checking the Fixes: reference.")
+    return enforce_backport_fixes_reference(
+        pr_title, pr_body, pr_number, backport_labels[0],
+        owner_repo, gh_token, jira_auth,
+    )
