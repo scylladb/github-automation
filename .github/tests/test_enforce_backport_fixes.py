@@ -211,3 +211,68 @@ def test_does_not_comment_twice(monkeypatch):
     assert result is True
     assert rec.posted_comments() == []  # comment already present; not re-posted
     assert "backport%2F2025.4" in rec.deleted_labels()  # label still removed
+
+
+# ---------------------------------------------------------------------------
+# enforce_backport_fixes_on_body_change (RELENG-81)
+# ---------------------------------------------------------------------------
+
+def test_body_change_without_backport_label_is_a_noop(monkeypatch):
+    """A PR with no backport/<release> label is never asked for a Fixes: reference."""
+    rec = _GhRecorder(labels_json='[{"name": "backport/none"}, {"name": "area/build"}]')
+    monkeypatch.setattr(jsm, "_gh_api", rec)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: pytest.fail("should not validate"))
+
+    result = jsm.enforce_backport_fixes_on_body_change(
+        "title", "no reference", 7, "scylladb/scylladb", "tok", "user:pass",
+    )
+    assert result is False
+    assert rec.posted_comments() == []
+    assert rec.deleted_labels() == []
+
+
+def test_body_change_with_valid_reference_is_allowed(monkeypatch):
+    rec = _GhRecorder(labels_json='[{"name": "backport/2025.4"}]')
+    monkeypatch.setattr(jsm, "_gh_api", rec)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: ["SCYLLADB-123"])
+    monkeypatch.setattr(jsm, "_jira_issue_exists", lambda key, auth: True)
+
+    result = jsm.enforce_backport_fixes_on_body_change(
+        "title", "Fixes: SCYLLADB-123", 7, "scylladb/scylladb", "tok", "user:pass",
+    )
+    assert result is False
+    assert rec.deleted_labels() == []
+
+
+def test_body_edited_to_drop_reference_is_enforced(monkeypatch):
+    """The RELENG-81 gap: label added while valid, reference later edited away."""
+    rec = _GhRecorder(
+        pr_json='{"user": {"login": "alice"}, "assignees": []}',
+        labels_json='[{"name": "backport/2025.4"}, {"name": "P1"}]',
+    )
+    monkeypatch.setattr(jsm, "_gh_api", rec)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: ["__NO_KEYS_FOUND__"])
+
+    result = jsm.enforce_backport_fixes_on_body_change(
+        "title", "reference removed", 7, "scylladb/scylladb", "tok", "user:pass",
+    )
+    assert result is True
+    assert len(rec.posted_comments()) == 1
+    assert "backport%2F2025.4" in rec.deleted_labels()
+    assert all("P1" not in d for d in rec.deleted_labels())
+
+
+def test_body_change_label_lookup_failure_fails_open(monkeypatch):
+    """If the label list can't be read, do nothing rather than penalise the PR."""
+    def failing_gh_api(method, url, gh_token, payload=None):
+        if method == "GET" and url.endswith("/labels"):
+            return 503, "service unavailable"
+        pytest.fail("no further calls expected")
+
+    monkeypatch.setattr(jsm, "_gh_api", failing_gh_api)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: pytest.fail("should not validate"))
+
+    result = jsm.enforce_backport_fixes_on_body_change(
+        "title", "no reference", 7, "scylladb/scylladb", "tok", "user:pass",
+    )
+    assert result is False
