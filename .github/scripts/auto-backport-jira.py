@@ -615,12 +615,15 @@ def find_existing_linked_issue(parent_key: str, version: str) -> Optional[str]:
                     return existing_key
 
         # Current method: issues linked to parent_key
+        # 'fields' must be requested explicitly: the search/jql endpoint returns only
+        # 'id' and 'key' by default, which would make the summary lookup below fail.
         jql = f'issue in linkedIssues("{parent_key}") AND summary ~ "Backport {version}"'
-        result = jira_api_request("POST", "search/jql", data={"jql": jql, "maxResults": 10})
+        result = jira_api_request("POST", "search/jql",
+                                  data={"jql": jql, "maxResults": 10, "fields": ["summary"]})
 
         if result and result.get("issues"):
             for issue in result["issues"]:
-                summary = issue["fields"]["summary"]
+                summary = issue.get("fields", {}).get("summary", "")
                 if _summary_matches_version(summary, version):
                     existing_key = issue["key"]
                     logging.info(f"Found existing linked Jira issue for {parent_key} version {version}: {existing_key} (via JQL)")
