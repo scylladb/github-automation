@@ -47,9 +47,14 @@ SCYLLA_COMPONENTS_FIELD = "customfield_10321"
 SYMPTOM_FIELD = "customfield_11120"
 
 # Terminal status a merged PR moves its linked issues to.
-# Replaces the former "Done" (id 141) target (PM-334).
+# Replaces the former "Done" (transition id 141) target (PM-334).
+#
+# This is the *transition* id, not the status id: jira_status_transition POSTs
+# {"transition": {"id": MERGED_TRANSITION_ID}} to /issue/{key}/transitions.
+# Transition 7 leads to the "Merged" status, whose own id is 10575 - passing
+# the status id here makes Jira reject the request with a 400.
 MERGED_STATUS_NAME = "Merged"
-MERGED_TRANSITION_ID = "10575"
+MERGED_TRANSITION_ID = "7"
 
 # Jira issue types that are excluded from the GitHub sync entirely (PM-334).
 # Epics are planning containers managed by hand, so PR events must not
