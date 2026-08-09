@@ -137,6 +137,53 @@ class TestMainDispatch:
             bp_module.main()
             mock_chain.assert_called_once_with(repo, merged_pr, "scylladb/scylladb")
 
+    def test_chain_backport_waits_for_promotion_on_gating_branch(self, bp_module, make_pr, make_repo):
+        """A backport PR merged into next-X.Y is not promoted yet. Continuing the chain
+        now would backport an unreleased commit, so the chain must wait for the
+        'promoted-to-branch-X.Y' label (added by the push to branch-X.Y)."""
+        repo = make_repo()
+        merged_pr = make_pr(number=6551, merged=True, base_ref="next-2026.3",
+                            labels=["backport/2026.2"])
+        repo.get_pull.return_value = merged_pr
+
+        test_args = [
+            "auto-backport-jira.py",
+            "--repo", "scylladb/scylla-pkg",
+            "--base-branch", "refs/heads/next-2026.3",
+            "--chain-backport",
+            "--merged-pr", "6551"
+        ]
+
+        with patch.object(sys, "argv", test_args), \
+             patch.object(bp_module, "Github") as mock_gh, \
+             patch.object(bp_module, "process_chain_backport") as mock_chain:
+            mock_gh.return_value.get_repo.return_value = repo
+            bp_module.main()
+            mock_chain.assert_not_called()
+
+    def test_chain_backport_continues_once_promoted(self, bp_module, make_pr, make_repo):
+        """Once the commit reaches branch-X.Y the PR carries 'promoted-to-branch-X.Y',
+        so the chain may continue."""
+        repo = make_repo()
+        merged_pr = make_pr(number=6551, merged=True, base_ref="next-2026.3",
+                            labels=["backport/2026.2", "promoted-to-branch-2026.3"])
+        repo.get_pull.return_value = merged_pr
+
+        test_args = [
+            "auto-backport-jira.py",
+            "--repo", "scylladb/scylla-pkg",
+            "--base-branch", "refs/heads/next-2026.3",
+            "--chain-backport",
+            "--merged-pr", "6551"
+        ]
+
+        with patch.object(sys, "argv", test_args), \
+             patch.object(bp_module, "Github") as mock_gh, \
+             patch.object(bp_module, "process_chain_backport") as mock_chain:
+            mock_gh.return_value.get_repo.return_value = repo
+            bp_module.main()
+            mock_chain.assert_called_once_with(repo, merged_pr, "scylladb/scylla-pkg")
+
     def test_chain_backport_skips_unmerged_pr(self, bp_module, make_pr, make_repo):
         repo = make_repo()
         unmerged_pr = make_pr(number=456, merged=False)

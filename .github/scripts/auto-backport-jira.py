@@ -2077,6 +2077,31 @@ def get_promoted_label(base_branch: str) -> str:
     return f'promoted-to-{base_branch}'
 
 
+def is_gating_branch(branch_name: str) -> bool:
+    """
+    Whether merging a PR into this branch is a merge only, not a promotion.
+
+    - 'next'     gates master (scylladb/scylladb)
+    - 'next-X.Y' gates branch-X.Y (scylla-pkg, scylla-dtest, scylla-machine-image)
+
+    Stable branches (master, branch-X.Y, manager-X.Y) are not gated: landing there
+    IS the promotion.
+    """
+    return branch_name == 'next' or branch_name.startswith('next-')
+
+
+def is_promoted(pr) -> bool:
+    """
+    Whether the commits of a PR merged into a gating branch have already been
+    promoted to the matching stable branch, i.e. the PR carries the
+    'promoted-to-<stable branch>' label added by process_branch_push().
+    """
+    if not is_gating_branch(pr.base.ref):
+        return True
+    promoted_label = get_promoted_label(pr.base.ref)
+    return promoted_label in {label.name for label in pr.labels}
+
+
 def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: str):
     """
     Process a push event to a stable branch (e.g., master, branch-2025.4, or manager-3.4).
@@ -2337,10 +2362,22 @@ def main():
     # Handle chain backport mode (legacy - for PR merge events)
     if args.chain_backport and args.merged_pr:
         merged_pr = repo.get_pull(args.merged_pr)
-        if merged_pr.merged:
-            process_chain_backport(repo, merged_pr, repo_name)
-        else:
+        if not merged_pr.merged:
             logging.warning(f"PR #{args.merged_pr} is not merged, skipping chain processing")
+            return
+        # In gated repos a backport PR is first merged into next-X.Y and only later
+        # promoted to branch-X.Y. Continuing the chain on the merge event would
+        # backport a commit that has not been released yet, so wait for the
+        # 'promoted-to-branch-X.Y' label. process_branch_push() picks the PR up again
+        # when the promotion push lands and resumes the chain from there.
+        if not is_promoted(merged_pr):
+            logging.info(
+                f"PR #{merged_pr.number} was merged into gating branch {merged_pr.base.ref} but is "
+                f"not promoted yet (no '{get_promoted_label(merged_pr.base.ref)}' label); "
+                f"waiting for promotion before continuing the chain"
+            )
+            return
+        process_chain_backport(repo, merged_pr, repo_name)
         return
     
     closed_prs = []
