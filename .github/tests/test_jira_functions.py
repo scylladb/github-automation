@@ -359,6 +359,24 @@ class TestFindExistingLinkedIssue:
             jql_arg = mock_jql.call_args.kwargs["data"]["jql"]
             assert 'linkedIssues("SCYLLADB-100")' in jql_arg
 
+    def test_jql_requests_summary_field(self, bp_module):
+        """search/jql returns only 'id' and 'key' unless fields are requested explicitly.
+        Without 'summary' the lookup raised KeyError('fields') and every chained backport
+        silently fell back to the parent Jira key."""
+        parent_issue = {"fields": {"subtasks": []}}
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value={"issues": []}) as mock_jql:
+            bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4")
+            assert mock_jql.call_args.kwargs["data"]["fields"] == ["summary"]
+
+    def test_issue_without_fields_is_skipped(self, bp_module):
+        """A result row missing 'fields' must not raise -- it just doesn't match."""
+        parent_issue = {"fields": {"subtasks": []}}
+        jql_result = {"issues": [{"key": "SCYLLADB-999"}]}
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
+             patch.object(bp_module, "jira_api_request", return_value=jql_result):
+            assert bp_module.find_existing_linked_issue("SCYLLADB-100", "2025.4") is None
+
     def test_not_found(self, bp_module):
         parent_issue = {"fields": {"subtasks": []}}
         with patch.object(bp_module, "get_jira_issue", return_value=parent_issue), \
