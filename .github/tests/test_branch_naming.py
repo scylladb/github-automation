@@ -201,3 +201,35 @@ class TestBackportLabelAndTitlePatterns:
 
     def test_extract_original_title_perf(self, bp_module):
         assert bp_module.extract_original_title("[Backport perf-v15] Fix bug") == "Fix bug"
+
+
+class TestGatingBranch:
+    def test_next_is_gating(self, bp_module):
+        assert bp_module.is_gating_branch("next") is True
+
+    def test_next_version_is_gating(self, bp_module):
+        assert bp_module.is_gating_branch("next-2026.3") is True
+
+    def test_stable_branches_are_not_gating(self, bp_module):
+        assert bp_module.is_gating_branch("master") is False
+        assert bp_module.is_gating_branch("branch-2026.3") is False
+        assert bp_module.is_gating_branch("manager-3.4") is False
+        assert bp_module.is_gating_branch("branch-perf-v15") is False
+
+
+class TestIsPromoted:
+    def test_stable_branch_is_always_promoted(self, bp_module, make_pr):
+        pr = make_pr(base_ref="branch-2026.3", labels=[])
+        assert bp_module.is_promoted(pr) is True
+
+    def test_gating_branch_without_label(self, bp_module, make_pr):
+        pr = make_pr(base_ref="next-2026.3", labels=["backport/2026.2"])
+        assert bp_module.is_promoted(pr) is False
+
+    def test_gating_branch_with_label(self, bp_module, make_pr):
+        pr = make_pr(base_ref="next-2026.3", labels=["promoted-to-branch-2026.3"])
+        assert bp_module.is_promoted(pr) is True
+
+    def test_next_gates_on_master(self, bp_module, make_pr):
+        assert bp_module.is_promoted(make_pr(base_ref="next", labels=[])) is False
+        assert bp_module.is_promoted(make_pr(base_ref="next", labels=["promoted-to-master"])) is True
