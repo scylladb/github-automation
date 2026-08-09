@@ -45,6 +45,46 @@ class TestBackportFunction:
             mock_local_repo.git.cherry_pick.assert_called()
             mock_local_repo.git.push.assert_called_once()
 
+    def test_schedules_backport_issues_once_the_pr_exists(self, bp_module, make_pr, make_repo, make_commit):
+        """The Jira backport issues are created up front for every version; they only
+        become current work when their PR is opened."""
+        repo = make_repo()
+        pr = make_pr(number=10, title="Fix bug")
+        repo.get_commit.return_value = make_commit(sha="abc123", parents=[MagicMock()])
+        mapping = {"RELENG-785": "RELENG-800"}
+        mock_local_repo = MagicMock()
+        mock_local_repo.git.log.return_value = "Fix bug\n\nFixes: RELENG-785\n"
+
+        with patch.object(bp_module, "is_commit_in_branch", return_value=False), \
+             patch("tempfile.TemporaryDirectory") as mock_tmp, \
+             patch.object(bp_module.Repo, "clone_from", return_value=mock_local_repo), \
+             patch.object(bp_module, "create_pull_request", return_value=make_pr(number=42)), \
+             patch.object(bp_module, "schedule_backport_issues") as mock_sched:
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+
+            bp_module.backport(repo, pr, "2025.4", ["abc123"], "branch-2025.4", jira_mapping=mapping)
+            mock_sched.assert_called_once_with(mapping)
+
+    def test_does_not_schedule_when_pr_creation_fails(self, bp_module, make_pr, make_repo, make_commit):
+        repo = make_repo()
+        pr = make_pr(number=10, title="Fix bug")
+        repo.get_commit.return_value = make_commit(sha="abc123", parents=[MagicMock()])
+        mock_local_repo = MagicMock()
+        mock_local_repo.git.log.return_value = "Fix bug\n\nFixes: RELENG-785\n"
+
+        with patch.object(bp_module, "is_commit_in_branch", return_value=False), \
+             patch("tempfile.TemporaryDirectory") as mock_tmp, \
+             patch.object(bp_module.Repo, "clone_from", return_value=mock_local_repo), \
+             patch.object(bp_module, "create_pull_request", return_value=None), \
+             patch.object(bp_module, "schedule_backport_issues") as mock_sched:
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+
+            bp_module.backport(repo, pr, "2025.4", ["abc123"], "branch-2025.4",
+                               jira_mapping={"RELENG-785": "RELENG-800"})
+            mock_sched.assert_not_called()
+
     def test_cherry_pick_conflict_creates_draft(self, bp_module, make_pr, make_repo, make_commit):
         repo = make_repo()
         pr = make_pr(number=10, title="Fix bug")
