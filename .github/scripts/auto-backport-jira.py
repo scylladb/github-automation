@@ -1908,8 +1908,13 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     
     # Get Jira key for this version - try to create sub-issue or use main Jira
     main_jira_key = extract_main_jira_from_body(pr_body)
-    main_pr_link = extract_main_pr_link_from_body(pr_body)
-    
+    # Backports are chained (waterfall): master -> 2026.3 -> 2026.2. The parent of the
+    # PR we are about to create is the PR we just merged, NOT the root original PR --
+    # that is also the branch the commit is cherry-picked from. Do not reuse the
+    # 'Parent PR:' reference found in pr_body, which points one step further up the
+    # chain. get_root_original_pr() walks the chain up whenever the root is needed.
+    main_pr_link = f"#{merged_pr.number}"
+
     # Get Jira accountId for the original PR author to assign sub-issues
     # Trace back to the root original PR to get the actual author (not a bot)
     assignee_account_id = None
@@ -2008,13 +2013,6 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     original_pr_body = original_pr.body if original_pr else merged_pr.body
     
     # Generate PR body for next backport
-    # Resolve the main PR link: prefer extracted link from body, then root original PR,
-    # then fall back to the merged PR number.
-    if not main_pr_link:
-        if original_pr:
-            main_pr_link = f"#{original_pr.number}"
-        else:
-            main_pr_link = f"#{merged_pr.number}"
     new_pr_body = generate_backport_pr_body(
         original_pr_body=original_pr_body,
         main_pr_link=main_pr_link,
