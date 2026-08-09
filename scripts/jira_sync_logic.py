@@ -15,6 +15,8 @@ import sys
 import argparse
 
 from jira_sync_modules import (
+    MERGED_STATUS_NAME,
+    MERGED_TRANSITION_ID,
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
@@ -58,9 +60,8 @@ def manage_labeled_gh_event(
       3.  if label is status/release_blocker  -> also add P0
       4.  extract_jira_issue_details
       5.  apply_jira_labels_to_pr
-      6.  if label is status/merge_candidate  -> transition to Ready for Merge
-      7.  if label starts with promoted-to-:
-            a. add comment  b. transition to Done
+      6.  if label starts with promoted-to-:
+            a. add comment  b. transition to Merged
     """
     print("=" * 60)
     print(" manage_labeled_gh_event  input parameters")
@@ -136,18 +137,9 @@ def manage_labeled_gh_event(
         pr_number, labels_csv, csv_content, triggering_label, owner_repo, gh_token,
     )
 
-    # --- Step 6: status/merge_candidate -> Ready for Merge ---
+    # --- Step 6: promoted-to-* label ---
     print("\n" + "=" * 60)
-    print(" Step 6 / jira_status_transition -> Ready for Merge")
-    print("=" * 60)
-    if triggering_label == "status/merge_candidate":
-        jira_status_transition(csv_content, "Ready for Merge", "131", jira_auth)
-    else:
-        print(f"SKIPPED: triggering_label is '{triggering_label}', not 'status/merge_candidate'")
-
-    # --- Step 7: promoted-to-* label ---
-    print("\n" + "=" * 60)
-    print(" Step 7a / add_comment_to_jira (promoted-to-*)")
+    print(" Step 6a / add_comment_to_jira (promoted-to-*)")
     print("=" * 60)
     if triggering_label.startswith("promoted-to-"):
         pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
@@ -163,10 +155,10 @@ def manage_labeled_gh_event(
               f" (requires label starting with 'promoted-to-')")
 
     print("\n" + "=" * 60)
-    print(" Step 7b / jira_status_transition -> Done")
+    print(f" Step 6b / jira_status_transition -> {MERGED_STATUS_NAME}")
     print("=" * 60)
     if triggering_label.startswith("promoted-to-"):
-        jira_status_transition(csv_content, "Done", "141", jira_auth)
+        jira_status_transition(csv_content, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
     else:
         print(f"SKIPPED: triggering_label is '{triggering_label}'"
               f" (requires label starting with 'promoted-to-')")
@@ -356,7 +348,7 @@ def manage_closed_gh_event(
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
       4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
-      5.  if merged: jira_status_transition -> "Done" (id 141)
+      5.  if merged: jira_status_transition -> "Merged" (id 10575)
     """
     print("=" * 60)
     print(" manage_closed_gh_event  input parameters")
@@ -403,16 +395,16 @@ def manage_closed_gh_event(
     )
 
     # --- Step 4: add "PR closed" comment ---
-    # Skip comment for issues already in a Done/closed state (PM-315).
+    # Skip comment for issues already in a closed state (Merged/Done/...) (PM-315).
     print("\n" + "=" * 60)
     print(" Step 4 / add_comment_to_jira (PR closed)")
     print("=" * 60)
     done_keys = get_done_issue_keys(csv_content)
     commentable_keys = [k for k in keys if k not in done_keys]
     if done_keys:
-        print(f"Skipping 'PR closed' comment for issues already in Done state: {sorted(done_keys)}")
+        print(f"Skipping 'PR closed' comment for issues already in a closed state: {sorted(done_keys)}")
     if not commentable_keys:
-        print("All linked issues are already in a Done state. Skipping comment.")
+        print("All linked issues are already in a closed state. Skipping comment.")
     else:
         commentable_keys_json = json.dumps(commentable_keys)
         pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
@@ -433,12 +425,12 @@ def manage_closed_gh_event(
                 link_url=pr_url,
             )
 
-    # --- Step 5: transition to Done (merged PRs only) ---
+    # --- Step 5: transition to Merged (merged PRs only) ---
     print("\n" + "=" * 60)
-    print(" Step 5 / jira_status_transition -> Done")
+    print(f" Step 5 / jira_status_transition -> {MERGED_STATUS_NAME}")
     print("=" * 60)
     if pr_merged:
-        jira_status_transition(csv_content, "Done", "141", jira_auth)
+        jira_status_transition(csv_content, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
     else:
         print("SKIPPED: PR was closed without merge")
 
@@ -772,9 +764,6 @@ def debug_sync_context():
     print(f"jira-keys-json='{jira_keys_json}'")
     print(f"triggering-label='{label}'")
     print(f"repository='{repository}'")
-
-    if label == 'status/merge_candidate':
-        print("Try to transition Jira issue to 'Ready For Merge'")
 
     if label.startswith('promoted-to-'):
         print(f"Try to close Jira issue ({label} label added)")

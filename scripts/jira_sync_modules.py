@@ -46,6 +46,16 @@ JIRA_BASE_URL = "https://scylladb.atlassian.net"
 SCYLLA_COMPONENTS_FIELD = "customfield_10321"
 SYMPTOM_FIELD = "customfield_11120"
 
+# Terminal status a merged PR moves its linked issues to.
+# Replaces the former "Done" (id 141) target (PM-334).
+MERGED_STATUS_NAME = "Merged"
+MERGED_TRANSITION_ID = "10575"
+
+# Jira issue types that are excluded from the GitHub sync entirely (PM-334).
+# Epics are planning containers managed by hand, so PR events must not
+# label them, transition them, or copy their fields onto the PR.
+_EXCLUDED_ISSUE_TYPES = {"epic"}
+
 # Regex: any JIRA-style key (PROJECT-123) in any text
 _JIRA_KEY_RE = re.compile(r'[A-Za-z]+-[0-9]+')
 
@@ -104,6 +114,41 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
     except (HTTPError, URLError) as exc:
         print(f"Warning: Jira project lookup failed: {exc}")
         return set()
+
+
+def _filter_out_excluded_issue_types(keys: list[str], jira_auth: str) -> list[str]:
+    """Drop issues whose Jira issue type is excluded from the sync (PM-334).
+
+    Currently this removes Epics: they are planning containers that must not be
+    touched by PR-driven automation.  Keys whose type cannot be resolved are
+    kept, so a transient Jira error never silently disables the sync.
+    """
+    if not keys:
+        return keys
+
+    if not jira_auth:
+        print("Warning: jira_auth is not set; skipping issue-type filtering.")
+        return keys
+
+    kept: list[str] = []
+    for key in keys:
+        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields=issuetype"
+        resp = _jira_get(url, jira_auth)
+
+        if resp is None:
+            print(f"Warning: could not resolve issue type for {key}; keeping it.")
+            kept.append(key)
+            continue
+
+        issue_type = ((resp.get("fields") or {}).get("issuetype") or {}).get("name", "")
+        if issue_type.lower() in _EXCLUDED_ISSUE_TYPES:
+            print(f"Discarding {key} - issue type '{issue_type}' is excluded from sync.")
+            continue
+
+        print(f"Keeping {key} (issue type '{issue_type}').")
+        kept.append(key)
+
+    return kept
 
 
 def _fetch_commits(
@@ -166,7 +211,8 @@ def extract_jira_keys(
     1. Extract candidate JIRA keys from the PR body and commit messages.
     2. Accept keys whose project prefix is in the hard-coded set.
     3. For remaining keys, query the Jira API and accept valid prefixes.
-    4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
+    4. Discard issue types excluded from the sync, such as Epics (PM-334).
+    5. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
 
     When owner_repo, pr_number, and gh_token are provided the function
     also fetches the PR's commit messages from the GitHub API and scans
@@ -253,7 +299,13 @@ def extract_jira_keys(
         print("No valid Jira keys found after validation")
         return ["__NO_KEYS_FOUND__"]
 
-    result = sorted(set(accepted))
+    # --- Pass 3: discard issue types the automation must not touch (PM-334) ---
+    result = _filter_out_excluded_issue_types(sorted(set(accepted)), jira_auth)
+
+    if not result:
+        print("All Jira keys were discarded by issue type (e.g. Epics)")
+        return ["__NO_KEYS_FOUND__"]
+
     print("Final Jira keys:")
     for key in result:
         print(f"  {key}")
@@ -955,8 +1007,10 @@ def apply_jira_labels_to_pr(
 # jira_status_transition
 # ---------------------------------------------------------------------------
 
-_WORKING_STATES = {"in progress", "in review", "ready for merge"}
-_CLOSED_STATES = {"done", "won't fix", "duplicate"}
+# "Ready for Merge" was dropped from the workflow (PM-334).
+_WORKING_STATES = {"in progress", "in review"}
+# "Done" is kept so issues closed before the rename are still recognised.
+_CLOSED_STATES = {"merged", "done", "won't fix", "duplicate"}
 
 
 def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
@@ -1109,9 +1163,7 @@ def jira_status_transition(
         # Guard: do not regress issues that are further along in the workflow
         _FORBIDDEN_TRANSITIONS = {
             ('in review', 'in progress'),
-            ('ready for merge', 'in progress'),
-            ('ready for merge', 'in review'),
-            ('done', 'done'),
+            ('merged', 'merged'),
         }
         if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
             print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
