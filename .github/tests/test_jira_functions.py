@@ -715,3 +715,97 @@ class TestTeamInheritance:
             assert mock_api.call_count == 2
             retry_data = mock_api.call_args[0][2]
             assert bp_module.JIRA_TEAM_FIELD not in retry_data["fields"]
+
+
+class TestFindActiveSprintId:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self, bp_module):
+        bp_module._active_sprint_cache.clear()
+        yield
+        bp_module._active_sprint_cache.clear()
+
+    def test_returns_active_sprint_of_first_board(self, bp_module):
+        responses = [
+            {"values": [{"id": 608, "name": "RE board"}]},
+            {"values": [{"id": 2112, "name": "RE Sprint 26#10", "state": "active"}]},
+        ]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses) as mock_api:
+            assert bp_module.find_active_sprint_id("RELENG") == 2112
+            assert mock_api.call_args_list[0].kwargs["api_base"] == "agile/1.0"
+
+    def test_skips_board_without_active_sprint(self, bp_module):
+        """A kanban board answers with an error; keep looking at the other boards."""
+        responses = [
+            {"values": [{"id": 1}, {"id": 2}]},
+            None,
+            {"values": [{"id": 2112, "state": "active"}]},
+        ]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses):
+            assert bp_module.find_active_sprint_id("RELENG") == 2112
+
+    def test_none_when_between_sprints(self, bp_module):
+        responses = [{"values": [{"id": 608}]}, {"values": []}]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses):
+            assert bp_module.find_active_sprint_id("RELENG") is None
+
+    def test_none_when_project_has_no_board(self, bp_module):
+        with patch.object(bp_module, "jira_api_request", return_value={"values": []}):
+            assert bp_module.find_active_sprint_id("RELENG") is None
+
+    def test_result_is_cached_per_project(self, bp_module):
+        responses = [{"values": [{"id": 608}]}, {"values": [{"id": 2112, "state": "active"}]}]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses) as mock_api:
+            assert bp_module.find_active_sprint_id("RELENG") == 2112
+            assert bp_module.find_active_sprint_id("RELENG") == 2112
+            assert mock_api.call_count == 2
+
+
+class TestScheduleBackportIssue:
+    def test_sets_sprint_and_zero_points(self, bp_module):
+        with patch.object(bp_module, "find_active_sprint_id", return_value=2112), \
+             patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800") is True
+            method, endpoint, data = mock_api.call_args[0]
+            assert (method, endpoint) == ("PUT", "issue/RELENG-800")
+            assert data["fields"][bp_module.JIRA_SPRINT_FIELD] == 2112
+            assert data["fields"][bp_module.JIRA_STORY_POINTS_FIELD] == 0
+
+    def test_sets_points_even_without_an_active_sprint(self, bp_module):
+        with patch.object(bp_module, "find_active_sprint_id", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800") is True
+            data = mock_api.call_args[0][2]
+            assert data["fields"][bp_module.JIRA_STORY_POINTS_FIELD] == 0
+            assert bp_module.JIRA_SPRINT_FIELD not in data["fields"]
+
+    def test_retries_with_sprint_id_as_list(self, bp_module):
+        with patch.object(bp_module, "find_active_sprint_id", return_value=2112), \
+             patch.object(bp_module, "jira_api_request", side_effect=[None, {}]) as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800") is True
+            assert mock_api.call_args[0][2]["fields"][bp_module.JIRA_SPRINT_FIELD] == [2112]
+
+    def test_failure_is_reported_not_raised(self, bp_module):
+        with patch.object(bp_module, "find_active_sprint_id", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value=None):
+            assert bp_module.schedule_backport_issue("RELENG-800") is False
+
+
+class TestScheduleBackportIssues:
+    def test_schedules_each_backport_issue(self, bp_module):
+        mapping = {"RELENG-785": "RELENG-800", "SCYLLADB-1": "SCYLLADB-2"}
+        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
+            bp_module.schedule_backport_issues(mapping)
+            assert {c[0][0] for c in mock_sched.call_args_list} == {"RELENG-800", "SCYLLADB-2"}
+
+    def test_skips_parent_key_fallback(self, bp_module):
+        """When no backport issue was resolved the mapping points at the parent -- the
+        parent's own sprint and estimate must be left alone."""
+        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
+            bp_module.schedule_backport_issues({"RELENG-785": "RELENG-785"})
+            mock_sched.assert_not_called()
+
+    def test_handles_empty_mapping(self, bp_module):
+        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
+            bp_module.schedule_backport_issues(None)
+            bp_module.schedule_backport_issues({})
+            mock_sched.assert_not_called()

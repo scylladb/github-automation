@@ -60,6 +60,13 @@ BACKPORT_LINK_TYPE = "Relates"
 # Jira Cloud, so these hold for every project the automation touches (RELENG,
 # SCYLLADB, DTEST, ...), as long as the field is on that project's screen.
 JIRA_TEAM_FIELD = "customfield_10001"
+JIRA_SPRINT_FIELD = "customfield_10020"
+JIRA_STORY_POINTS_FIELD = "customfield_10036"
+# Backport issues carry no estimate of their own -- the work was estimated on the
+# original issue -- so they land in the sprint with a zero estimate.
+BACKPORT_STORY_POINTS = 0
+# project key -> active sprint id (or None), resolved once per run
+_active_sprint_cache = {}
 SCYLLADB_REPO_NAME = "scylladb/scylladb"
 SCYLLA_PKG_REPO_NAME = "scylladb/scylla-pkg"
 SCYLLA_CLUSTER_TESTS_REPO_NAME = "scylladb/scylla-cluster-tests"
@@ -370,13 +377,19 @@ def set_pr_milestone(pr, milestone_title: Optional[str]) -> bool:
 # Jira API functions
 # ============================================================================
 
-def jira_api_request(method: str, endpoint: str, data: dict = None) -> Optional[dict]:
-    """Make a request to Jira API."""
+def jira_api_request(method: str, endpoint: str, data: dict = None,
+                     api_base: str = "api/3") -> Optional[dict]:
+    """
+    Make a request to Jira API.
+
+    api_base selects the API family: 'api/3' for the platform REST API (the default)
+    or 'agile/1.0' for the Jira Software (Agile) API, which owns boards and sprints.
+    """
     if not JIRA_USER or not JIRA_API_TOKEN:
         logging.warning("Jira credentials not configured")
         return None
-    
-    url = f"{JIRA_BASE_URL}/rest/api/3/{endpoint}"
+
+    url = f"{JIRA_BASE_URL}/rest/{api_base}/{endpoint}"
     auth_string = base64.b64encode(f"{JIRA_USER}:{JIRA_API_TOKEN}".encode()).decode()
     headers = {
         "Authorization": f"Basic {auth_string}",
@@ -816,6 +829,83 @@ def create_jira_linked_issue(parent_key: str, version: str, original_title: str,
         logging.warning(f"Created {new_key} but failed to link it to {parent_key}")
 
     return new_key
+
+
+def find_active_sprint_id(project_key: str) -> Optional[int]:
+    """
+    Find the id of the sprint currently running for a project, by asking the Agile
+    API for the project's boards and taking the first one with an active sprint.
+
+    Returns None when the project has no scrum board or is between sprints -- both
+    are normal, and simply mean the issue stays in the backlog.
+    """
+    if project_key in _active_sprint_cache:
+        return _active_sprint_cache[project_key]
+
+    sprint_id = None
+    try:
+        boards = jira_api_request("GET", f"board?projectKeyOrId={project_key}", api_base="agile/1.0")
+        for board in (boards or {}).get("values", []):
+            board_id = board.get("id")
+            if board_id is None:
+                continue
+            # Kanban boards have no sprints and answer this with an error
+            sprints = jira_api_request("GET", f"board/{board_id}/sprint?state=active",
+                                       api_base="agile/1.0")
+            for sprint in (sprints or {}).get("values", []):
+                sprint_id = sprint.get("id")
+                if sprint_id is not None:
+                    logging.info(f"Active sprint for {project_key}: {sprint.get('name')} (id {sprint_id})")
+                    break
+            if sprint_id is not None:
+                break
+        else:
+            logging.info(f"No active sprint found for project {project_key}")
+    except Exception as e:
+        logging.warning(f"Error looking up the active sprint for {project_key}: {e}")
+
+    _active_sprint_cache[project_key] = sprint_id
+    return sprint_id
+
+
+def schedule_backport_issue(issue_key: str) -> bool:
+    """
+    Put a backport issue into the current sprint with a zero estimate, so it shows up
+    on the board as soon as its backport PR is open instead of sitting in the backlog.
+
+    Best-effort: a failure here must never break the backport itself.
+    """
+    sprint_id = find_active_sprint_id(extract_project_from_jira_key(issue_key))
+
+    fields = {JIRA_STORY_POINTS_FIELD: BACKPORT_STORY_POINTS}
+    if sprint_id is not None:
+        fields[JIRA_SPRINT_FIELD] = sprint_id
+
+    result = jira_api_request("PUT", f"issue/{issue_key}", {"fields": fields})
+    if result is None and sprint_id is not None:
+        # Some board configurations reject a bare sprint id and want a list
+        fields[JIRA_SPRINT_FIELD] = [sprint_id]
+        result = jira_api_request("PUT", f"issue/{issue_key}", {"fields": fields})
+
+    if result is None:
+        logging.warning(f"Could not set sprint/story points on {issue_key}")
+        return False
+
+    logging.info(f"Set {issue_key} to sprint {sprint_id} with {BACKPORT_STORY_POINTS} story points")
+    return True
+
+
+def schedule_backport_issues(jira_mapping: Dict[str, str]):
+    """
+    Schedule every backport issue in jira_mapping. Entries where the backport issue
+    could not be resolved map a parent key to itself -- skip those, the parent issue
+    keeps its own sprint and estimate.
+    """
+    if not JIRA_USER or not JIRA_API_TOKEN:
+        return
+    for parent_key, backport_key in (jira_mapping or {}).items():
+        if backport_key and backport_key != parent_key:
+            schedule_backport_issue(backport_key)
 
 
 def add_jira_comment(issue_key: str, comment: str) -> bool:
@@ -1609,11 +1699,16 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                     except GitCommandError as e:
                         logging.warning(f"Failed to amend commit message: {e}")
             repo_local.git.push(fork_repo, new_branch_name, force=True)
-            return create_pull_request(repo, new_branch_name, backport_base_branch, pr, backport_pr_title, commits,
+            backport_pr = create_pull_request(repo, new_branch_name, backport_base_branch, pr, backport_pr_title, commits,
                                 is_draft=is_draft, pr_body=pr_body, jira_failed=jira_failed,
                                 remaining_backport_labels=remaining_backport_labels,
                                 original_pr=original_pr, warn_missing_fixes=warn_missing_fixes,
                                 backport_version=version)
+            # The backport issues are created up front for every version, but only
+            # become actual work once their PR exists -- schedule them at that point.
+            if backport_pr:
+                schedule_backport_issues(jira_mapping)
+            return backport_pr
         except GitCommandError as e:
             logging.warning(f"GitCommandError: {e}")
             return None
