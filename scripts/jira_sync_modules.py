@@ -72,6 +72,16 @@ REQUIRED_FIXES_COMMENT = (
     "please update PR body with a valid ref to an issue and add the backport label again."
 )
 
+# Repositories where a backport label requires a valid 'Fixes:' reference in the
+# PR body (RELENG-175 / RELENG-81). Everywhere else a PR can still be backported
+# without one, so the enforcement is a no-op there.
+FIXES_ENFORCEMENT_REPOS = {"scylladb/scylladb"}
+
+
+def _fixes_enforcement_enabled(owner_repo: str) -> bool:
+    """Whether the 'Fixes:' backport requirement applies to this repository."""
+    return (owner_repo or "").strip().lower() in FIXES_ENFORCEMENT_REPOS
+
 
 def _sanitize(text: str) -> str:
     """Remove carriage returns and backticks (matches the shell workflow)."""
@@ -1431,9 +1441,17 @@ def enforce_backport_fixes_reference(
     rejected. backport/none does not match BACKPORT_LABEL_RE and is therefore
     never enforced.
 
+    The requirement only applies to the repositories in FIXES_ENFORCEMENT_REPOS
+    (scylladb/scylladb); in every other repo a PR is backported as before, even
+    without a Fixes: reference.
+
     Returns True when an enforcement action was taken (comment and/or label
     removal), False otherwise.
     """
+    if not _fixes_enforcement_enabled(owner_repo):
+        print(f"Repository '{owner_repo}' does not require a Fixes: reference for backports; nothing to enforce.")
+        return False
+
     if not BACKPORT_LABEL_RE.match(triggering_label):
         print(f"Label '{triggering_label}' is not a backport/<release> label; nothing to enforce.")
         return False
@@ -1494,8 +1512,15 @@ def enforce_backport_fixes_on_body_change(
     with no backport label (or only backport/none) are never asked for a Fixes:
     reference, so plain feature or cleanup PRs are unaffected.
 
+    Like enforce_backport_fixes_reference, this only applies to the repositories
+    in FIXES_ENFORCEMENT_REPOS.
+
     Returns True when an enforcement action was taken, False otherwise.
     """
+    if not _fixes_enforcement_enabled(owner_repo):
+        print(f"Repository '{owner_repo}' does not require a Fixes: reference for backports; skipping re-check.")
+        return False
+
     code, body = _gh_api(
         "GET",
         f"https://api.github.com/repos/{owner_repo}/issues/{pr_number}/labels",

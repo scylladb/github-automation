@@ -119,6 +119,41 @@ def test_non_backport_label_is_a_noop(monkeypatch):
     assert called == []  # no GitHub calls at all
 
 
+def test_other_repo_is_a_noop(monkeypatch):
+    """Only scylladb/scylladb requires a Fixes: reference; other repos backport as before."""
+    rec = _GhRecorder(
+        pr_json='{"user": {"login": "alice"}, "assignees": []}',
+        labels_json='[{"name": "backport/2025.4"}]',
+    )
+    monkeypatch.setattr(jsm, "_gh_api", rec)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: pytest.fail("should not validate"))
+
+    result = jsm.enforce_backport_fixes_reference(
+        "title", "no reference here", 6543, "backport/2025.4",
+        "scylladb/scylla-pkg", "tok", "user:pass",
+    )
+    assert result is False
+    assert rec.calls == []  # no comment, no label removal
+
+
+def test_other_repo_body_change_is_a_noop(monkeypatch):
+    rec = _GhRecorder(labels_json='[{"name": "backport/2025.4"}]')
+    monkeypatch.setattr(jsm, "_gh_api", rec)
+    monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: pytest.fail("should not validate"))
+
+    result = jsm.enforce_backport_fixes_on_body_change(
+        "title", "no reference here", 6543, "scylladb/scylla-dtest", "tok", "user:pass",
+    )
+    assert result is False
+    assert rec.calls == []
+
+
+def test_enforcement_repo_match():
+    assert jsm._fixes_enforcement_enabled("scylladb/scylladb") is True
+    assert jsm._fixes_enforcement_enabled("scylladb/scylla-pkg") is False
+    assert jsm._fixes_enforcement_enabled("") is False
+
+
 def test_valid_existing_reference_allows_backport(monkeypatch):
     rec = _GhRecorder()
     monkeypatch.setattr(jsm, "_gh_api", rec)
