@@ -167,6 +167,25 @@ class TestLabelPromotedCommits:
         assert processed == {7}
         mock_post.assert_called_once()
 
+    def test_dedupes_ordinary_pr_found_via_direct_search_across_commits(self, sc_module):
+        """Two commits of the same PR (e.g. a merge commit range) both match
+        via the direct sha search - only the first should trigger a label POST."""
+        commits = [_commit("sha1", "msg1"), _commit("sha2", "msg2")]
+        add_label_resp = _response({})
+
+        with patch.object(sc_module.http, "get", side_effect=[
+                 _response({"items": [{"number": 88, "body": ""}]}),
+                 _response({"items": [{"number": 88, "body": ""}]}),
+             ]), \
+             patch.object(sc_module.http, "post", return_value=add_label_resp) as mock_post:
+            processed = sc_module.label_promoted_commits(
+                "scylladb/scylladb", commits, "refs/heads/master",
+                "promoted-to-master", "tok",
+            )
+
+        assert processed == {88}
+        mock_post.assert_called_once()
+
     def test_null_pr_body_does_not_crash(self, sc_module):
         """A PR with no description (body=None) must not raise and abort
         every later commit/PR - it just isn't a backport PR, so it gets the
