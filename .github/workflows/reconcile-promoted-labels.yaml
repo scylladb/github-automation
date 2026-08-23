@@ -40,17 +40,17 @@ jobs:
 
       - name: Ensure reconciliation token is configured
         env:
-          GITHUB_TOKEN: ${{ secrets.PROMOTED_LABEL_RECONCILE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.AUTO_BACKPORT_TOKEN }}
         run: |
           if [ -z "${GITHUB_TOKEN}" ]; then
-            echo "::error::PROMOTED_LABEL_RECONCILE_TOKEN secret is not set - cannot reconcile labels."
+            echo "::error::AUTO_BACKPORT_TOKEN secret is not set - cannot reconcile labels."
             exit 1
           fi
 
       - name: Reconcile promoted-to-* labels
         working-directory: .github/scripts
         env:
-          GITHUB_TOKEN: ${{ secrets.PROMOTED_LABEL_RECONCILE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.AUTO_BACKPORT_TOKEN }}
         run: |
           python reconcile_promoted_labels.py \
             --repository "${RECONCILE_REPOSITORY}" \
