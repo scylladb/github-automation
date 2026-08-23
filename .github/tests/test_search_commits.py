@@ -49,9 +49,11 @@ def _commit(sha, message):
     return commit
 
 
-def _response(json_data, ok=True):
+def _response(json_data, ok=True, status_code=None):
     resp = MagicMock()
     resp.ok = ok
+    resp.status_code = status_code if status_code is not None else (200 if ok else 500)
+    resp.text = str(json_data)
     resp.json.return_value = json_data
     return resp
 
@@ -164,6 +166,69 @@ class TestLabelPromotedCommits:
 
         assert processed == {7}
         mock_post.assert_called_once()
+
+    def test_null_pr_body_does_not_crash(self, sc_module):
+        """A PR with no description (body=None) must not raise and abort
+        every later commit/PR - it just isn't a backport PR, so it gets the
+        plain promoted label."""
+        commit = _commit("sha1", "Fix bug\n\nCloses scylladb/scylladb#42")
+        search_resp = _response({"items": [{"number": 42, "body": None}]})
+        add_label_resp = _response({})
+
+        with patch.object(sc_module.http, "get", return_value=search_resp), \
+             patch.object(sc_module.http, "post", return_value=add_label_resp) as mock_post:
+            processed = sc_module.label_promoted_commits(
+                "scylladb/scylladb", [commit], "refs/heads/master",
+                "promoted-to-master", "tok",
+            )
+
+        assert processed == {42}
+        assert mock_post.call_args[1]["json"] == {"labels": ["promoted-to-master"]}
+
+    def test_raises_on_failed_search_request(self, sc_module):
+        commit = _commit("sha1", "msg")
+        failed_resp = _response({"message": "rate limit exceeded"}, ok=False, status_code=403)
+
+        with patch.object(sc_module.http, "get", return_value=failed_resp), \
+             patch.object(sc_module.http, "post") as mock_post:
+            with pytest.raises(RuntimeError, match="Searching for PRs"):
+                sc_module.label_promoted_commits(
+                    "scylladb/scylladb", [commit], "refs/heads/master",
+                    "promoted-to-master", "tok",
+                )
+
+        mock_post.assert_not_called()
+
+    def test_raises_on_failed_label_add_and_leaves_pr_unprocessed(self, sc_module):
+        commit = _commit("sha1", "msg")
+        search_resp = _response({"items": [{"number": 55, "body": ""}]})
+        failed_post = _response({"message": "Internal Server Error"}, ok=False, status_code=500)
+
+        with patch.object(sc_module.http, "get", return_value=search_resp), \
+             patch.object(sc_module.http, "post", return_value=failed_post):
+            with pytest.raises(RuntimeError, match="Adding label"):
+                sc_module.label_promoted_commits(
+                    "scylladb/scylladb", [commit], "refs/heads/master",
+                    "promoted-to-master", "tok",
+                )
+        # A failure must not let the PR silently count as done.
+
+    def test_404_on_closes_fallback_pr_fetch_is_not_an_error(self, sc_module):
+        """A 'Closes #NNN' reference to a PR number that no longer exists
+        (stale/typo) should be skipped quietly, not treated as an API failure."""
+        commit = _commit("sha1", "Closes scylladb/scylladb#404")
+        search_resp = _response({"items": []})
+        not_found_resp = _response({"message": "Not Found"}, ok=False, status_code=404)
+
+        with patch.object(sc_module.http, "get", side_effect=[search_resp, not_found_resp]), \
+             patch.object(sc_module.http, "post") as mock_post:
+            processed = sc_module.label_promoted_commits(
+                "scylladb/scylladb", [commit], "refs/heads/master",
+                "promoted-to-master", "tok",
+            )
+
+        assert processed == set()
+        mock_post.assert_not_called()
 
 
 class TestReconcilePromotedLabels:

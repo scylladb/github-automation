@@ -47,6 +47,16 @@ def requests_session_with_retries() -> requests.Session:
 http = requests_session_with_retries()
 
 
+def _raise_for_status(response, action, ok_statuses=()):
+    """Raise loudly on a failed GitHub API call instead of letting the
+    caller silently treat it as 'no match' or 'nothing to do'. `http`
+    already retries transient 5xx/403/429 extensively, so a response that
+    still isn't ok here is a persistent failure worth stopping for."""
+    if response.ok or response.status_code in ok_statuses:
+        return
+    raise RuntimeError(f"{action} failed: HTTP {response.status_code} {response.text}")
+
+
 def parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--repository', type=str, default='scylladb/scylla-pkg', help='Github repository name')
@@ -112,6 +122,7 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
             "q": query,
         }
         response = http.get(search_url, headers=headers, params=params)
+        _raise_for_status(response, f"Searching for PRs matching commit {commit.sha}")
         prs = response.json().get("items", [])
         # Fallback: if the commit message has "Closes" references, include those PRs too
         # This handles PRs closed by pushing a rebased commit directly (different SHA than the PR's head)
@@ -129,6 +140,9 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
             if pr_num not in found_pr_numbers and pr_num not in processed_prs:
                 pr_url = f'https://api.github.com/repos/{repository}/pulls/{pr_num}'
                 pr_response = http.get(pr_url, headers=headers)
+                # A 404 here means the referenced PR number genuinely doesn't
+                # exist (e.g. a stale/typo'd reference) - not a failure to raise on.
+                _raise_for_status(pr_response, f"Fetching PR #{pr_num}", ok_statuses=(404,))
                 if pr_response.ok:
                     pr_data = pr_response.json()
                     if pr_data.get("state") == "closed":
@@ -140,7 +154,10 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
                             continue
                         prs.append(pr_data)
         for pr in prs:
-            match = re.findall(r'Parent PR: #(\d+)', pr["body"])
+            # Body can legitimately be None (empty PR description) - don't let
+            # that crash the run and strand every later PR/commit unprocessed.
+            pr_body = pr.get("body") or ""
+            match = re.findall(r'Parent PR: #(\d+)', pr_body)
             if match:
                 pr_number = int(match[0])
                 if pr_number in processed_prs:
@@ -153,10 +170,9 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
                     "labels": [f'{label_to_remove}']
                 }
                 response = http.delete(remove_label_url, headers=headers, json=del_data)
-                if response.ok:
-                    print(f'Label {label_to_remove} removed successfully')
-                else:
-                    print(f'Label {label_to_remove} cant be removed')
+                # A 404 means the PR simply didn't have that label anymore - fine.
+                _raise_for_status(response, f"Removing label {label_to_remove} from PR #{pr_number}", ok_statuses=(404,))
+                print(f'Label {label_to_remove} removed successfully')
             else:
                 pr_number = pr["number"]
                 label_to_add = promoted_label
@@ -165,10 +181,11 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
             }
             add_label_url = f'https://api.github.com/repos/{repository}/issues/{pr_number}/labels'
             response = http.post(add_label_url, headers=headers, json=data)
-            if response.ok:
-                print(f"Label added successfully to {add_label_url}")
-            else:
-                print(f"No label was added to {add_label_url}")
+            _raise_for_status(response, f"Adding label {label_to_add} to PR #{pr_number}")
+            print(f"Label added successfully to {add_label_url}")
+            # Only mark a PR processed once its label update actually succeeded,
+            # so a failure here surfaces loudly instead of the run reporting
+            # success while the PR is still unlabeled.
             processed_prs.add(pr_number)
     return processed_prs
 
