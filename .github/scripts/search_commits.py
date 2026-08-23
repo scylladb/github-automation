@@ -77,32 +77,39 @@ def get_promoted_label_for_ref(ref: str) -> str:
     return f'promoted-to-{branch}'
 
 
-def main():
-    args = parser()
+def label_promoted_commits(repository, commits, ref, label, github_token):
+    """
+    Scan `commits` (an iterable of PyGithub Commit objects) for PRs that were
+    promoted to `ref`, and apply the appropriate promoted-to-* label.
 
+    Shared between the push-triggered path (main(), fed with the exact
+    before..after range of a single push) and the periodic reconciliation
+    path (reconcile_promoted_labels.py, fed with a lookback window of recent
+    commits), which exists because a dropped push webhook otherwise leaves a
+    promoted PR unlabeled forever - see RELENG-824.
+
+    Re-running this over the same commits is safe: adding a label a PR
+    already has, or removing one it no longer has, is a no-op on GitHub's side.
+    """
     # Skip gating branches (next-X.Y, next) - labels should only be added
     # when commits are promoted to the stable branch (branch-X.Y, master)
-    branch = args.ref.replace('refs/heads/', '') if args.ref.startswith('refs/heads/') else args.ref
+    branch = ref.replace('refs/heads/', '') if ref.startswith('refs/heads/') else ref
     if branch.startswith('next-') or branch == 'next':
         print(f"Skipping push to gating branch {branch} - waiting for promotion to stable branch")
-        return
+        return set()
 
-    g = Github(github_token, retry=GITHUB_RETRY)
-    repo = g.get_repo(args.repository, lazy=False)
-    start_commit, end_commit = args.commits.split('..')
-    commits = repo.compare(start_commit, end_commit).commits
     # Compute the correct promoted label based on the branch
-    promoted_label = get_promoted_label_for_ref(args.ref) if args.label == 'promoted-to-master' else args.label
+    promoted_label = get_promoted_label_for_ref(ref) if label == 'promoted-to-master' else label
+    headers = {
+        "Authorization": f"token {github_token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
     processed_prs = set()
     for commit in commits:
-        search_url = f'https://api.github.com/search/issues'
-        query = f"repo:{args.repository} is:pr is:closed sha:{commit.sha}"
+        search_url = 'https://api.github.com/search/issues'
+        query = f"repo:{repository} is:pr is:closed sha:{commit.sha}"
         params = {
             "q": query,
-        }
-        headers = {
-            "Authorization": f"token {github_token}",
-            "Accept": "application/vnd.github.v3+json"
         }
         response = http.get(search_url, headers=headers, params=params)
         prs = response.json().get("items", [])
@@ -112,15 +119,15 @@ def main():
         # because promoter commits may contain Closes references to PRs from other branches.
         found_pr_numbers = {pr["number"] for pr in prs}
         close_refs = re.findall(
-            rf'Closes\s+(?:{re.escape(args.repository)}#|#)(\d+)',
+            rf'Closes\s+(?:{re.escape(repository)}#|#)(\d+)',
             commit.commit.message
         )
         # Extract the short branch name from the ref for comparison
-        target_branch = args.ref.replace('refs/heads/', '') if args.ref.startswith('refs/heads/') else args.ref
-        for ref in close_refs:
-            pr_num = int(ref)
+        target_branch = branch
+        for close_ref in close_refs:
+            pr_num = int(close_ref)
             if pr_num not in found_pr_numbers and pr_num not in processed_prs:
-                pr_url = f'https://api.github.com/repos/{args.repository}/pulls/{pr_num}'
+                pr_url = f'https://api.github.com/repos/{repository}/pulls/{pr_num}'
                 pr_response = http.get(pr_url, headers=headers)
                 if pr_response.ok:
                     pr_data = pr_response.json()
@@ -138,10 +145,10 @@ def main():
                 pr_number = int(match[0])
                 if pr_number in processed_prs:
                     continue
-                ref = re.search(r'-(\d+\.\d+)', args.ref)
-                label_to_add = f'backport/{ref.group(1)}-done'
-                label_to_remove = f'backport/{ref.group(1)}'
-                remove_label_url = f'https://api.github.com/repos/{args.repository}/issues/{pr_number}/labels/{label_to_remove}'
+                version_ref = re.search(r'-(\d+\.\d+)', ref)
+                label_to_add = f'backport/{version_ref.group(1)}-done'
+                label_to_remove = f'backport/{version_ref.group(1)}'
+                remove_label_url = f'https://api.github.com/repos/{repository}/issues/{pr_number}/labels/{label_to_remove}'
                 del_data = {
                     "labels": [f'{label_to_remove}']
                 }
@@ -156,13 +163,23 @@ def main():
             data = {
                 "labels": [f'{label_to_add}']
             }
-            add_label_url = f'https://api.github.com/repos/{args.repository}/issues/{pr_number}/labels'
+            add_label_url = f'https://api.github.com/repos/{repository}/issues/{pr_number}/labels'
             response = http.post(add_label_url, headers=headers, json=data)
             if response.ok:
                 print(f"Label added successfully to {add_label_url}")
             else:
                 print(f"No label was added to {add_label_url}")
             processed_prs.add(pr_number)
+    return processed_prs
+
+
+def main():
+    args = parser()
+    g = Github(github_token, retry=GITHUB_RETRY)
+    repo = g.get_repo(args.repository, lazy=False)
+    start_commit, end_commit = args.commits.split('..')
+    commits = repo.compare(start_commit, end_commit).commits
+    label_promoted_commits(args.repository, commits, args.ref, args.label, github_token)
 
 
 if __name__ == "__main__":

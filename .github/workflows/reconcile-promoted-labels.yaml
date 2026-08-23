@@ -1,0 +1,49 @@
+name: Reconcile promoted-to-* labels
+
+# Safety net for search_commits.py: it labels PRs off a single push event's
+# commit range, so a dropped push webhook leaves a PR unlabeled forever with
+# nothing to retry it (RELENG-824). This re-scans recent commits on a
+# schedule, independent of push events, and re-applies any missing labels.
+on:
+  schedule:
+    - cron: '23 */2 * * *'  # every 2 hours, offset off the hour mark
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Repository to reconcile (owner/name)'
+        required: false
+        default: 'scylladb/scylladb'
+      branches:
+        description: 'Comma-separated branches to reconcile'
+        required: false
+        default: 'master'
+      lookback:
+        description: 'How many recent commits per branch to re-scan'
+        required: false
+        default: '500'
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RECONCILE_REPOSITORY: ${{ github.event.inputs.repository || 'scylladb/scylladb' }}
+      RECONCILE_BRANCHES: ${{ github.event.inputs.branches || 'master' }}
+      RECONCILE_LOOKBACK: ${{ github.event.inputs.lookback || '500' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install dependencies
+        run: sudo apt-get install -y python3-github python3-requests
+
+      - name: Reconcile promoted-to-* labels
+        working-directory: .github/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROMOTED_LABEL_RECONCILE_TOKEN }}
+        run: |
+          python reconcile_promoted_labels.py \
+            --repository "${RECONCILE_REPOSITORY}" \
+            --branches "${RECONCILE_BRANCHES}" \
+            --lookback "${RECONCILE_LOOKBACK}"
