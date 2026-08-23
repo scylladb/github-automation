@@ -158,10 +158,13 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
             # that crash the run and strand every later PR/commit unprocessed.
             pr_body = pr.get("body") or ""
             match = re.findall(r'Parent PR: #(\d+)', pr_body)
+            pr_number = int(match[0]) if match else pr["number"]
+            # Multiple scanned commits can resolve to the same PR (e.g. several
+            # commits of one squashed/merged PR all matching the sha search) -
+            # skip it once already labeled instead of re-issuing the same POST.
+            if pr_number in processed_prs:
+                continue
             if match:
-                pr_number = int(match[0])
-                if pr_number in processed_prs:
-                    continue
                 version_ref = re.search(r'-(\d+\.\d+)', ref)
                 label_to_add = f'backport/{version_ref.group(1)}-done'
                 label_to_remove = f'backport/{version_ref.group(1)}'
@@ -174,7 +177,6 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
                 _raise_for_status(response, f"Removing label {label_to_remove} from PR #{pr_number}", ok_statuses=(404,))
                 print(f'Label {label_to_remove} removed successfully')
             else:
-                pr_number = pr["number"]
                 label_to_add = promoted_label
             data = {
                 "labels": [f'{label_to_add}']
