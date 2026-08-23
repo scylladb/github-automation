@@ -38,6 +38,15 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get install -y python3-github python3-requests
 
+      - name: Ensure reconciliation token is configured
+        env:
+          GITHUB_TOKEN: ${{ secrets.PROMOTED_LABEL_RECONCILE_TOKEN }}
+        run: |
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "::error::PROMOTED_LABEL_RECONCILE_TOKEN secret is not set - cannot reconcile labels."
+            exit 1
+          fi
+
       - name: Reconcile promoted-to-* labels
         working-directory: .github/scripts
         env:
