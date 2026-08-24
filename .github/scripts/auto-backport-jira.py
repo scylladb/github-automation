@@ -831,55 +831,158 @@ def create_jira_linked_issue(parent_key: str, version: str, original_title: str,
     return new_key
 
 
-def find_active_sprint_id(project_key: str) -> Optional[int]:
+def get_issue_sprint_id(issue: dict) -> Optional[int]:
+    """
+    Read the active sprint id from a Jira issue's Sprint field, if any.
+
+    The field returns every sprint the issue has ever passed through; only the
+    one currently marked 'active' reflects where the issue is right now.
+    """
+    try:
+        sprints = issue.get("fields", {}).get(JIRA_SPRINT_FIELD)
+    except Exception:
+        return None
+    if not sprints:
+        return None
+    for sprint in sprints:
+        if isinstance(sprint, dict) and sprint.get("state") == "active":
+            return sprint.get("id")
+    return None
+
+
+# Distinct from a real "the parent has no active sprint" result, so a transient
+# API failure while reading the parent isn't mistaken for that and doesn't cause
+# Distinct from a real "no active sprint" result, so a failure to look one up
+# (a transient API error, or the request itself failing) isn't mistaken for
+# that and doesn't cause schedule_backport_issue() to unschedule (move to
+# backlog) a backport that's actually fine -- we just couldn't confirm it.
+SPRINT_LOOKUP_FAILED = object()
+
+
+def resolve_parent_sprint_id(parent_key: str):
+    """
+    Find the sprint a backport issue should inherit: the sprint parent_key is
+    currently in. This keeps the backport on the same team's board instead of
+    whichever other team's board happens to be first when searching by project
+    key alone (see RELENG-827).
+
+    Returns a sprint id, None if the parent has no active sprint, or
+    SPRINT_LOOKUP_FAILED if the parent issue itself couldn't be read.
+    """
+    parent_issue = get_jira_issue(parent_key)
+    if parent_issue is None:
+        return SPRINT_LOOKUP_FAILED
+    return get_issue_sprint_id(parent_issue)
+
+
+def find_active_sprint_id(project_key: str):
     """
     Find the id of the sprint currently running for a project, by asking the Agile
     API for the project's boards and taking the first one with an active sprint.
 
     Returns None when the project has no scrum board or is between sprints -- both
-    are normal, and simply mean the issue stays in the backlog.
+    are normal, and simply mean the issue stays in the backlog. Returns
+    SPRINT_LOOKUP_FAILED when the search couldn't be completed reliably: either
+    the board lookup itself failed (a failed request returns None from
+    jira_api_request, distinct from the {} a successful-but-empty response
+    gives), or a per-board sprint request failed and no active sprint was found
+    on any other board -- a per-board failure is usually just a Kanban board
+    (which has no sprints and answers this with an error) and is otherwise
+    harmless to skip, but if it's the reason we come up empty-handed we can't
+    tell that apart from a real failure hiding the active sprint.
     """
     if project_key in _active_sprint_cache:
         return _active_sprint_cache[project_key]
 
     sprint_id = None
+    lookup_failed = False
+    any_board_sprint_failed = False
     try:
         boards = jira_api_request("GET", f"board?projectKeyOrId={project_key}", api_base="agile/1.0")
-        for board in (boards or {}).get("values", []):
-            board_id = board.get("id")
-            if board_id is None:
-                continue
-            # Kanban boards have no sprints and answer this with an error
-            sprints = jira_api_request("GET", f"board/{board_id}/sprint?state=active",
-                                       api_base="agile/1.0")
-            for sprint in (sprints or {}).get("values", []):
-                sprint_id = sprint.get("id")
-                if sprint_id is not None:
-                    logging.info(f"Active sprint for {project_key}: {sprint.get('name')} (id {sprint_id})")
-                    break
-            if sprint_id is not None:
-                break
+        if boards is None:
+            lookup_failed = True
         else:
-            logging.info(f"No active sprint found for project {project_key}")
+            for board in boards.get("values", []):
+                board_id = board.get("id")
+                if board_id is None:
+                    continue
+                sprints = jira_api_request("GET", f"board/{board_id}/sprint?state=active",
+                                           api_base="agile/1.0")
+                if sprints is None:
+                    any_board_sprint_failed = True
+                    continue
+                for sprint in sprints.get("values", []):
+                    sprint_id = sprint.get("id")
+                    if sprint_id is not None:
+                        logging.info(f"Active sprint for {project_key}: {sprint.get('name')} (id {sprint_id})")
+                        break
+                if sprint_id is not None:
+                    break
+            else:
+                logging.info(f"No active sprint found for project {project_key}")
     except Exception as e:
         logging.warning(f"Error looking up the active sprint for {project_key}: {e}")
+        lookup_failed = True
+
+    if sprint_id is None and any_board_sprint_failed:
+        lookup_failed = True
+
+    if lookup_failed:
+        # Don't cache a failure -- a later run should retry instead of being
+        # stuck treating this project as having no active sprint forever.
+        return SPRINT_LOOKUP_FAILED
 
     _active_sprint_cache[project_key] = sprint_id
     return sprint_id
 
 
-def schedule_backport_issue(issue_key: str) -> bool:
+def move_issue_to_backlog(issue_key: str) -> bool:
+    """
+    Move an issue out of whatever sprint it's currently in and into the backlog.
+
+    Omitting the Sprint field from an issue-update PUT leaves an existing sprint
+    untouched rather than clearing it, so removing an issue from a sprint needs
+    this dedicated Agile endpoint instead.
+    """
+    result = jira_api_request("POST", "backlog/issue", {"issues": [issue_key]}, api_base="agile/1.0")
+    return result is not None
+
+
+def schedule_backport_issue(issue_key: str, parent_key: str = None) -> bool:
     """
     Put a backport issue into the current sprint with a zero estimate, so it shows up
     on the board as soon as its backport PR is open instead of sitting in the backlog.
 
+    Inherits the sprint the parent issue is currently in, which is guaranteed to be
+    the right team's sprint. If the parent isn't in an active sprint, the backport
+    is moved to the backlog too, rather than guessing an active sprint by searching
+    the project's boards -- that search can land on an unrelated team's board (see
+    RELENG-827) and schedules work the parent issue itself isn't scheduled for.
+
+    The board search remains as a fallback only when no parent is known at all.
+
     Best-effort: a failure here must never break the backport itself.
     """
-    sprint_id = find_active_sprint_id(extract_project_from_jira_key(issue_key))
+    sprint_id = resolve_parent_sprint_id(parent_key) if parent_key else \
+        find_active_sprint_id(extract_project_from_jira_key(issue_key))
+
+    if sprint_id is SPRINT_LOOKUP_FAILED:
+        # We couldn't confirm the sprint one way or the other -- leave the
+        # backport as-is rather than acting on what may be a transient API
+        # failure (e.g. moving it to the backlog when it may not belong there).
+        logging.warning(f"Could not determine the sprint to schedule {issue_key} into; leaving it as-is")
+        return False
 
     fields = {JIRA_STORY_POINTS_FIELD: BACKPORT_STORY_POINTS}
     if sprint_id is not None:
         fields[JIRA_SPRINT_FIELD] = sprint_id
+    else:
+        # A prior run may have already put this issue in a sprint (e.g. while the
+        # parent still had one) -- make sure it doesn't linger there. If we can't
+        # confirm that, don't report success: the issue may still be misscheduled.
+        if not move_issue_to_backlog(issue_key):
+            logging.warning(f"Could not move {issue_key} to the backlog")
+            return False
 
     result = jira_api_request("PUT", f"issue/{issue_key}", {"fields": fields})
     if result is None and sprint_id is not None:
@@ -905,7 +1008,7 @@ def schedule_backport_issues(jira_mapping: Dict[str, str]):
         return
     for parent_key, backport_key in (jira_mapping or {}).items():
         if backport_key and backport_key != parent_key:
-            schedule_backport_issue(backport_key)
+            schedule_backport_issue(backport_key, parent_key)
 
 
 def add_jira_comment(issue_key: str, comment: str) -> bool:
