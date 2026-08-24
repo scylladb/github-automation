@@ -759,9 +759,139 @@ class TestFindActiveSprintId:
             assert bp_module.find_active_sprint_id("RELENG") == 2112
             assert mock_api.call_count == 2
 
+    def test_sentinel_when_board_lookup_fails(self, bp_module):
+        """A failed board request must be distinguishable from a project that
+        genuinely has no boards, so it isn't mistaken for 'no active sprint'
+        (see the CodeRabbit finding on RELENG-827)."""
+        with patch.object(bp_module, "jira_api_request", return_value=None):
+            assert bp_module.find_active_sprint_id("RELENG") is bp_module.SPRINT_LOOKUP_FAILED
+
+    def test_failure_is_not_cached(self, bp_module):
+        responses = [None, {"values": [{"id": 608}]}, {"values": [{"id": 2112, "state": "active"}]}]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses) as mock_api:
+            assert bp_module.find_active_sprint_id("RELENG") is bp_module.SPRINT_LOOKUP_FAILED
+            assert bp_module.find_active_sprint_id("RELENG") == 2112
+            assert mock_api.call_count == 3
+
+    def test_sentinel_when_a_board_sprint_request_fails_and_none_found_elsewhere(self, bp_module):
+        """A per-board sprint request answering with an error usually just means
+        that board is Kanban (harmless to skip, see test_skips_board_without_
+        active_sprint), but if we end up with no active sprint anywhere, that
+        failure might be hiding a real one -- report it as unreliable rather
+        than as a confirmed 'no active sprint' (CodeRabbit finding on
+        RELENG-827)."""
+        responses = [{"values": [{"id": 1}, {"id": 2}]}, None, {"values": []}]
+        with patch.object(bp_module, "jira_api_request", side_effect=responses):
+            assert bp_module.find_active_sprint_id("RELENG") is bp_module.SPRINT_LOOKUP_FAILED
+
+
+class TestGetIssueSprintId:
+    def test_returns_active_sprint(self, bp_module):
+        issue = {"fields": {bp_module.JIRA_SPRINT_FIELD: [
+            {"id": 2100, "state": "closed"},
+            {"id": 2112, "state": "active"},
+        ]}}
+        assert bp_module.get_issue_sprint_id(issue) == 2112
+
+    def test_none_when_no_active_sprint(self, bp_module):
+        issue = {"fields": {bp_module.JIRA_SPRINT_FIELD: [{"id": 2100, "state": "closed"}]}}
+        assert bp_module.get_issue_sprint_id(issue) is None
+
+    def test_none_when_field_missing(self, bp_module):
+        assert bp_module.get_issue_sprint_id({"fields": {}}) is None
+
+
+class TestResolveParentSprintId:
+    def test_returns_parents_active_sprint(self, bp_module):
+        parent_issue = {"fields": {bp_module.JIRA_SPRINT_FIELD: [{"id": 2112, "state": "active"}]}}
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue):
+            assert bp_module.resolve_parent_sprint_id("RELENG-785") == 2112
+
+    def test_none_when_parent_has_no_active_sprint(self, bp_module):
+        parent_issue = {"fields": {}}
+        with patch.object(bp_module, "get_jira_issue", return_value=parent_issue):
+            assert bp_module.resolve_parent_sprint_id("RELENG-785") is None
+
+    def test_sentinel_when_parent_lookup_fails(self, bp_module):
+        """A failed lookup must be distinguishable from a real 'no sprint' result,
+        so a transient API error doesn't get treated as one (see the CodeRabbit
+        finding on RELENG-827)."""
+        with patch.object(bp_module, "get_jira_issue", return_value=None):
+            assert bp_module.resolve_parent_sprint_id("RELENG-785") is bp_module.SPRINT_LOOKUP_FAILED
+
+
+class TestMoveIssueToBacklog:
+    def test_success(self, bp_module):
+        with patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            assert bp_module.move_issue_to_backlog("RELENG-800") is True
+            method, endpoint, data = mock_api.call_args[0]
+            assert (method, endpoint) == ("POST", "backlog/issue")
+            assert data == {"issues": ["RELENG-800"]}
+            assert mock_api.call_args.kwargs["api_base"] == "agile/1.0"
+
+    def test_failure(self, bp_module):
+        with patch.object(bp_module, "jira_api_request", return_value=None):
+            assert bp_module.move_issue_to_backlog("RELENG-800") is False
+
 
 class TestScheduleBackportIssue:
-    def test_sets_sprint_and_zero_points(self, bp_module):
+    def test_inherits_parents_sprint_over_board_search(self, bp_module):
+        """The parent's own sprint must win over the ambiguous project-wide board
+        search (see RELENG-827 -- that search can return another team's sprint)."""
+        with patch.object(bp_module, "resolve_parent_sprint_id", return_value=2112), \
+             patch.object(bp_module, "find_active_sprint_id") as mock_find, \
+             patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800", "RELENG-785") is True
+            mock_find.assert_not_called()
+            method, endpoint, data = mock_api.call_args[0]
+            assert (method, endpoint) == ("PUT", "issue/RELENG-800")
+            assert data["fields"][bp_module.JIRA_SPRINT_FIELD] == 2112
+            assert data["fields"][bp_module.JIRA_STORY_POINTS_FIELD] == 0
+
+    def test_leaves_unscheduled_when_parent_has_no_active_sprint(self, bp_module):
+        """If the parent isn't in a sprint, the backport shouldn't be either -- not
+        even by falling back to an unrelated board's active sprint (RELENG-827)."""
+        with patch.object(bp_module, "resolve_parent_sprint_id", return_value=None), \
+             patch.object(bp_module, "find_active_sprint_id") as mock_find, \
+             patch.object(bp_module, "move_issue_to_backlog") as mock_backlog, \
+             patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800", "RELENG-785") is True
+            mock_find.assert_not_called()
+            mock_backlog.assert_called_once_with("RELENG-800")
+            assert bp_module.JIRA_SPRINT_FIELD not in mock_api.call_args[0][2]["fields"]
+
+    def test_fails_without_put_when_backlog_move_fails(self, bp_module):
+        """A failed backlog move must not be reported as success -- the issue may
+        still be sitting in a stale sprint from an earlier run."""
+        with patch.object(bp_module, "resolve_parent_sprint_id", return_value=None), \
+             patch.object(bp_module, "move_issue_to_backlog", return_value=False), \
+             patch.object(bp_module, "jira_api_request") as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800", "RELENG-785") is False
+            mock_api.assert_not_called()
+
+    def test_fails_without_side_effects_when_parent_lookup_fails(self, bp_module):
+        """A transient failure to read the parent must not be treated as 'parent
+        has no active sprint' -- that would wrongly move the backport to the
+        backlog on what may just be a flaky API call (RELENG-827)."""
+        with patch.object(bp_module, "resolve_parent_sprint_id",
+                           return_value=bp_module.SPRINT_LOOKUP_FAILED), \
+             patch.object(bp_module, "move_issue_to_backlog") as mock_backlog, \
+             patch.object(bp_module, "jira_api_request") as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800", "RELENG-785") is False
+            mock_backlog.assert_not_called()
+            mock_api.assert_not_called()
+
+    def test_fails_without_side_effects_when_board_search_fails(self, bp_module):
+        """Same as the parent-lookup failure case, but for the no-parent board
+        search fallback (see the CodeRabbit finding on RELENG-827)."""
+        with patch.object(bp_module, "find_active_sprint_id", return_value=bp_module.SPRINT_LOOKUP_FAILED), \
+             patch.object(bp_module, "move_issue_to_backlog") as mock_backlog, \
+             patch.object(bp_module, "jira_api_request") as mock_api:
+            assert bp_module.schedule_backport_issue("RELENG-800") is False
+            mock_backlog.assert_not_called()
+            mock_api.assert_not_called()
+
+    def test_uses_board_search_when_no_parent_given(self, bp_module):
         with patch.object(bp_module, "find_active_sprint_id", return_value=2112), \
              patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
             assert bp_module.schedule_backport_issue("RELENG-800") is True
@@ -772,8 +902,10 @@ class TestScheduleBackportIssue:
 
     def test_sets_points_even_without_an_active_sprint(self, bp_module):
         with patch.object(bp_module, "find_active_sprint_id", return_value=None), \
+             patch.object(bp_module, "move_issue_to_backlog") as mock_backlog, \
              patch.object(bp_module, "jira_api_request", return_value={}) as mock_api:
             assert bp_module.schedule_backport_issue("RELENG-800") is True
+            mock_backlog.assert_called_once_with("RELENG-800")
             data = mock_api.call_args[0][2]
             assert data["fields"][bp_module.JIRA_STORY_POINTS_FIELD] == 0
             assert bp_module.JIRA_SPRINT_FIELD not in data["fields"]
@@ -791,11 +923,13 @@ class TestScheduleBackportIssue:
 
 
 class TestScheduleBackportIssues:
-    def test_schedules_each_backport_issue(self, bp_module):
+    def test_schedules_each_backport_issue_with_its_parent(self, bp_module):
         mapping = {"RELENG-785": "RELENG-800", "SCYLLADB-1": "SCYLLADB-2"}
         with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
             bp_module.schedule_backport_issues(mapping)
-            assert {c[0][0] for c in mock_sched.call_args_list} == {"RELENG-800", "SCYLLADB-2"}
+            assert {c[0] for c in mock_sched.call_args_list} == {
+                ("RELENG-800", "RELENG-785"), ("SCYLLADB-2", "SCYLLADB-1"),
+            }
 
     def test_skips_parent_key_fallback(self, bp_module):
         """When no backport issue was resolved the mapping points at the parent -- the
