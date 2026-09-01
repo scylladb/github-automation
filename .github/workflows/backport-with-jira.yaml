@@ -75,6 +75,7 @@ jobs:
       group: >-
         backport-${{ inputs.event_type }}-${{ inputs.pull_request_number }}-${{ inputs.label_name }}-${{ inputs.base_branch }}-${{ inputs.head_commit }}
       cancel-in-progress: false
+      queue: max
     outputs:
       backport_performed: ${{ steps.set_backport_performed.outputs.backport_performed }}
     steps:
