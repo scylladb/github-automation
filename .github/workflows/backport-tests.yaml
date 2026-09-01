@@ -33,6 +33,14 @@ jobs:
           GITHUB_TOKEN: fake-token-for-tests
           JIRA_AUTH: "testuser:testtoken"
 
+      - name: Run shell unit tests
+        run: |
+          for t in .github/tests/*.sh; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
