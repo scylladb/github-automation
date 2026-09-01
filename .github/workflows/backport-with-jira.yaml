@@ -67,13 +67,19 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
-    # Scope concurrency to the specific PR/label/branch/commit so unrelated runs
-    # (e.g. a different PR's backport) never cancel or skip each other. Queue
-    # (rather than cancel) so every run still gets processed instead of being
-    # silently dropped.
+    # Scope concurrency to the specific PR/branch/commits so unrelated runs
+    # (e.g. a different PR's backport) never cancel or skip each other, while
+    # same-PR runs (e.g. several backport/* labels added together) still queue
+    # behind each other one at a time -- label_name is deliberately excluded so
+    # that case queues instead of racing. Queue (rather than cancel) so every
+    # run still gets processed instead of being silently dropped.
+    #
+    # Note: push events pass `commits` (before..after), not `head_commit` --
+    # only labeled events populate head_commit -- so `commits` is used here to
+    # actually distinguish push runs on the same branch.
     concurrency:
       group: >-
-        backport-${{ inputs.event_type }}-${{ inputs.pull_request_number }}-${{ inputs.label_name }}-${{ inputs.base_branch }}-${{ inputs.head_commit }}
+        backport-${{ inputs.event_type }}-${{ inputs.pull_request_number }}-${{ inputs.base_branch }}-${{ inputs.commits }}
       cancel-in-progress: false
       queue: max
     outputs:
