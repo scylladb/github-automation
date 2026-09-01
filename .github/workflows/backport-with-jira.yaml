@@ -67,6 +67,14 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
+    # Scope concurrency to the specific PR/label/branch/commit so unrelated runs
+    # (e.g. a different PR's backport) never cancel or skip each other. Queue
+    # (rather than cancel) so every run still gets processed instead of being
+    # silently dropped.
+    concurrency:
+      group: >-
+        backport-${{ inputs.event_type }}-${{ inputs.pull_request_number }}-${{ inputs.label_name }}-${{ inputs.base_branch }}-${{ inputs.head_commit }}
+      cancel-in-progress: false
     outputs:
       backport_performed: ${{ steps.set_backport_performed.outputs.backport_performed }}
     steps:
@@ -179,62 +187,8 @@ jobs:
           echo "Waiting 30 seconds for additional labels to be added..."
           sleep 30
           
-      - name: Check for concurrent runs and skip if not the latest
-        id: check_concurrent
-        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed'
-        env:
-          GH_TOKEN: ${{ secrets.gh_token }}
-        run: |
-          # Retry wrapper for gh CLI commands to handle transient GitHub API failures
-          gh_retry() {
-            local max_attempts=3
-            local delay=10
-            local attempt=1
-            local output
-            local status
-            while [ $attempt -le $max_attempts ]; do
-              output=$(gh "$@" 2>&1)
-              status=$?
-              if [ $status -eq 0 ]; then
-                echo "$output"
-                return 0
-              fi
-              if echo "$output" | grep -qi "error connecting\|connection refused\|timeout\|ETIMEDOUT\|network\|502\|503"; then
-                echo "::warning::gh command failed (attempt ${attempt}/${max_attempts}): $output" >&2
-                if [ $attempt -lt $max_attempts ]; then
-                  sleep $delay
-                  delay=$((delay * 2))
-                fi
-              else
-                echo "$output"
-                return $status
-              fi
-              attempt=$((attempt + 1))
-            done
-            echo "::error::gh command failed after ${max_attempts} attempts: $output" >&2
-            echo "$output"
-            return $status
-          }
-
-          # Get all running workflows for this PR
-          runs=$(gh_retry api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/runs?status=in_progress&event=pull_request_target" \
-            --jq ".workflow_runs[] | select(.name == \"${{ github.workflow }}\") | .id" | sort -n)
-          
-          current_run_id=${{ github.run_id }}
-          latest_run_id=$(echo "$runs" | tail -1)
-          
-          if [ "$current_run_id" != "$latest_run_id" ] && [ -n "$latest_run_id" ]; then
-            echo "A newer workflow run ($latest_run_id) is in progress. Skipping this run ($current_run_id)."
-            echo "should_skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "This is the latest run. Proceeding."
-            echo "should_skip=false" >> $GITHUB_OUTPUT
-          fi
-          
       - name: Run auto-backport-jira.py when label was added
-        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed' && steps.check_concurrent.outputs.should_skip != 'true'
+        if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed'
         working-directory: automation
         env:
           GITHUB_TOKEN: ${{ secrets.gh_token }}
@@ -306,7 +260,7 @@ jobs:
           if [[ "${{ steps.check_conflicts.outputs.has_conflicts }}" == "true" ]]; then
             echo "backport_performed=true" >> $GITHUB_OUTPUT
           elif [[ "${{ inputs.event_type }}" == "labeled" && "${{ steps.check_label.outputs.backport_label }}" == "true" \
-            && "${{ inputs.pr_state }}" == "closed" && "${{ steps.check_concurrent.outputs.should_skip }}" != "true" ]]; then
+            && "${{ inputs.pr_state }}" == "closed" ]]; then
             echo "backport_performed=true" >> $GITHUB_OUTPUT
           elif [[ "${{ inputs.event_type }}" == "chain" && "${{ steps.check_backport.outputs.is_backport_pr }}" == "true" ]]; then
             echo "backport_performed=true" >> $GITHUB_OUTPUT
