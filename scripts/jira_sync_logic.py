@@ -62,7 +62,8 @@ def manage_labeled_gh_event(
       4.  extract_jira_issue_details
       5.  apply_jira_labels_to_pr
       6.  if label starts with promoted-to-:
-            a. add comment  b. transition to Merged
+            a. add comment  b. transition to Merged (falls back to Done
+               for issues whose workflow has no "Merged" -- PM-359)
     """
     print("=" * 60)
     print(" manage_labeled_gh_event  input parameters")
@@ -363,7 +364,8 @@ def manage_closed_gh_event(
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
       4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
-      5.  if merged: jira_status_transition -> "Merged" (transition id 7)
+      5.  if merged: jira_status_transition -> "Merged" (transition id 7),
+          falling back to "Done" for issues whose workflow has no "Merged" (PM-359)
     """
     print("=" * 60)
     print(" manage_closed_gh_event  input parameters")
