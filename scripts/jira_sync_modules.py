@@ -1226,6 +1226,7 @@ def jira_status_transition(
         _FORBIDDEN_TRANSITIONS = {
             ('in review', 'in progress'),
             ('merged', 'merged'),
+            ('done', 'done'),
         }
         if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
             print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
