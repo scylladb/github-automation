@@ -47,6 +47,39 @@ JIRA_BASE_URL = "https://scylladb.atlassian.net"
 SCYLLA_COMPONENTS_FIELD = "customfield_10321"
 SYMPTOM_FIELD = "customfield_11120"
 
+# Terminal status a merged PR moves its linked issues to.
+# Replaces the former "Done" (transition id 141) target (PM-334).
+#
+# This is the *transition* id, not the status id: jira_status_transition POSTs
+# {"transition": {"id": MERGED_TRANSITION_ID}} to /issue/{key}/transitions.
+# Transition 7 leads to the "Merged" status, whose own id is 10575 - passing
+# the status id here makes Jira reject the request with a 400.
+MERGED_STATUS_NAME = "Merged"
+MERGED_TRANSITION_ID = "7"
+
+# Backward-compatible fallback target (PM-359).
+# Not every project workflow has been migrated to the "Merged" status yet, so
+# transition 7 is simply absent from those issues and Jira answers the POST
+# with a 400. For those issues the pre-PM-334 target is still correct, so the
+# transition is retried with "Done" before it is reported as a failure.
+DONE_STATUS_NAME = "Done"
+DONE_TRANSITION_ID = "141"
+
+# Fallback chain keyed by the transition id that was originally requested.
+_TRANSITION_FALLBACKS: dict[str, tuple[str, str]] = {
+    MERGED_TRANSITION_ID: (DONE_STATUS_NAME, DONE_TRANSITION_ID),
+}
+
+# Jira answers a transition id that is absent from the issue's workflow with a
+# 400 ("Transition id 'N' is not valid on issue X"). This is the only response
+# the fallback above retries on.
+_TRANSITION_REJECTED_CODE = 400
+
+# Jira issue types that are excluded from the GitHub sync entirely (PM-334).
+# Epics are planning containers managed by hand, so PR events must not
+# label them, transition them, or copy their fields onto the PR.
+_EXCLUDED_ISSUE_TYPES = {"epic"}
+
 # Regex: any JIRA-style key (PROJECT-123) in any text
 _JIRA_KEY_RE = re.compile(r'[A-Za-z]+-[0-9]+')
 
@@ -129,6 +162,41 @@ def _fetch_jira_project_keys(jira_auth: str) -> set[str]:
         return set()
 
 
+def _filter_out_excluded_issue_types(keys: list[str], jira_auth: str) -> list[str]:
+    """Drop issues whose Jira issue type is excluded from the sync (PM-334).
+
+    Currently this removes Epics: they are planning containers that must not be
+    touched by PR-driven automation.  Keys whose type cannot be resolved are
+    kept, so a transient Jira error never silently disables the sync.
+    """
+    if not keys:
+        return keys
+
+    if not jira_auth:
+        print("Warning: jira_auth is not set; skipping issue-type filtering.")
+        return keys
+
+    kept: list[str] = []
+    for key in keys:
+        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields=issuetype"
+        resp = _jira_get(url, jira_auth)
+
+        if resp is None:
+            print(f"Warning: could not resolve issue type for {key}; keeping it.")
+            kept.append(key)
+            continue
+
+        issue_type = ((resp.get("fields") or {}).get("issuetype") or {}).get("name", "")
+        if issue_type.lower() in _EXCLUDED_ISSUE_TYPES:
+            print(f"Discarding {key} - issue type '{issue_type}' is excluded from sync.")
+            continue
+
+        print(f"Keeping {key} (issue type '{issue_type}').")
+        kept.append(key)
+
+    return kept
+
+
 def _fetch_commits(
     owner_repo: str, pr_number: int, gh_token: str,
 ) -> list[tuple[str, str]]:
@@ -189,7 +257,8 @@ def extract_jira_keys(
     1. Extract candidate JIRA keys from the PR body and commit messages.
     2. Accept keys whose project prefix is in the hard-coded set.
     3. For remaining keys, query the Jira API and accept valid prefixes.
-    4. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
+    4. Discard issue types excluded from the sync, such as Epics (PM-334).
+    5. Return a sorted, deduplicated list (or ["__NO_KEYS_FOUND__"]).
 
     When owner_repo, pr_number, and gh_token are provided the function
     also fetches the PR's commit messages from the GitHub API and scans
@@ -276,7 +345,13 @@ def extract_jira_keys(
         print("No valid Jira keys found after validation")
         return ["__NO_KEYS_FOUND__"]
 
-    result = sorted(set(accepted))
+    # --- Pass 3: discard issue types the automation must not touch (PM-334) ---
+    result = _filter_out_excluded_issue_types(sorted(set(accepted)), jira_auth)
+
+    if not result:
+        print("All Jira keys were discarded by issue type (e.g. Epics)")
+        return ["__NO_KEYS_FOUND__"]
+
     print("Final Jira keys:")
     for key in result:
         print(f"  {key}")
@@ -978,8 +1053,10 @@ def apply_jira_labels_to_pr(
 # jira_status_transition
 # ---------------------------------------------------------------------------
 
-_WORKING_STATES = {"in progress", "in review", "ready for merge"}
-_CLOSED_STATES = {"done", "won't fix", "duplicate"}
+# "Ready for Merge" was dropped from the workflow (PM-334).
+_WORKING_STATES = {"in progress", "in review"}
+# "Done" is kept so issues closed before the rename are still recognised.
+_CLOSED_STATES = {"merged", "done", "won't fix", "duplicate"}
 
 
 def _jira_post(url: str, payload: dict, jira_auth: str) -> tuple[int, str]:
@@ -1055,6 +1132,13 @@ def _set_date_field(key: str, field_id: str, field_label: str, jira_auth: str) -
     time.sleep(0.2)
 
 
+def _post_transition(key: str, transition_id: str, jira_auth: str) -> tuple[int, str]:
+    """POST a single status transition for *key*. Returns (http_code, body)."""
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/transitions"
+    payload = {"transition": {"id": transition_id}}
+    return _jira_post(url, payload, jira_auth)
+
+
 def jira_status_transition(
     details_csv: str,
     transition_name: str,
@@ -1069,6 +1153,8 @@ def jira_status_transition(
     2. For issues moving to a working state, set start date if empty.
     3. For issues moving to a closed state, set due date if empty.
     4. POST the transition for each issue that needs it.
+    5. If the transition is rejected and a backward-compatible fallback is
+       registered for it, retry once with the fallback (PM-359).
     """
     if not details_csv:
         print("Error: details_csv is not set or empty.")
@@ -1124,17 +1210,21 @@ def jira_status_transition(
     is_working = target_lower in _WORKING_STATES
     is_closed = target_lower in _CLOSED_STATES
 
+    fallback = _TRANSITION_FALLBACKS.get(transition_id)
+    if fallback:
+        print(f"Fallback target if '{transition_name}' is rejected: "
+              f"'{fallback[0]}' (id={fallback[1]})")
+
     ok = 0
     failed = 0
     skipped = 0
+    fell_back = 0
 
     for key, current_status, start_dt, due_dt in to_transition:
         # Guard: do not regress issues that are further along in the workflow
         _FORBIDDEN_TRANSITIONS = {
             ('in review', 'in progress'),
-            ('ready for merge', 'in progress'),
-            ('ready for merge', 'in review'),
-            ('done', 'done'),
+            ('merged', 'merged'),
         }
         if (current_status.lower(), target_lower) in _FORBIDDEN_TRANSITIONS:
             print(f"SKIP {key}: refusing to move from '{current_status}' to '{transition_name}'")
@@ -1151,13 +1241,34 @@ def jira_status_transition(
             _set_date_field(key, DUE_DATE_FIELD, "due date", jira_auth)
 
         # POST the transition
-        url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/transitions"
-        payload = {"transition": {"id": transition_id}}
-        code, body_text = _jira_post(url, payload, jira_auth)
+        code, body_text = _post_transition(key, transition_id, jira_auth)
+
+        # Backward compatibility (PM-359): the target status may not exist in
+        # this issue's workflow, in which case Jira rejects the transition id
+        # with a 400. Retry once with the fallback target before giving up.
+        # Only 400 triggers the retry: a network error (0), a permission error
+        # (403) or a missing issue (404) are not fixed by another target, and
+        # falling back on them would move issues to the wrong status.
+        used_fallback = False
+        if fallback and code == _TRANSITION_REJECTED_CODE:
+            fb_name, fb_id = fallback
+            print(f"'{transition_name}' is not valid for {key} ({code}); "
+                  f"retrying with '{fb_name}' (id={fb_id})")
+            fb_code, fb_body = _post_transition(key, fb_id, jira_auth)
+            if fb_code in (200, 204, 404):
+                code, body_text, used_fallback = fb_code, fb_body, True
+            else:
+                print(f"Fallback '{fb_name}' also failed for {key} ({fb_code}). "
+                      f"Reporting the original '{transition_name}' failure.")
+            time.sleep(0.2)
+
+        target_used = fallback[0] if used_fallback else transition_name
 
         if code in (200, 204):
-            print(f"OK {key} ({code})")
+            print(f"OK {key} ({code}) -> {target_used}")
             ok += 1
+            if used_fallback:
+                fell_back += 1
         elif code == 404:
             print(f"SKIP {key} ({code}) issue not found or no permission. Continuing.")
             skipped += 1
@@ -1168,9 +1279,12 @@ def jira_status_transition(
 
         time.sleep(0.2)
 
-    print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
+    print(f"Summary: ok={ok} skipped={skipped} failed={failed} fell_back={fell_back}")
+    if fell_back > 0:
+        print(f"NOTE: {fell_back} issue(s) moved to '{fallback[0]}' because "
+              f"'{transition_name}' is not available in their workflow.")
     if failed > 0:
-        print(f"WARNING: {failed} comment(s) failed. Continuing.")
+        print(f"WARNING: {failed} transition(s) failed. Continuing.")
 
 
 # ---------------------------------------------------------------------------
