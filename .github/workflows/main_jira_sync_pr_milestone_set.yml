@@ -117,18 +117,19 @@ jobs:
               fi
             fi
 
-            # Replace Fix Versions - SET to only the new milestone (removes all existing)
+            # Add the milestone to Fix Versions, keeping any existing ones
+            # (a ticket can be backported to several versions over time).
             UPDATE_PAYLOAD=$(jq -n --arg name "$MILESTONE_TITLE" '
               {
-                "fields": {
+                "update": {
                   "fixVersions": [
-                    { "name": $name }
+                    { "add": { "name": $name } }
                   ]
                 }
               }
             ')
 
-            echo "Replacing Fix Versions with: ${MILESTONE_TITLE}"
+            echo "Adding to Fix Versions: ${MILESTONE_TITLE}"
 
             UPDATE_RESP=$(curl -sS -w "\n%{http_code}" \
               -X PUT "${JIRA_BASE_URL}/rest/api/3/issue/${KEY}" \
