@@ -115,9 +115,13 @@ jobs:
           git config --global user.email "scylladbbot@scylladb.com"
           git config --global merge.conflictstyle diff3
           
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
       - name: Install dependencies
-        run: |
-          sudo apt-get install -y python3-github python3-git python3-requests
+        run: python -m pip install PyGithub GitPython requests
           
       - name: Run search_commits.py for push events
         if: inputs.event_type == 'push'
