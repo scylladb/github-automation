@@ -1789,7 +1789,16 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                     logging.warning(f'Cherry-pick conflict on commit {commit}: {e}')
                     is_draft = True
                     repo_local.git.add(A=True)
-                    repo_local.git.cherry_pick('--continue')
+                    if repo_local.index.diff('HEAD'):
+                        repo_local.git.cherry_pick('--continue')
+                    else:
+                        # Nothing left to commit after staging the conflict (e.g. a
+                        # modify/delete conflict, where `add -A` keeps our version of
+                        # the file), so `--continue` would fail with "the previous
+                        # cherry-pick is now empty". Keep the commit as an empty one
+                        # so the draft PR still shows it and the reviewer can redo it.
+                        logging.warning(f'Cherry-pick of {commit} is empty after conflict, committing it empty')
+                        repo_local.git.commit('--allow-empty', '--no-edit')
                 # Amend the just-cherry-picked commit to replace Fixes references
                 # with the version-specific sub-task key
                 if jira_mapping:

@@ -116,6 +116,34 @@ class TestBackportFunction:
             _, kwargs = mock_create.call_args
             assert kwargs.get("is_draft") is True
 
+    def test_cherry_pick_conflict_resolving_to_empty_commits_it_empty(self, bp_module, make_pr, make_repo, make_commit):
+        """A modify/delete conflict leaves nothing staged after `add -A`, so
+        `--continue` would fail with "the previous cherry-pick is now empty".
+        The commit must be kept as an empty one and the PR still created."""
+        repo = make_repo()
+        pr = make_pr(number=10, title="Fix bug")
+        repo.get_commit.return_value = make_commit(sha="abc123", parents=[MagicMock()])
+
+        mock_local_repo = MagicMock()
+        from git import GitCommandError
+        mock_local_repo.git.cherry_pick.side_effect = GitCommandError("cherry-pick", "conflict")
+        mock_local_repo.index.diff.return_value = []
+
+        with patch.object(bp_module, "is_commit_in_branch", return_value=False), \
+             patch("tempfile.TemporaryDirectory") as mock_tmp, \
+             patch.object(bp_module.Repo, "clone_from", return_value=mock_local_repo), \
+             patch.object(bp_module, "create_pull_request", return_value=make_pr(number=42)) as mock_create:
+            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = bp_module.backport(repo, pr, "2025.4", ["abc123"], "branch-2025.4")
+            assert result is not None
+            assert call('--continue') not in mock_local_repo.git.cherry_pick.call_args_list
+            mock_local_repo.git.commit.assert_any_call('--allow-empty', '--no-edit')
+            mock_local_repo.git.push.assert_called_once()
+            _, kwargs = mock_create.call_args
+            assert kwargs.get("is_draft") is True
+
     def test_uses_x_flag_for_master_backport(self, bp_module, make_pr, make_repo, make_commit):
         """Direct backport from master uses -x flag."""
         repo = make_repo()
