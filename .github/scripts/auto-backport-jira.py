@@ -1352,11 +1352,14 @@ def generate_backport_pr_body(
 
 def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr_title, commits, 
                         is_draft=False, pr_body=None, jira_failed=False, remaining_backport_labels=None,
-                        original_pr=None, warn_missing_fixes=False, backport_version: Optional[str] = None):
+                        original_pr=None, warn_missing_fixes=False, backport_version: Optional[str] = None,
+                        draft_reason: Optional[str] = None):
     """
     Create a backport pull request.
     
     Args:
+        draft_reason: Open the PR as a draft for a reason other than conflicts, and
+                      explain it in a comment (no 'conflicts' label).
         original_pr: The original PR from master (for assignment). If None, uses pr.
                      This ensures backport PRs are always assigned to the original author,
                      not to scylladbbot or intermediate backport PR authors.
@@ -1383,7 +1386,7 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
             body=pr_body,
             head=f'scylladbbot:{new_branch_name}',
             base=base_branch_name,
-            draft=is_draft
+            draft=is_draft or bool(draft_reason)
         )
         logging.info(f"Pull request created: {backport_pr.html_url}")
     except GithubException as e:
@@ -1433,6 +1436,12 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
         except Exception as e:
             logging.warning(f"Failed to add missing-fixes warning comment: {e}")
     
+    if draft_reason:
+        try:
+            backport_pr.create_issue_comment(f"@{assignee.login} {draft_reason}")
+        except Exception as e:
+            logging.warning(f"Failed to add draft reason comment: {e}")
+
     # Add labels to the backport PR
     labels_to_add = []
     
@@ -1735,6 +1744,278 @@ def replace_backport_label_with_done(repo, pr, version: str):
     return False
 
 
+# ============================================================================
+# Submodule update helpers
+# ============================================================================
+
+SUBPROJECT_COMMIT_RE = re.compile(r'^-Subproject commit ([0-9a-f]{40})\n\+Subproject commit ([0-9a-f]{40})', re.M)
+
+
+def get_submodule_updates(repo, commit_sha: str) -> List[Tuple[str, str, str]]:
+    """Return (path, old_sha, new_sha) for every submodule pointer the commit moves."""
+    updates = []
+    for f in repo.get_commit(commit_sha).files:
+        match = SUBPROJECT_COMMIT_RE.search(f.patch or '')
+        if match:
+            updates.append((f.filename, match.group(1), match.group(2)))
+    return updates
+
+
+def resolve_submodule_repo(repo, path: str, ref: str) -> Optional[str]:
+    """
+    Return the 'owner/name' of the submodule at path, as .gitmodules on ref defines it.
+
+    Release branches may point a submodule to a different repo than master
+    (e.g. seastar -> scylla-seastar), so ref matters.
+    """
+    try:
+        gitmodules = repo.get_contents('.gitmodules', ref=ref).decoded_content.decode()
+    except Exception as e:
+        logging.warning(f"Failed to read .gitmodules on {ref}: {e}")
+        return None
+    for section in gitmodules.split('[submodule')[1:]:
+        entries = dict(re.findall(r'^\s*(\w+)\s*=\s*(\S+)\s*$', section, re.M))
+        if entries.get('path') != path or 'url' not in entries:
+            continue
+        url = entries['url']
+        if url.startswith('../'):
+            owner = repo.full_name.split('/')[0]
+            return f"{owner}/{url[3:].removesuffix('.git')}"
+        match = re.search(r'github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$', url)
+        if match:
+            return f"{match.group(1)}/{match.group(2)}"
+    return None
+
+
+def find_submodule_fix_commits(sub_repo, old_sha: str, new_sha: str, jira_keys: List[str]) -> list:
+    """Return the non-merge commits in old_sha..new_sha of the submodule that reference any of jira_keys."""
+    if not jira_keys:
+        return []
+    key_re = re.compile(r'\b(?:' + '|'.join(re.escape(key) for key in jira_keys) + r')\b')
+    return [c for c in sub_repo.compare(old_sha, new_sha).commits
+            if len(c.parents) == 1 and key_re.search(c.commit.message)]
+
+
+def find_missing_commits(target_repo, branch: str, commits: list) -> list:
+    """
+    Return the commits whose title is not among the last 100 commits of branch.
+
+    Unlike is_commit_in_branch(), this works when the commits come from another
+    repo (e.g. seastar commits checked against scylla-seastar).
+    """
+    try:
+        titles = {c.commit.message.splitlines()[0].strip() for c in target_repo.get_commits(sha=branch)[:100]}
+    except Exception as e:
+        logging.warning(f"Failed to list commits of {target_repo.full_name} {branch}: {e}")
+        return commits
+    return [c for c in commits if c.commit.message.splitlines()[0].strip() not in titles]
+
+
+def get_bot_fork(g, target_repo):
+    """Return scylladbbot's fork of target_repo, creating it if it doesn't exist yet."""
+    try:
+        return g.get_repo(f'scylladbbot/{target_repo.name}')
+    except GithubException:
+        logging.info(f"Forking {target_repo.full_name} to scylladbbot")
+        return target_repo.create_fork()
+
+
+def backport_submodule_commits(g, target_repo, branch: str, version: str, commits: list,
+                               source_name: str, pr):
+    """
+    Cherry-pick submodule commits from source_name onto target_repo's branch and open a
+    backport PR there (a draft if there were conflicts). Returns the PR, or None on failure.
+    """
+    new_branch_name = f'backport/{pr.number}/to-{version}'
+    head = f'scylladbbot:{new_branch_name}'
+    for existing in target_repo.get_pulls(state='all', head=head):
+        logging.info(f"Submodule backport PR already exists: {existing.html_url}")
+        return existing
+    fork = get_bot_fork(g, target_repo)
+    with tempfile.TemporaryDirectory() as local_repo_path:
+        try:
+            repo_local = Repo.clone_from(f'https://scylladbbot:{github_token}@github.com/{target_repo.full_name}.git',
+                                         local_repo_path, branch=branch)
+            repo_local.git.checkout(b=new_branch_name)
+            repo_local.git.fetch(f'https://github.com/{source_name}.git', *[c.sha for c in commits])
+            is_draft = False
+            for c in commits:
+                try:
+                    repo_local.git.cherry_pick(c.sha, '-x')
+                except GitCommandError as e:
+                    logging.warning(f'Cherry-pick conflict on submodule commit {c.sha}: {e}')
+                    is_draft = True
+                    repo_local.git.add(A=True)
+                    if repo_local.index.diff('HEAD'):
+                        repo_local.git.cherry_pick('--continue')
+                    else:
+                        repo_local.git.commit('--allow-empty', '--no-edit')
+            repo_local.git.push(f'https://scylladbbot:{github_token}@github.com/{fork.full_name}.git',
+                                new_branch_name, force=True)
+        except GitCommandError as e:
+            logging.warning(f"Failed to backport {source_name} commits to {target_repo.full_name} {branch}: {e}")
+            return None
+
+    if len(commits) == 1:
+        title, _, body = commits[0].commit.message.partition('\n')
+        body = body.strip() + '\n\n'
+    else:
+        title, body = extract_original_title(pr.title), ''
+        body += ''.join(f'- {c.commit.message.splitlines()[0]}\n' for c in commits) + '\n'
+    body += ''.join(f'- (cherry picked from commit {c.sha})\n' for c in commits)
+    body += f'\nNeeded for the backport of {pr.html_url}'
+    try:
+        sub_pr = target_repo.create_pull(title=f'[Backport {version}] {title}', body=body,
+                                         head=head, base=branch, draft=is_draft)
+    except GithubException as e:
+        logging.error(f'Failed to create submodule backport PR: {e}')
+        return None
+    logging.info(f"Submodule backport PR created: {sub_pr.html_url}")
+    assignee = pr.assignees[0] if pr.assignees else pr.user
+    try:
+        sub_pr.add_to_assignees(assignee)
+    except Exception as e:
+        logging.warning(f"Failed to assign {sub_pr.html_url} to {assignee.login}: {e}")
+    if is_draft:
+        try:
+            sub_pr.create_issue_comment(f"@{assignee.login} - This PR has conflicts, therefore it was moved to `draft`.\n"
+                                        "Please resolve them and mark this PR as ready for review")
+        except Exception as e:
+            logging.warning(f"Failed to add conflicts comment: {e}")
+    return sub_pr
+
+
+def create_submodule_bump_pr(repo, pr, version: str, branch: str, gitlinks: List[Tuple[str, str, str]],
+                             fix_commits: list, jira_keys: List[str], pr_body: str, draft_reason: Optional[str],
+                             **pr_kwargs):
+    """
+    Open the '[Backport X.Y]' PR that moves the submodule pointers on branch.
+
+    gitlinks holds (path, current_sha, new_sha). Only the gitlinks are written, so the
+    submodules are never checked out. The PR carries the remaining backport labels,
+    so its promotion continues the chain like any other backport PR.
+    """
+    new_branch_name = f'backport/{pr.number}/to-{version}'
+    message = f'{extract_original_title(pr.title)}\n\n'
+    for path, current_sha, new_sha in gitlinks:
+        message += f'* {path} {current_sha[:10]}...{new_sha[:10]}:\n'
+    message += ''.join(f'  > {c.commit.message.splitlines()[0]}\n' for c in fix_commits)
+    jira_mapping = pr_kwargs.pop('jira_mapping', None) or {}
+    message += ''.join(f'\nFixes: {JIRA_BASE_URL}/browse/{jira_mapping.get(key, key)}' for key in jira_keys)
+    repo_url = f'https://scylladbbot:{github_token}@github.com/{repo.full_name}.git'
+    fork_repo = f'https://scylladbbot:{github_token}@github.com/scylladbbot/{repo.name}.git'
+    with tempfile.TemporaryDirectory() as local_repo_path:
+        try:
+            repo_local = Repo.clone_from(repo_url, local_repo_path, branch=branch)
+            repo_local.git.checkout(b=new_branch_name)
+            for path, _, new_sha in gitlinks:
+                repo_local.git.update_index('--cacheinfo', f'160000,{new_sha},{path}')
+            repo_local.git.commit('-m', message, '--no-verify')
+            repo_local.git.push(fork_repo, new_branch_name, force=True)
+        except GitCommandError as e:
+            logging.warning(f"Failed to create submodule update on {branch}: {e}")
+            return None
+    return create_pull_request(repo, new_branch_name, branch, pr, f'[Backport {version}] {extract_original_title(pr.title)}',
+                               [], pr_body=pr_body, draft_reason=draft_reason, backport_version=version, **pr_kwargs)
+
+
+def backport_submodule_update(repo, pr, commit_sha: str, updates: List[Tuple[str, str, str]], version: str,
+                              branch: str, original_pr=None, jira_mapping: Dict[str, str] = None, **pr_kwargs):
+    """
+    A submodule pointer update can't be cherry-picked to a release branch: it would
+    pull in every submodule commit in the range, and git can't stage the conflicted
+    gitlink without the submodule checked out. Instead, for this one version:
+
+    1. find the submodule commits that reference the PR's Jira issues,
+    2. open a backport PR for them in the repo the branch takes the submodule from
+       (e.g. scylladb/seastar -> scylladb/scylla-seastar),
+    3. open the '[Backport X.Y]' PR that moves the submodule pointer on branch, carrying
+       the remaining backport labels.
+
+    Backports are serial: the next version starts when the PR from step 3 is promoted,
+    which calls backport() again with the submodule update now on branch.
+
+    Returns the PR from step 3, or None.
+    """
+    root_pr = original_pr if original_pr else pr
+    jira_keys = list(dict.fromkeys(extract_all_jira_keys_from_pr_body(root_pr.body) + list(jira_mapping or {})))
+    g = Github(github_token, retry=GITHUB_RETRY)
+
+    lines = [f"<!-- submodule-backport:{commit_sha}:{branch} -->",
+             f"@{root_pr.user.login} Commit {commit_sha} updates a submodule, which can't be cherry-picked "
+             f"to `{branch}`."]
+
+    def report(line=None):
+        if line:
+            lines.append(line)
+        if any(lines[0] in (c.body or '') for c in root_pr.get_issue_comments()):
+            return
+        root_pr.create_issue_comment('\n'.join(lines))
+        logging.info(f"Posted submodule backport status on PR #{root_pr.number}")
+
+    gitlinks, sub_prs, all_fix_commits = [], [], []
+    for path, old_sha, new_sha in updates:
+        source_name = resolve_submodule_repo(repo, path, commit_sha)
+        if not source_name:
+            report(f"\n:warning: Could not resolve the repository of submodule `{path}`; backport it manually.")
+            return None
+        sub_repo = g.get_repo(source_name)
+        fix_commits = find_submodule_fix_commits(sub_repo, old_sha, new_sha, jira_keys)
+        compare_url = f"https://github.com/{source_name}/compare/{old_sha[:10]}...{new_sha[:10]}"
+        logging.info(f"Submodule {path} ({source_name}) {old_sha[:10]}..{new_sha[:10]}: "
+                     f"commits referencing {jira_keys}: {[c.sha[:10] for c in fix_commits]}")
+        if not fix_commits:
+            report(f"\n:warning: No `{path}` commit in [{old_sha[:10]}...{new_sha[:10]}]({compare_url}) "
+                   f"references {', '.join(jira_keys) or 'a Jira issue'}; backport the needed ones manually.")
+            return None
+        all_fix_commits += fix_commits
+        lines.append(f"\n`{path}` commits in [{old_sha[:10]}...{new_sha[:10]}]({compare_url}) "
+                     f"that reference {', '.join(jira_keys)}:")
+        lines += [f"- [{c.sha[:10]}]({c.html_url}) {c.commit.message.splitlines()[0]}" for c in fix_commits]
+
+        target_name = resolve_submodule_repo(repo, path, branch) or source_name
+        target_repo = sub_repo if target_name == source_name else g.get_repo(target_name)
+        current_sha = repo.get_contents(path, ref=branch).sha
+        missing = find_missing_commits(target_repo, branch, fix_commits)
+        if missing:
+            sub_pr = backport_submodule_commits(g, target_repo, branch, version, missing, source_name, root_pr)
+            if not sub_pr:
+                report(f"\n:warning: Failed to open a `{target_name}` `{branch}` backport PR for "
+                       f"{', '.join(c.sha[:10] for c in missing)}; backport it manually.")
+                return None
+            sub_prs.append(sub_pr)
+            gitlinks.append((path, current_sha, sub_pr.head.sha))
+        else:
+            head_sha = target_repo.get_branch(branch).commit.sha
+            if head_sha != current_sha:
+                gitlinks.append((path, current_sha, head_sha))
+
+    if not gitlinks:
+        logging.info(f"Submodule commits are already on {branch}, nothing to backport for version {version}")
+        replace_backport_label_with_done(repo, root_pr, version)
+        return None
+
+    draft_reason = None
+    if sub_prs:
+        draft_reason = (f"This PR points the submodule at the commit of "
+                        f"{', '.join(p.html_url for p in sub_prs)}. Once it is merged, update the submodule "
+                        f"to the head of `{branch}` there and mark this PR as ready for review.")
+    bump_pr = create_submodule_bump_pr(repo, pr, version, branch, gitlinks, all_fix_commits, jira_keys,
+                                       draft_reason=draft_reason, original_pr=original_pr,
+                                       jira_mapping=jira_mapping, **pr_kwargs)
+    if not bump_pr:
+        report(f"\n:warning: Failed to open the submodule update PR for `{branch}`; open it manually.")
+        return None
+    lines.append(f"\nBackport to `{branch}`:")
+    lines += [f"- {p.html_url}{' (draft, has conflicts)' if p.draft else ''}" for p in sub_prs]
+    lines.append(f"- {bump_pr.html_url} (submodule update; its promotion continues the backport chain)")
+    report()
+    for sub_task in (jira_mapping or {}).values():
+        add_jira_comment(sub_task, f"{root_pr.html_url} updates a submodule, so it is backported through the "
+                                   f"submodule repository. See the PR comment for the backport PRs.")
+    return bump_pr
+
+
 def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jira_failed=False, original_pr=None, remaining_backport_labels=None, warn_missing_fixes=False, jira_mapping=None):
     """
     Create a backport PR.
@@ -1749,8 +2030,19 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                      If provided, commit messages are amended to replace Fixes references
                      with the version-specific sub-task keys.
     """
-    # Check if commits are already in the target branch
     logging.info(f"Backporting commits {commits} to {backport_base_branch} for version {version}")
+    # Submodule updates are checked first: their titles ("Update seastar submodule")
+    # repeat on every branch, so the title-based check below would skip them.
+    for commit in commits:
+        updates = get_submodule_updates(repo, commit)
+        if updates:
+            logging.warning(f"Commit {commit} updates submodule(s) {[u[0] for u in updates]}, "
+                            f"backporting through the submodule repository instead of cherry-picking")
+            return backport_submodule_update(repo, pr, commit, updates, version, backport_base_branch,
+                                             original_pr=original_pr, jira_mapping=jira_mapping, pr_body=pr_body,
+                                             jira_failed=jira_failed, remaining_backport_labels=remaining_backport_labels,
+                                             warn_missing_fixes=warn_missing_fixes)
+    # Check if commits are already in the target branch
     for commit in commits:
         if is_commit_in_branch(repo, commit, backport_base_branch):
             logging.info(f"Commit {commit} already in {backport_base_branch}, skipping backport for version {version}")
@@ -1758,7 +2050,7 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
             target_pr = original_pr if original_pr else pr
             replace_backport_label_with_done(repo, target_pr, version)
             return None
-    
+
     new_branch_name = f'backport/{pr.number}/to-{version}'
     # Extract original title to prevent stacking like '[Backport 2025.3] [Backport 2025.4] Title'
     original_title = extract_original_title(pr.title)
