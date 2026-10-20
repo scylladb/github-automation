@@ -69,27 +69,34 @@ class TestProcessChainBackport:
         Regression test for: https://github.com/scylladb/scylla-dtest/pull/6865#issuecomment-4236622352
         PR #6856 had 2 commits. The chain backport from PR #6863 (rebase-merged) only
         cherry-picked the last commit (merge_commit_sha), dropping the first commit.
+
+        The rebase gives the commits new SHAs on the base branch, and the PR head SHAs
+        may only exist on a deleted fork branch, so the base branch SHAs must be used.
+        Regression test for: https://github.com/scylladb/scylla-machine-image/pull/1003#issuecomment-6263009495
         """
         repo = make_repo()
         original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
 
-        # PR commit objects (as returned by pr.get_commits())
-        commit1 = make_commit(sha="commit1_sha", message="Fix the actual bug")
-        commit2 = make_commit(sha="commit2_sha", message="Add comment documenting workaround")
+        # PR commit objects (as returned by pr.get_commits()), with pre-rebase SHAs
+        commit1 = make_commit(sha="head1_sha", message="Fix the actual bug")
+        commit2 = make_commit(sha="head2_sha", message="Add comment documenting workaround")
 
         merged_pr = make_pr(
             number=10,
             title="[Backport 2025.4] Fix bug",
             body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
             merged=True,
-            merge_commit_sha="commit2_sha",  # Rebase merge: last commit = merge_commit_sha
+            merge_commit_sha="branch2_sha",  # Rebase merge: last rewritten commit = merge_commit_sha
             labels=["backport/2025.3"]
         )
         merged_pr.get_commits.return_value = [commit1, commit2]
 
-        # repo.get_commit for the merge_commit_sha returns single-parent (rebase merge)
-        rebase_commit = make_commit(sha="commit2_sha", parents=[MagicMock()])
-        repo.get_commit.return_value = rebase_commit
+        # Rewritten commits on the base branch, single-parent (rebase merge)
+        branch1 = make_commit(sha="branch1_sha", message="Fix the actual bug")
+        branch2 = make_commit(sha="branch2_sha", message="Add comment documenting workaround",
+                              parents=[MagicMock(sha="branch1_sha")])
+        branch_commits = {c.sha: c for c in (branch1, branch2)}
+        repo.get_commit.side_effect = lambda sha: branch_commits[sha]
 
         captured_commits = {}
 
@@ -106,8 +113,8 @@ class TestProcessChainBackport:
             bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
 
             mock_bp.assert_called_once()
-            # Must cherry-pick BOTH commits, not just the last one
-            assert captured_commits['commits'] == ["commit1_sha", "commit2_sha"], \
+            # Must cherry-pick BOTH commits, not just the last one, using the base branch SHAs
+            assert captured_commits['commits'] == ["branch1_sha", "branch2_sha"], \
                 f"Expected both commits but got: {captured_commits['commits']}"
 
     def test_true_merge_commit_uses_single_sha(self, bp_module, make_pr, make_repo, make_commit):

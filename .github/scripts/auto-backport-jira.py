@@ -1550,6 +1550,27 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
     return None
 
 
+def get_rebase_merged_commits(repo, merge_commit, pr_commits):
+    """
+    Return the SHAs a rebase merge put on the base branch, oldest first.
+
+    A rebase merge rewrites every PR commit, so pr.get_commits() SHAs exist only on the
+    PR head branch (often a deleted fork branch) and can't be cherry-picked from a clone
+    of the base repo. The rewritten commits are the last len(pr_commits) commits on the
+    first-parent chain ending at merge_commit_sha.
+    """
+    branch_commits = [merge_commit]
+    while len(branch_commits) < len(pr_commits):
+        branch_commits.append(repo.get_commit(branch_commits[-1].parents[0].sha))
+    branch_commits.reverse()
+    pr_titles = [c.commit.message.splitlines()[0] for c in pr_commits]
+    branch_titles = [c.commit.message.splitlines()[0] for c in branch_commits]
+    if pr_titles != branch_titles:
+        logging.warning(f"Rebase-merged commits {[c.sha for c in branch_commits]} don't match PR commit titles: "
+                        f"expected {pr_titles}, got {branch_titles}")
+    return [c.sha for c in branch_commits]
+
+
 def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     commits = []
     logging.info(f"get_pr_commits: PR #{pr.number} state={pr.state}, merged={pr.merged}, "
@@ -2533,7 +2554,7 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
                 # LAST commit in the PR. For multi-commit PRs we must collect ALL commits.
                 pr_commits = list(merged_pr.get_commits())
                 if len(pr_commits) > 1:
-                    commits = [c.sha for c in pr_commits]
+                    commits = get_rebase_merged_commits(repo, merge_commit, pr_commits)
                     logging.info(f"Rebase-merged PR #{merged_pr.number} has {len(commits)} commits: {commits}")
                 else:
                     commits = [merged_pr.merge_commit_sha]
