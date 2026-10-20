@@ -28,7 +28,7 @@ import os
 import re
 import sys
 import time
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
@@ -110,6 +110,23 @@ REQUIRED_FIXES_COMMENT = (
 # PR body (RELENG-175 / RELENG-81). Everywhere else a PR can still be backported
 # without one, so the enforcement is a no-op there.
 FIXES_ENFORCEMENT_REPOS = {"scylladb/scylladb"}
+
+
+# Jira writes that failed during this run. The failing step logs the details and
+# the run carries on with its remaining steps; main() then exits non-zero, so the
+# failure shows up as a red run instead of a green one (RELENG-1033).
+_SYNC_FAILURES: list[str] = []
+
+
+def record_sync_failure(description: str) -> None:
+    """Remember a failed Jira write so the run fails once all steps have run."""
+    _SYNC_FAILURES.append(description)
+    print(f"ERROR: {description}. The run will fail after the remaining steps.")
+
+
+def get_sync_failures() -> list[str]:
+    """Return the Jira writes recorded as failed so far in this run."""
+    return list(_SYNC_FAILURES)
 
 
 def _fixes_enforcement_enabled(owner_repo: str) -> bool:
@@ -702,6 +719,77 @@ def _jira_get(url: str, jira_auth: str) -> dict | list | None:
         return None
 
 
+def get_issue_status_category(key: str, jira_auth: str) -> tuple[int, str]:
+    """Return (http_code, status category key) for *key*, e.g. (200, "done").
+
+    The category ("new", "indeterminate" or "done") covers every closed status,
+    whatever its name in the issue's workflow. http_code is 0 on a network error.
+    """
+    encoded_auth = base64.b64encode(jira_auth.encode()).decode()
+    req = Request(f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields=status")
+    req.add_header("Accept", "application/json")
+    req.add_header("Authorization", f"Basic {encoded_auth}")
+    try:
+        with urlopen(req) as resp:
+            data = json.loads(resp.read().decode())
+    except HTTPError as exc:
+        return exc.code, ""
+    except URLError as exc:
+        print(f"Warning: network error - {exc}")
+        return 0, ""
+    status = (data.get("fields") or {}).get("status") or {}
+    return 200, (status.get("statusCategory") or {}).get("key", "")
+
+
+def _parse_jira_time(value: str) -> datetime | None:
+    """Parse a Jira timestamp such as 2026-10-07T15:04:12.345+0000."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%f%z")
+    except (TypeError, ValueError):
+        return None
+
+
+def get_jira_account_id(jira_auth: str) -> str | None:
+    """Return the accountId of the account *jira_auth* belongs to, or None on error."""
+    resp = _jira_get(f"{JIRA_BASE_URL}/rest/api/3/myself", jira_auth)
+    if not isinstance(resp, dict):
+        return None
+    return resp.get("accountId") or None
+
+
+def status_changed_since(
+    key: str, since: datetime, jira_auth: str, ignore_account_id: str = "",
+) -> bool | None:
+    """Whether *key*'s status changed after *since* (an aware datetime).
+
+    Changes made by *ignore_account_id* (the sync's own account) are not
+    counted, so only a person's decision after *since* counts as a change.
+    Returns None when the changelog cannot be read or parsed, so the caller can
+    tell "no change" apart from "unknown".
+    """
+    start_at = 0
+    while True:
+        url = (f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/changelog"
+               f"?startAt={start_at}&maxResults=100")
+        resp = _jira_get(url, jira_auth)
+        if not isinstance(resp, dict):
+            return None
+        values = resp.get("values") or []
+        for entry in values:
+            if not any(item.get("field") == "status" for item in entry.get("items") or []):
+                continue
+            if ignore_account_id and (entry.get("author") or {}).get("accountId") == ignore_account_id:
+                continue
+            created = _parse_jira_time(entry.get("created", ""))
+            if created is None:
+                return None
+            if created > since:
+                return True
+        start_at += len(values)
+        if resp.get("isLast", True) or not values:
+            return False
+
+
 def _csv_escape(value: str) -> str:
     """Wrap a value in double-quotes for CSV, escaping internal quotes."""
     return '"' + value.replace('"', '""') + '"'
@@ -1145,8 +1233,11 @@ def jira_status_transition(
     transition_name: str,
     transition_id: str,
     jira_auth: str,
-) -> None:
+) -> list[str]:
     """Transition Jira issues to a target status.
+
+    Returns the keys that were transitioned successfully (to the target or its
+    fallback).
 
     Replicates the logic of jira_transition.yml in pure Python.
 
@@ -1205,7 +1296,7 @@ def jira_status_transition(
 
     if not to_transition:
         print("No issues require transition. Done.")
-        return
+        return []
 
     target_lower = transition_name.lower()
     is_working = target_lower in _WORKING_STATES
@@ -1220,6 +1311,7 @@ def jira_status_transition(
     failed = 0
     skipped = 0
     fell_back = 0
+    transitioned: list[str] = []
 
     for key, current_status, start_dt, due_dt in to_transition:
         # Guard: do not regress issues that are further along in the workflow
@@ -1269,6 +1361,7 @@ def jira_status_transition(
         if code in (200, 204):
             print(f"OK {key} ({code}) -> {target_used}")
             ok += 1
+            transitioned.append(key)
             if used_fallback:
                 fell_back += 1
         elif code == 404:
@@ -1286,7 +1379,8 @@ def jira_status_transition(
         print(f"NOTE: {fell_back} issue(s) moved to '{fallback[0]}' because "
               f"'{transition_name}' is not available in their workflow.")
     if failed > 0:
-        print(f"WARNING: {failed} transition(s) failed. Continuing.")
+        record_sync_failure(f"{failed} transition(s) to '{transition_name}' failed")
+    return transitioned
 
 
 # ---------------------------------------------------------------------------
@@ -1398,7 +1492,7 @@ def add_comment_to_jira(
 
     print(f"Summary: ok={ok} skipped={skipped} failed={failed}")
     if failed > 0:
-        print(f"WARNING: {failed} comment(s) failed. Continuing.")
+        record_sync_failure(f"{failed} comment(s) failed")
 
 
 def _normalize_url(url: str) -> str:
