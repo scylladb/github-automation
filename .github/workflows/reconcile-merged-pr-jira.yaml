@@ -1,0 +1,98 @@
+name: Reconcile Jira issues of merged PRs
+
+# Safety net for main_pr_events_jira_sync.yml: it closes a merged PR's Jira
+# issues only if the PR's "closed" event produces a run that actually executes.
+# GitHub sometimes drops those runs (stuck in queued, or no runner assigned) and
+# never retries them (RELENG-1033). This re-checks recently merged PRs on a
+# schedule, independent of PR events, and closes the issues the sync missed.
+on:
+  schedule:
+    - cron: '41 4 * * *'  # daily, offset off the hour mark
+  workflow_dispatch:
+    inputs:
+      repositories:
+        description: 'Comma-separated repositories to reconcile (empty: all repos using the PR-events sync)'
+        required: false
+        default: ''
+      days:
+        description: 'Reconcile PRs merged in the last N days'
+        required: false
+        default: '7'
+      dry_run:
+        description: 'Only report the missed issues, do not change Jira'
+        type: boolean
+        required: false
+        default: true
+
+# Overlapping runs would close (and comment on) the same issues twice.
+concurrency:
+  group: reconcile-merged-pr-jira
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      # Repositories whose call_jira_sync.yml uses main_pr_events_jira_sync.yml
+      # (scylladb/staging is left out: it calls automation-staging-branch).
+      DEFAULT_REPOSITORIES: >-
+        scylladb/alternator-client-csharp,scylladb/alternator-client-golang,
+        scylladb/alternator-client-java,scylladb/alternator-client-python,
+        scylladb/alternator-load-balancing,scylladb/argus,scylladb/cassandra-stress,
+        scylladb/cloud-billing,scylladb/cpp-rs-driver,scylladb/cql-stress,
+        scylladb/e2etest-rs,scylladb/field-engineering,scylladb/gemini,
+        scylladb/github-automation,scylladb/idp-toolkit,scylladb/Iliad,
+        scylladb/local-csi-driver,scylladb/maia,scylladb/minicloud,
+        scylladb/scylla-ansible-roles,scylladb/scylla-bench,scylladb/scylla-ccm,
+        scylladb/scylla-cdc-rust,scylladb/scylla-cloud-devops-ansible,
+        scylladb/scylla-cloud-devops-containers,scylladb/scylla-cloud-devops-roles,
+        scylladb/scylla-cloud-devops-vault,scylladb/scylla-cloud-devops-workflows,
+        scylladb/scylla-cloud-doc,scylladb/scylla-cloud-k8s-devops,
+        scylladb/scylla-cloud-tf-modules,scylladb/scylla-cluster-tests,
+        scylladb/scylla-cqlsh,scylladb/scylla-doctor,scylladb/scylla-dtest,
+        scylladb/scylla-machine-image,scylladb/scylla-monitoring,
+        scylladb/scylla-operator,scylladb/scylla-operator-ci-infra,
+        scylladb/scylla-operator-images,scylladb/scylla-operator-release,
+        scylladb/scylla-operator-team,scylladb/scylla-pkg,scylladb/scylla-rust-driver,
+        scylladb/scylla_s3_reloc_server,scylladb/scylladb,
+        scylladb/scylladb-docs-homepage,scylladb/scylladb-web-install,scylladb/siren,
+        scylladb/siren-byok,scylladb/siren-flipt,scylladb/siren-frontend,
+        scylladb/siren-terraform,scylladb/siren-tests,scylladb/spark-kinesis,
+        scylladb/sre-ops-automation,scylladb/SRE-Tooling,scylladb/vector-search-docs,
+        scylladb/vector-store,scylladb/vector-store-bench,scylladb/vss-sizing-api,
+        scylladb/zeus
+      RECONCILE_DAYS: ${{ inputs.days || '7' }}
+      RECONCILE_DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Ensure credentials are configured
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUTO_BACKPORT_TOKEN }}
+          JIRA_AUTH: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
+        run: |
+          if [ -z "${GITHUB_TOKEN}" ] || [ -z "${JIRA_AUTH}" ]; then
+            echo "::error::AUTO_BACKPORT_TOKEN and USER_AND_KEY_FOR_JIRA_AUTOMATION must be set - cannot reconcile."
+            exit 1
+          fi
+
+      - name: Reconcile Jira issues of merged PRs
+        working-directory: scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.AUTO_BACKPORT_TOKEN }}
+          JIRA_AUTH: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
+          RECONCILE_REPOSITORIES: ${{ inputs.repositories }}
+        run: |
+          python reconcile_merged_prs.py \
+            --repositories "${RECONCILE_REPOSITORIES:-${DEFAULT_REPOSITORIES}}" \
+            --days "${RECONCILE_DAYS}" \
+            ${RECONCILE_DRY_RUN:+--dry-run}

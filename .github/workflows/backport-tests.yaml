@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - '.github/scripts/auto-backport-jira.py'
+      - 'scripts/jira_sync_*.py'
+      - 'scripts/reconcile_merged_prs.py'
       - '.github/tests/**'
       - '.github/workflows/backport-tests.yaml'
       - '.github/workflows/backport-with-jira.yaml'
