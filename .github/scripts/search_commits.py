@@ -166,6 +166,12 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
                 continue
             if match:
                 version_ref = re.search(r'-(\d+\.\d+)', ref)
+                # The sha search isn't scoped to a base branch, so scanning
+                # master can return the backport PRs of a master commit. They
+                # only mean something on their own branch-X.Y - skip them here.
+                if not version_ref:
+                    print(f"Skipping backport PR #{pr['number']} (parent #{pr_number}): {branch} is not a release branch")
+                    continue
                 label_to_add = f'backport/{version_ref.group(1)}-done'
                 label_to_remove = f'backport/{version_ref.group(1)}'
                 remove_label_url = f'https://api.github.com/repos/{repository}/issues/{pr_number}/labels/{label_to_remove}'

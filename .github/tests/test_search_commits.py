@@ -204,6 +204,40 @@ class TestLabelPromotedCommits:
         assert processed == {42}
         assert mock_post.call_args[1]["json"] == {"labels": ["promoted-to-master"]}
 
+    def test_skips_backport_pr_when_scanning_master(self, sc_module):
+        """The sha search for a master commit can return its closed backport
+        PRs (scylladb/scylladb#32385-#32388 for #32128). With no X.Y in the
+        master ref, these must be skipped instead of crashing on
+        version_ref.group(), and the parent PR must still be labeled."""
+        commit = _commit("sha1", "scylla-ci-route: fix\n\nCloses scylladb/scylladb#32128")
+        search_resp = _response({"items": [
+            {"number": 32385, "body": "Parent PR: #32128"},
+            {"number": 32386, "body": "Parent PR: #32128"},
+        ]})
+        pr_resp = _response({
+            "number": 32128,
+            "body": "",
+            "state": "closed",
+            "base": {"ref": "master"},
+        })
+        add_label_resp = _response({})
+
+        with patch.object(sc_module.http, "get", side_effect=[search_resp, pr_resp]), \
+             patch.object(sc_module.http, "post", return_value=add_label_resp) as mock_post, \
+             patch.object(sc_module.http, "delete") as mock_delete:
+            processed = sc_module.label_promoted_commits(
+                "scylladb/scylladb", [commit], "refs/heads/master",
+                "promoted-to-master", "tok",
+            )
+
+        assert processed == {32128}
+        mock_delete.assert_not_called()
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == (
+            "https://api.github.com/repos/scylladb/scylladb/issues/32128/labels"
+        )
+        assert mock_post.call_args[1]["json"] == {"labels": ["promoted-to-master"]}
+
     def test_raises_on_failed_search_request(self, sc_module):
         commit = _commit("sha1", "msg")
         failed_resp = _response({"message": "rate limit exceeded"}, ok=False, status_code=403)
