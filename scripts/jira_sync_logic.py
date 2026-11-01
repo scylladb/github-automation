@@ -11,6 +11,7 @@ jira_sync_modules.py.
 
 import json
 import os
+import re
 import sys
 import argparse
 
@@ -26,10 +27,18 @@ from jira_sync_modules import (
     add_pr_weblink_to_jira,
     remove_label_from_jira_issue,
     get_done_issue_keys,
+    enforce_backport_fixes_reference,
+    enforce_backport_fixes_on_body_change,
+    get_sync_failures,
+    BACKPORT_LABEL_RE,
 )
 
 # Sentinel value returned by extract_jira_keys when no keys are found.
 _NO_KEYS = '["__NO_KEYS_FOUND__"]'
+
+# Title prefix of a backport PR, e.g. "[Backport 2026.1] ...", "[Backport manager-3.4] ..."
+# or "[Backport perf-v15] ..." (RELENG-464); same versions as auto-backport-jira.py.
+_BACKPORT_TITLE_RE = re.compile(r'\[Backport (?:manager-\d+\.\d+|perf-v\d+|\d+\.\d+)\]')
 
 # Labels that should be ignored by the labeled/unlabeled event handlers.
 # When a PR label event fires for one of these labels the automation
@@ -74,6 +83,18 @@ def manage_labeled_gh_event(
     print(f"  pr_number        = {pr_number!r}")
     print(f"  triggering_label = {triggering_label!r}")
     print(f"  owner_repo       = {owner_repo!r}")
+
+    # --- Enforce a valid Fixes: reference on backport labels ---
+    # backport/<release> labels are excluded from Jira sync (below), but when one
+    # is added we first require the PR body to link a valid issue. If it does not,
+    # this comments and strips the backport label(s); either way no Jira sync runs.
+    if BACKPORT_LABEL_RE.match(triggering_label):
+        print(f"Backport label '{triggering_label}' added: requiring a valid Fixes: reference in the PR body.")
+        enforce_backport_fixes_reference(
+            pr_title, pr_body, pr_number, triggering_label,
+            owner_repo, gh_token, jira_auth,
+        )
+        return
     
     # --- Early exit: excluded labels ---
     if _is_excluded_label(triggering_label):
@@ -85,7 +106,20 @@ def manage_labeled_gh_event(
     print("=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    # For backport PRs with promoted-to-* labels, only extract keys from the PR body
+    # (not commit messages). Backport PR bodies contain the correct sub-task key
+    # (e.g., "Fixes: SCYLLADB-1171"), but the cherry-picked commits still reference
+    # the parent issue (e.g., "Fixes: SCYLLADB-1114"). Scanning commits would cause
+    # the parent issue to be incorrectly transitioned to Done. (RELENG-464)
+    _is_backport_pr = bool(_BACKPORT_TITLE_RE.match(pr_title))
+    if _is_backport_pr and triggering_label.startswith("promoted-to-"):
+        print("Backport PR with promoted-to-* label: scanning PR body only (skipping commit messages)")
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    else:
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth,
+                                 owner_repo=owner_repo,
+                                 pr_number=pr_number,
+                                 gh_token=gh_token)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -347,6 +381,29 @@ def _run_manage_review_gh_event() -> None:
 
 
 
+def extract_closed_pr_jira_keys(
+    pr_title: str,
+    pr_body: str,
+    pr_number: int,
+    owner_repo: str,
+    gh_token: str,
+    jira_auth: str,
+) -> list[str]:
+    """Return the Jira keys a closed PR resolves (shared with reconcile_merged_prs.py)."""
+    # For backport PRs, only extract keys from the PR body (not commit messages).
+    # Backport PR bodies contain the correct sub-task key (e.g., "Fixes: SCYLLADB-1171"),
+    # but the cherry-picked commits still reference the parent issue
+    # (e.g., "Fixes: SCYLLADB-1114"). Scanning commits would cause the parent issue
+    # to be incorrectly transitioned to Done. (RELENG-464)
+    if _BACKPORT_TITLE_RE.match(pr_title):
+        print("Backport PR detected: scanning PR body only (skipping commit messages)")
+        return extract_jira_keys(pr_title, pr_body, jira_auth)
+    return extract_jira_keys(pr_title, pr_body, jira_auth,
+                             owner_repo=owner_repo,
+                             pr_number=pr_number,
+                             gh_token=gh_token)
+
+
 def manage_closed_gh_event(
     pr_title: str,
     pr_body: str,
@@ -381,7 +438,7 @@ def manage_closed_gh_event(
     print("\n" + "=" * 60)
     print(" Step 1 / extract_jira_keys")
     print("=" * 60)
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+    keys = extract_closed_pr_jira_keys(pr_title, pr_body, pr_number, owner_repo, gh_token, jira_auth)
     jira_keys_json = json.dumps(keys)
     print(f"jira-keys-json={jira_keys_json}")
 
@@ -519,6 +576,7 @@ def manage_opened_gh_event(
 
     Replicates the full job graph of main_jira_sync_pr_opened.yml:
 
+      0.  enforce_backport_fixes_on_body_change (RELENG-81)
       1.  extract_jira_keys
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
@@ -533,6 +591,20 @@ def manage_opened_gh_event(
     print(f"  pr_event   = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
+
+    # --- Step 0: re-check the Fixes: reference while backport labels are set ---
+    # The 'labeled' handler enforces this when a backport label is added, but the
+    # body can be edited afterwards to drop the reference. Re-checking here (this
+    # handler serves both 'opened' and 'edited') catches that early instead of at
+    # backport time, after the merge. (RELENG-81)
+    print("\n" + "=" * 60)
+    print(" Step 0 / enforce_backport_fixes_on_body_change")
+    print("=" * 60)
+    if enforce_backport_fixes_on_body_change(
+        pr_title, pr_body, pr_number, owner_repo, gh_token, jira_auth,
+    ):
+        print("Backport label(s) removed. Please add to the PR body a link ('Fixes:') to a valid Jira issue and only then re-label the PR for backport.")
+        return
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
@@ -876,8 +948,15 @@ def main():
         sys.exit(1)
 
     handler()
+
+    failures = get_sync_failures()
+    if failures:
+        for failure in failures:
+            print(f"::error::Jira sync: {failure}")
+        return 1
     return 0
 
 
 if __name__ == '__main__':
     sys.exit(main())
+
