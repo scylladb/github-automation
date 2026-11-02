@@ -4,10 +4,15 @@ on:
   schedule:
     - cron: '0 */2 * * *'   # Runs every 2 hours
   workflow_dispatch:  # Allows manual triggering
+    inputs:
+      test_message:
+        description: 'Only post a test message to Slack'
+        type: boolean
+        default: false
 
 jobs:
   monitor:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout repository
@@ -27,11 +32,7 @@ jobs:
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        SMTP_SERVER: "smtp.gmail.com"
-        SMTP_PORT: "587"
-        SMTP_USER: ${{ secrets.SMTP_USER }}
-        SMTP_PASS: ${{ secrets.SMTP_PASS }}
-        EMAIL_FROM: "it.admin@scylladb.com"
-        EMAIL_TO: "releng-team@scylladb.com"
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        SLACK_TEST_MESSAGE: ${{ inputs.test_message }}
         REPORT_TYPE: "daily"
       run: python aws_instance_monitor/aws_instance_monitor.py

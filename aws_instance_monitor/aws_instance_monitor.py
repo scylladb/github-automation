@@ -2,12 +2,35 @@ import boto3
 from tabulate import tabulate
 from datetime import datetime, timezone
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import sys
+import json
+import urllib.request
 from collections import defaultdict
 
+def post_to_slack(webhook_url, payload):
+    req = urllib.request.Request(
+        webhook_url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+    except Exception as e:
+        sys.exit(f"❌ Error sending Slack message: {e}")
+    print("📨 Slack notification sent.")
+
 def main():
+    webhook_url = os.getenv('SLACK_WEBHOOK_URL', '').strip().strip('"\'')
+    if webhook_url and not webhook_url.startswith('https://hooks.slack.com/'):
+        sys.exit("❌ SLACK_WEBHOOK_URL is not a Slack incoming webhook URL "
+                 "(expected https://hooks.slack.com/services/...)")
+    if os.getenv('SLACK_TEST_MESSAGE', '').lower() == 'true':
+        if not webhook_url:
+            sys.exit("❌ SLACK_WEBHOOK_URL not set")
+        post_to_slack(webhook_url, {'text': 'AWS Instance Monitor: test message - Slack notifications are working.'})
+        return
+
     # Get report type from environment variable
     report_type = os.getenv('REPORT_TYPE', 'daily')  # 'exceeding' or 'daily'
     
@@ -122,85 +145,45 @@ def main():
     else:
         print("\n✅ No instances found exceeding keep time.")
     
-    # Send email notification
-    smtp_server = os.getenv('SMTP_SERVER')
-    smtp_port = os.getenv('SMTP_PORT', '587')
-    smtp_user = os.getenv('SMTP_USER')
-    smtp_pass = os.getenv('SMTP_PASS')
-    email_from = os.getenv('EMAIL_FROM')
-    email_to_str = os.getenv('EMAIL_TO')
-    if not email_to_str:
-        print("EMAIL_TO not set")
-        email_to = []
-    else:
-        email_to = [addr.strip() for addr in email_to_str.split(',')]
-    
-    if not smtp_server:
-        print("SMTP_SERVER not set")
-    if not smtp_user:
-        print("SMTP_USER not set")
-    if not smtp_pass:
-        print("SMTP_PASS not set")
-    if not email_from:
-        print("EMAIL_FROM not set")
-    
-    # Send email based on report type
-    should_send_email = False
+    # Send Slack notification
+    if not exceeding_instances:
+        print("No exceeding instances to report - Slack message not sent.")
+        return
+
+    if not webhook_url:
+        sys.exit("❌ SLACK_WEBHOOK_URL not set - cannot report exceeding instances")
+
     if report_type == 'daily':
-        # Only send daily report if there are exceeding instances
-        should_send_email = bool(exceeding_instances)
-        email_subject = 'Daily AWS Instance Report - Instances Exceeding Keep Time'
+        title = 'Daily AWS Instance Report - Instances Exceeding Keep Time'
     else:
-        # Only send email if there are exceeding instances
-        should_send_email = bool(exceeding_instances)
-        email_subject = 'AWS Instance Alert - Instances Exceeding Keep Time'
-    
-    if smtp_server and smtp_user and smtp_pass and email_from and email_to and should_send_email:
-        table_html = tabulate(exceeding_instances, headers='keys', tablefmt='html')
-        
-        summary = f"<p><strong>⚠️ Instances Exceeding Keep Time:</strong> {len(exceeding_instances)}</p>"
-        
-        html_body = f"""
-        <html>
-        <head>
-        <style>
-        body {{ font-family: Arial, sans-serif; }}
-        h2 {{ color: #333; }}
-        table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
-        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-        th {{ background-color: #f2f2f2; font-weight: bold; }}
-        tr:nth-child(even) {{ background-color: #f9f9f9; }}
-        tr:hover {{ background-color: #e9e9e9; }}
-        .summary {{ background-color: #f0f8ff; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-        </style>
-        </head>
-        <body>
-        <h2>{email_subject}</h2>
-        <div class="summary">
-        {summary}
-        </div>
-        {table_html}
-        </body></html>"""
-        
-        msg = MIMEMultipart()
-        msg['From'] = email_from
-        msg['To'] = ', '.join(email_to)
-        msg['Subject'] = email_subject
-        msg.attach(MIMEText(html_body, 'html'))
-        
-        try:
-            print(f"Connecting to {smtp_server}:{smtp_port} with user {smtp_user}")
-            server = smtplib.SMTP(smtp_server, int(smtp_port))
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            text = msg.as_string()
-            server.sendmail(email_from, email_to, text)
-            server.quit()
-            print("📧 Email notification sent.")
-        except Exception as e:
-            print(f"❌ Error sending email: {e}")
-    elif smtp_server and not exceeding_instances:
-        print("No exceeding instances to report - email not sent.")
+        title = 'AWS Instance Alert - Instances Exceeding Keep Time'
+
+    columns = ['Region', 'Instance ID', 'Name', 'RunByUser', 'Uptime', 'Keep Status']
+    rows = [[inst.get(c, 'N/A') for c in columns] for inst in exceeding_instances]
+    table = tabulate(rows, headers=columns, tablefmt='simple', maxcolwidths=25)
+    # Slack section text is limited to 3000 characters
+    if len(table) > 2900:
+        table = table[:2900] + '\n... (truncated, see workflow log)'
+
+    run_url = None
+    if os.getenv('GITHUB_RUN_ID'):
+        run_url = (f"{os.getenv('GITHUB_SERVER_URL', 'https://github.com')}/"
+                   f"{os.getenv('GITHUB_REPOSITORY')}/actions/runs/{os.getenv('GITHUB_RUN_ID')}")
+
+    summary = f"⚠️ *{len(exceeding_instances)}* instance(s) exceeding keep time"
+    if run_url:
+        summary += f" (<{run_url}|workflow run>)"
+
+    payload = {
+        'text': f"{title}: {len(exceeding_instances)} instance(s)",
+        'blocks': [
+            {'type': 'header', 'text': {'type': 'plain_text', 'text': title}},
+            {'type': 'section', 'text': {'type': 'mrkdwn', 'text': summary}},
+            {'type': 'section', 'text': {'type': 'mrkdwn', 'text': f"```{table}```"}},
+        ],
+    }
+
+    post_to_slack(webhook_url, payload)
 
 if __name__ == "__main__":
     main()
