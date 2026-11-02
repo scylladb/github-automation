@@ -8,7 +8,7 @@ on:
 jobs:
   update_projects:
     name: Update project ${{ matrix.project-name }} for ${{ matrix.team }} members
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
