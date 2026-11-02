@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Tuple
 from github import Github, GithubException, GithubRetry
 from git import Repo, GitCommandError
 
+from search_commits import is_null_sha
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # GitHub token
@@ -2922,6 +2924,13 @@ def _close_promoted_backport_pr(repo, pr, branch_name: str, version: str,
 
 def main():
     args = parse_args()
+    # A push that creates (or deletes) a branch has the null SHA on one side
+    # of the range, which the compare API rejects with 404. There is no
+    # base to compare against, and new branches are cut from commits that
+    # already exist on another branch, so skip the push.
+    if args.commits and any(is_null_sha(sha) for sha in args.commits.split('..')):
+        logging.info(f"Branch creation/deletion push to {args.base_branch} ({args.commits}), nothing to process")
+        return
     base_branch = args.base_branch.split('/')[2]
     promoted_label = get_promoted_label(base_branch)
     repo_name = args.repo

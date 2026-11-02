@@ -284,6 +284,54 @@ class TestLabelPromotedCommits:
         mock_post.assert_not_called()
 
 
+NULL_SHA = "0" * 40
+HEAD_SHA = "ec5ff7e7dc2585aad5c39e141d674ef3f0a26ac1"
+
+
+class TestMain:
+    def _run_main(self, sc_module, commits):
+        args = MagicMock(
+            repository="scylladb/scylla-dtest",
+            commits=commits,
+            ref="refs/heads/next-2026.4",
+            label="promoted-to-master",
+        )
+        with patch.object(sc_module, "parser", return_value=args), \
+             patch.object(sc_module, "Github") as mock_gh, \
+             patch.object(sc_module, "label_promoted_commits") as mock_label:
+            sc_module.main()
+        return mock_gh, mock_label
+
+    @pytest.mark.parametrize("commits", [
+        f"{NULL_SHA}..{HEAD_SHA}",  # branch creation
+        f"{HEAD_SHA}..{NULL_SHA}",  # branch deletion
+    ])
+    def test_null_sha_range_is_a_noop(self, sc_module, commits, capsys):
+        mock_gh, mock_label = self._run_main(sc_module, commits)
+
+        mock_gh.assert_not_called()
+        mock_label.assert_not_called()
+        assert "nothing to label" in capsys.readouterr().out
+
+    def test_regular_range_compares_and_labels(self, sc_module):
+        mock_gh, mock_label = self._run_main(sc_module, f"abc123..{HEAD_SHA}")
+
+        repo = mock_gh.return_value.get_repo.return_value
+        repo.compare.assert_called_once_with("abc123", HEAD_SHA)
+        mock_label.assert_called_once()
+        assert mock_label.call_args.args[1] is repo.compare.return_value.commits
+
+    @pytest.mark.parametrize("sha,expected", [
+        (NULL_SHA, True),
+        ("0000000", True),
+        (HEAD_SHA, False),
+        ("000000a", False),
+        ("", False),
+    ])
+    def test_is_null_sha(self, sc_module, sha, expected):
+        assert sc_module.is_null_sha(sha) is expected
+
+
 class TestReconcilePromotedLabels:
     def test_reconciles_each_branch_with_lookback_window(self, reconcile_module, sc_module):
         commits = [_commit(f"sha{i}", "msg") for i in range(5)]
