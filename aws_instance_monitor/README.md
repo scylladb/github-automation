@@ -8,7 +8,7 @@ This Python script monitors all running EC2 instances across all AWS regions in 
 - **Monitoring Only**: Reports on instances but does not terminate them automatically
 - **Multi-region Support**: Monitors all AWS regions automatically
 - **Instance Status Tracking**: Shows which instances are within or exceeding their keep time
-- **Smart Email Notifications**: Sends comprehensive daily reports
+- **Slack Notifications**: Posts instances exceeding their keep time to Slack
 - **Flexible Keep Time**: Supports custom keep times via instance tags or defaults to 8 hours
 
 ## Prerequisites
@@ -16,7 +16,7 @@ This Python script monitors all running EC2 instances across all AWS regions in 
 - Python 3.x installed
 - AWS credentials configured (e.g., via AWS CLI, environment variables, or IAM roles)
 - Required Python packages: `boto3`, `tabulate`
-- (Optional) SMTP settings for email notifications
+- A Slack incoming webhook URL for notifications
 
 ## Installation
 
@@ -42,14 +42,8 @@ REPORT_TYPE=exceeding python aws_instance_monitor.py
 
 ### Environment Variables
 
-Set the following environment variables for email notifications:
 - `REPORT_TYPE` - Set to `daily` for full report (default) or `exceeding` for exceeding-only report
-- `SMTP_SERVER` (e.g., smtp.gmail.com)
-- `SMTP_PORT` (e.g., 587)
-- `SMTP_USER`
-- `SMTP_PASS`
-- `EMAIL_FROM`
-- `EMAIL_TO` (comma-separated list of email addresses for multiple recipients)
+- `SLACK_WEBHOOK_URL` - Slack incoming webhook to post to. Required when instances exceed their keep time; the run fails if it is missing or the post fails.
 
 ### GitHub Actions
 
@@ -110,8 +104,7 @@ In your GitHub repository, go to Settings > Secrets and variables > Actions and 
 
 - `AWS_ACCESS_KEY_ID`: Your AWS access key ID
 - `AWS_SECRET_ACCESS_KEY`: Your AWS secret access key
-- `SMTP_USER`: SMTP username for email notifications
-- `SMTP_PASS`: SMTP password for email notifications
+- `SLACK_WEBHOOK_URL`: Slack incoming webhook URL for notifications
 
 ### Workflow Details
 
@@ -121,7 +114,7 @@ The workflow file is located at `.github/workflows/daily-aws-instance-monitor.ym
 2. Set up Python 3.x
 3. Install required dependencies (`boto3`, `tabulate`)
 4. Run the script with the environment variables set from secrets
-5. Send email notifications with the daily report
+5. Post instances exceeding keep time to Slack
 
 You can also manually trigger the workflow from the Actions tab in GitHub.
 
@@ -130,4 +123,4 @@ You can also manually trigger the workflow from the Actions tab in GitHub.
 - Ensure your AWS credentials have the necessary permissions to describe EC2 instances across all regions
 - The script monitors running instances only
 - No instances are terminated automatically - this is a monitoring-only tool
-- Email notifications are sent daily with comprehensive instance reports
+- A Slack message is posted only when instances exceed their keep time
