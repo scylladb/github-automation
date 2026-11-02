@@ -198,11 +198,23 @@ def label_promoted_commits(repository, commits, ref, label, github_token):
     return processed_prs
 
 
+def is_null_sha(sha: str) -> bool:
+    """True for the all-zero SHA GitHub sends on a branch-creation/deletion push."""
+    return bool(sha) and set(sha) == {'0'}
+
+
 def main():
     args = parser()
+    start_commit, end_commit = args.commits.split('..')
+    # A push that creates (or deletes) a branch has the null SHA on one side
+    # of the range, which the compare API rejects with 404. There is no
+    # base to compare against, and new branches are cut from commits that
+    # already exist on another branch, so skip the push.
+    if is_null_sha(start_commit) or is_null_sha(end_commit):
+        print(f"Branch creation/deletion push to {args.ref} ({args.commits}), nothing to label")
+        return
     g = Github(github_token, retry=GITHUB_RETRY)
     repo = g.get_repo(args.repository, lazy=False)
-    start_commit, end_commit = args.commits.split('..')
     commits = repo.compare(start_commit, end_commit).commits
     label_promoted_commits(args.repository, commits, args.ref, args.label, github_token)
 

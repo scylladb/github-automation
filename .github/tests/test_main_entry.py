@@ -117,6 +117,29 @@ class TestMainDispatch:
             bp_module.main()
             mock_push.assert_called_once_with(repo, "abc..def", "branch-2025.4", "scylladb/scylladb")
 
+    @pytest.mark.parametrize("commits", [
+        "0000000000000000000000000000000000000000..def",  # branch creation
+        "def..0000000000000000000000000000000000000000",  # branch deletion
+    ])
+    @pytest.mark.parametrize("extra_args", [
+        ["--promoted-to-branch", "branch-2025.4"],
+        [],
+    ])
+    def test_null_sha_range_is_a_noop(self, bp_module, commits, extra_args):
+        test_args = [
+            "auto-backport-jira.py",
+            "--repo", "scylladb/scylladb",
+            "--base-branch", "refs/heads/branch-2025.4",
+            "--commits", commits,
+        ] + extra_args
+
+        with patch.object(sys, "argv", test_args), \
+             patch.object(bp_module, "Github") as mock_gh, \
+             patch.object(bp_module, "process_branch_push") as mock_push:
+            bp_module.main()
+            mock_gh.assert_not_called()
+            mock_push.assert_not_called()
+
     def test_chain_backport_mode(self, bp_module, make_pr, make_repo):
         repo = make_repo()
         merged_pr = make_pr(number=456, merged=True)
