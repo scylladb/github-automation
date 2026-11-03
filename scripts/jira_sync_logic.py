@@ -30,6 +30,7 @@ from jira_sync_modules import (
     enforce_backport_fixes_reference,
     enforce_backport_fixes_on_body_change,
     get_sync_failures,
+    get_pr_is_draft,
     BACKPORT_LABEL_RE,
 )
 
@@ -266,6 +267,7 @@ def manage_review_gh_event(
     gh_token: str,
     requested_reviewer: str,
     jira_auth: str,
+    pr_is_draft: bool = False,
 ) -> None:
     """Orchestrate the "In Review" sync in a single invocation.
 
@@ -275,6 +277,12 @@ def manage_review_gh_event(
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
       4.  jira_status_transition -> "In Review" (id 121)
+          Skipped while the PR is a draft (PM-335): a draft is not ready for
+          review, so requesting a reviewer on it must not move the issue.
+          Marking the PR ready for review fires 'ready_for_review' with
+          draft=false, and that event performs the transition.
+          The CLI wrapper reads *pr_is_draft* from the GitHub API, so it is
+          the PR's state when the job runs, not when the event fired.
     """
     print("=" * 60)
     print(" manage_review_gh_event  input parameters")
@@ -285,6 +293,7 @@ def manage_review_gh_event(
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
     print(f"  requested_reviewer = {requested_reviewer!r}")
+    print(f"  pr_is_draft = {pr_is_draft!r}")
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
@@ -327,11 +336,15 @@ def manage_review_gh_event(
         pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
-    # --- Step 4: transition to In Review ---
+    # --- Step 4: transition to In Review (never for a draft PR - PM-335) ---
     print("\n" + "=" * 60)
     print(" Step 4 / jira_status_transition -> In Review")
     print("=" * 60)
-    jira_status_transition(csv_content, "In Review", "121", jira_auth)
+    if pr_is_draft:
+        print("PR is a draft: skipping the 'In Review' transition (PM-335). "
+              "It will happen when the PR is marked ready for review.")
+    else:
+        jira_status_transition(csv_content, "In Review", "121", jira_auth)
 
     print("\n" + "=" * 60)
     print(" manage_review_gh_event completed successfully")
@@ -341,8 +354,13 @@ def manage_review_gh_event(
 def _run_manage_review_gh_event() -> None:
     """CLI entry-point wrapper for manage_review_gh_event.
 
-    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO,
-    GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO, REQUESTED_REVIEWER,
+    PR_DRAFT, GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+
+    The draft state is read from the GitHub API (get_pr_is_draft), i.e. the
+    PR's current state. PR_DRAFT (github.event.pull_request.draft,
+    "true"/"false") is only the fallback if that call fails; when it is unset
+    (older callers) the fallback is "not a draft".
     """
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
@@ -351,6 +369,7 @@ def _run_manage_review_gh_event() -> None:
     gh_token = os.environ.get("GITHUB_TOKEN", "")
     requested_reviewer = os.environ.get("REQUESTED_REVIEWER", "")
     jira_auth = os.environ.get("JIRA_AUTH", "")
+    payload_draft = os.environ.get("PR_DRAFT", "").strip().lower() == "true"
 
     if not pr_number_str:
         print("Error: PR_NUMBER env var is not set or empty.")
@@ -374,9 +393,12 @@ def _run_manage_review_gh_event() -> None:
         print("Error: JIRA_AUTH env var is not set or empty.")
         sys.exit(1)
 
+    pr_is_draft = get_pr_is_draft(owner_repo, pr_number, gh_token, fallback=payload_draft)
+
     manage_review_gh_event(
         pr_title, pr_body, pr_number,
         owner_repo, gh_token, requested_reviewer, jira_auth,
+        pr_is_draft=pr_is_draft,
     )
 
 
