@@ -57,6 +57,12 @@ on:
       dockerhub_token:
         description: 'Docker Hub token for pulling opencode-skills image'
         required: false
+      anthropic_base_url:
+        description: 'LLM gateway URL for the AI conflict resolver'
+        required: false
+      anthropic_auth_token:
+        description: 'LLM gateway token for the AI conflict resolver'
+        required: false
 
 env:
   DEFAULT_BRANCH: 'master'
@@ -313,6 +319,8 @@ jobs:
           GH_TOKEN: ${{ secrets.gh_token }}
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
+          ANTHROPIC_BASE_URL: ${{ secrets.anthropic_base_url }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.anthropic_auth_token }}
         run: |
           # Retry wrapper for gh CLI commands to handle transient GitHub API failures
           gh_retry() {
@@ -364,6 +372,10 @@ jobs:
             echo "::warning::DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set, skipping AI conflict resolution."
             exit 0
           fi
+          if [ -z "$ANTHROPIC_BASE_URL" ] || [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
+            echo "::warning::ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN not set, skipping AI conflict resolution."
+            exit 0
+          fi
           echo "$DOCKERHUB_TOKEN" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
           echo "$CONFLICTED_PRS" | while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
@@ -399,6 +411,9 @@ jobs:
               -v "${{ github.workspace }}/repo":/workspace \
               -w /workspace \
               -e GH_TOKEN="${GH_TOKEN}" \
+              -e ANTHROPIC_BASE_URL \
+              -e ANTHROPIC_AUTH_TOKEN \
+              -e "ANTHROPIC_CUSTOM_HEADERS=x-anyray-provider: anthropic" \
               -e GIT_CONFIG_COUNT=1 \
               -e GIT_CONFIG_KEY_0=safe.directory \
               -e GIT_CONFIG_VALUE_0=/workspace \
