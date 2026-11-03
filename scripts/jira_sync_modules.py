@@ -945,6 +945,36 @@ def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -
         return exc.code, exc.read().decode() if exc.fp else str(exc)
 
 
+def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bool) -> bool:
+    """Return the PR's current draft state from the GitHub API (PM-335).
+
+    The event payload's ``draft`` value is the state at the moment the event
+    fired, so a delayed or re-run job can see a stale value. Reading the PR when
+    the job runs avoids that. It also covers callers that don't pass PR_DRAFT
+    (e.g. main_jira_sync_in_review.yml).
+
+    If the API call fails for any reason, *fallback* (the event payload's
+    value) is returned, so a GitHub hiccup never blocks the sync.
+    """
+    url = f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}"
+    try:
+        code, body = _gh_api("GET", url, gh_token)
+        if code != 200:
+            raise ValueError(f"HTTP {code}")
+        draft = json.loads(body).get("draft")
+        if not isinstance(draft, bool):
+            raise ValueError(f"unexpected 'draft' value {draft!r}")
+    except (OSError, ValueError) as exc:  # URLError is an OSError; JSONDecodeError a ValueError
+        print(f"Warning: could not read the draft state of PR #{pr_number} ({exc}); "
+              f"using the event payload's draft={fallback}.")
+        return fallback
+
+    if draft != fallback:
+        print(f"PR #{pr_number} draft state differs from the event payload: "
+              f"payload={fallback}, current={draft}. Using the current state.")
+    return draft
+
+
 def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) -> list[str]:
     """Compute the final list of labels to apply to a PR.
 
