@@ -436,7 +436,7 @@ class TestGetPrCommitsEdgeCases:
         repo = make_repo()
         pr = make_pr(number=10, merged=True, merge_commit_sha="merge123")
         # Single parent (not a merge commit)
-        merge_commit = make_commit(sha="merge123", parents=[MagicMock()])
+        merge_commit = make_commit(sha="merge123", message="Fix bug", parents=[MagicMock()])
         repo.get_commit.return_value = merge_commit
 
         # get_commits returns some commits, and pr.get_commits has matching one

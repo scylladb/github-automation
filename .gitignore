@@ -1,1 +1,3 @@
 gh_project_automation.log
+__pycache__/
+*.pyc

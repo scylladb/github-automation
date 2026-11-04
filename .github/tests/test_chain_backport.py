@@ -168,7 +168,8 @@ class TestProcessChainBackport:
         merged_pr.get_commits.return_value = [single_commit]
 
         # Single parent = rebase merge
-        rebase_commit = make_commit(sha="only_commit_sha", parents=[MagicMock()])
+        # (the message was edited at merge time, which must not make it look like a squash)
+        rebase_commit = make_commit(sha="only_commit_sha", message="Fix bug\n\nCloses #10", parents=[MagicMock()])
         repo.get_commit.return_value = rebase_commit
 
         captured_commits = {}
@@ -187,6 +188,83 @@ class TestProcessChainBackport:
 
             mock_bp.assert_called_once()
             assert captured_commits['commits'] == ["only_commit_sha"]
+
+    def test_squash_merged_multi_commit_pr_uses_squash_sha(self, bp_module, make_pr, make_repo, make_commit):
+        """Squash-merged multi-commit PR must cherry-pick only the squash commit (RELENG-165).
+
+        Treating it as a rebase merge would walk the first-parent chain and pick
+        commits of unrelated PRs merged before it.
+        """
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
+        merged_pr = make_pr(
+            number=10,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
+            merged=True,
+            merge_commit_sha="squash_sha",
+            labels=["backport/2025.3"]
+        )
+        merged_pr.get_commits.return_value = [
+            make_commit(sha="head1_sha", message="Initial plan"),
+            make_commit(sha="head2_sha", message="Fix pre-commit failures"),
+        ]
+        squash = make_commit(sha="squash_sha", message="[Backport 2025.4] Fix bug (#10)\n\n* Initial plan",
+                             parents=[MagicMock(sha="unrelated_sha")])
+        unrelated = make_commit(sha="unrelated_sha", message="Another PR's change")
+        repo.get_commit.side_effect = lambda sha: {"squash_sha": squash, "unrelated_sha": unrelated}[sha]
+        repo.compare.return_value = MagicMock(behind_by=0)
+
+        captured_commits = {}
+
+        def capture_backport(*args, **kwargs):
+            captured_commits['commits'] = args[3]
+            return make_pr(number=42)
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "backport", side_effect=capture_backport) as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+            mock_bp.assert_called_once()
+            assert captured_commits['commits'] == ["squash_sha"]
+
+    def test_unresolvable_commits_comment_and_skip_backport(self, bp_module, make_pr, make_repo, make_commit):
+        """When the commits can't be resolved, no backport PR is made and the PR gets a comment."""
+        repo = make_repo()
+        original = make_pr(number=1, title="Fix bug", body="Normal body\nFixes: SCYLLADB-123")
+        merged_pr = make_pr(
+            number=10,
+            title="[Backport 2025.4] Fix bug",
+            body="This PR is a backport of PR #1\nThe main Jira issue is SCYLLADB-123",
+            merged=True,
+            merge_commit_sha="last_sha",
+            labels=["backport/2025.3"]
+        )
+        merged_pr.get_commits.return_value = [
+            make_commit(sha="head1", message="First change"),
+            make_commit(sha="head2", message="Second change"),
+        ]
+        # Last commit keeps its message (so not a squash) but the chain behind it is another PR's
+        repo.get_commit.side_effect = lambda sha: {
+            "last_sha": make_commit(sha="last_sha", message="Second change", parents=[MagicMock(sha="other")]),
+            "other": make_commit(sha="other", message="Another PR's change"),
+        }[sha]
+
+        with patch.object(bp_module, "get_root_original_pr", return_value=original), \
+             patch.object(bp_module, "replace_backport_label_with_done"), \
+             patch.object(bp_module, "get_jira_user_from_github_user", return_value=None), \
+             patch.object(bp_module, "get_jira_issue", return_value={"fields": {"issuetype": {"subtask": False}}}), \
+             patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "backport") as mock_bp:
+            bp_module.process_chain_backport(repo, merged_pr, "scylladb/scylladb")
+
+        mock_bp.assert_not_called()
+        merged_pr.create_issue_comment.assert_called_once()
+        assert "manually" in merged_pr.create_issue_comment.call_args[0][0]
 
     def test_marks_merged_version_done_on_original(self, bp_module, make_pr, make_repo):
         repo = make_repo()

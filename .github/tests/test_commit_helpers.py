@@ -34,8 +34,8 @@ class TestGetPrCommits:
         repo = make_repo()
         pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
 
-        # Single parent -> not a merge commit
-        squash_commit = make_commit(sha="squash123", parents=[MagicMock()])
+        # Single parent -> not a merge commit; a rebased one-commit PR keeps its commit message
+        squash_commit = make_commit(sha="squash123", message="Fix bug\n\nSome details", parents=[MagicMock()])
         repo.get_commit.return_value = squash_commit
 
         # PR has one commit
@@ -52,6 +52,295 @@ class TestGetPrCommits:
 
         result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
         assert "promoted123" in result
+
+    def test_merged_pr_squash_multi_commit(self, bp_module, make_pr, make_repo, make_commit):
+        """Squash-merged multi-commit PR resolves to the squash commit (RELENG-165).
+
+        The PR commits never reach the branch, so matching their titles found nothing,
+        or an unrelated commit that shares a title like Copilot's 'Initial plan'.
+        """
+        repo = make_repo()
+        pr = make_pr(number=12993, merged=True, merge_commit_sha="squash123")
+        repo.get_commit.return_value = make_commit(
+            sha="squash123", message="fix(args): keep repeated args (#12993)\n\n* Initial plan\n* Fix")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix pre-commit failures"),
+        ]
+
+        repo.compare.return_value = MagicMock(behind_by=0)
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch') as find:
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit=None)
+        assert result == ["squash123"]
+        repo.compare.assert_called_once_with("squash123", "master")
+        find.assert_not_called()
+
+    def test_merged_pr_squash_api_error_is_not_read_as_missing(self, bp_module, make_pr, make_repo, make_commit):
+        """An API error while checking the squash commit fails the run instead of skipping the backport."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
+        repo.get_commit.return_value = make_commit(sha="squash123", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+        repo.compare.side_effect = RuntimeError("API rate limit exceeded")
+
+        with pytest.raises(RuntimeError):
+            bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+
+    def test_merged_pr_squash_without_start_commit_skips_history_scan(self, bp_module, make_pr, make_repo,
+                                                                       make_commit):
+        """A squash is resolved on the branch directly, without listing the whole branch history."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
+        repo.get_commit.return_value = make_commit(sha="squash123", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="squash123"):
+            result = bp_module.get_pr_commits(repo, pr, "branch-2025.4", start_commit=None)
+        assert result == ["squash123"]
+        repo.get_commits.assert_not_called()
+
+    def test_merged_pr_squash_rewritten_on_stable_branch(self, bp_module, make_pr, make_repo, make_commit):
+        """A squash commit a promoter rewrote is backported from its copy on the stable branch."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash_on_next")
+        repo.get_commit.return_value = make_commit(sha="squash_on_next", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="squash_on_master"):
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit=None)
+        assert result == ["squash_on_master"]
+
+    def test_merged_pr_squash_not_on_stable_branch(self, bp_module, make_pr, make_repo, make_commit, caplog):
+        """A squash commit not on the stable branch is not backported, and no other commit is picked.
+
+        With no close event pointing at it either, nothing is found."""
+        import logging
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
+        repo.get_commit.return_value = make_commit(sha="squash123", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+
+        repo.compare.return_value = MagicMock(behind_by=3)
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value=None), \
+             caplog.at_level(logging.WARNING):
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit=None)
+        assert result == []
+        assert any("not found on master" in msg for msg in caplog.messages)
+
+    def test_merged_pr_squash_titled_like_a_pr_commit(self, bp_module, make_pr, make_repo, make_commit):
+        """A squash whose title equals one PR commit's title is still a squash: its body differs."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
+        repo.get_commit.return_value = make_commit(sha="squash123", message="Fix bug\n\n* Initial plan\n* Fix bug")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="squash123"):
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit=None)
+        assert result == ["squash123"]
+
+    def test_rebase_with_edited_last_message_is_not_a_squash(self, bp_module, make_repo, make_commit):
+        """A rebase merge whose last commit message was edited (e.g. a Closes line) keeps every PR commit."""
+        repo = make_repo()
+        merge_commit = make_commit(sha="rebased2", message="Second change\n\nCloses #10",
+                                   parents=[MagicMock(sha="rebased1")])
+        repo.get_commit.return_value = make_commit(sha="rebased1", message="First change")
+        pr_commits = [
+            make_commit(sha="head1", message="First change"),
+            make_commit(sha="head2", message="Second change"),
+        ]
+
+        assert bp_module.is_squash_merge(repo, merge_commit, pr_commits) is False
+        assert bp_module.get_rebase_merged_commits(repo, merge_commit, pr_commits) == ["rebased1", "rebased2"]
+
+    def test_single_commit_squash_is_a_squash(self, bp_module, make_repo, make_commit):
+        """A one-commit PR squashed to 'Title (#N)' is a squash."""
+        repo = make_repo()
+        merge_commit = make_commit(sha="squash", message="Fix bug (#10)\n\nbody")
+        pr_commits = [make_commit(sha="head1", message="Fix bug")]
+
+        assert bp_module.is_squash_merge(repo, merge_commit, pr_commits) is True
+
+    def test_empty_title_pr_commit_is_never_a_squash(self, bp_module, make_repo, make_commit):
+        """An empty title can't be told apart from another empty title, so it is not called a squash."""
+        repo = make_repo()
+        merge_commit = make_commit(sha="m", message="Other (#10)")
+        pr_commits = [make_commit(sha="head1", message="")]
+
+        assert bp_module.is_squash_merge(repo, merge_commit, pr_commits) is False
+
+    def test_rebase_merged_commits_empty_titles_return_nothing(self, bp_module, make_repo, make_commit):
+        repo = make_repo()
+        merge_commit = make_commit(sha="m2", message="", parents=[MagicMock(sha="m1")])
+        repo.get_commit.return_value = make_commit(sha="m1", message="")
+        pr_commits = [make_commit(sha="h1", message=""), make_commit(sha="h2", message="")]
+
+        assert bp_module.get_rebase_merged_commits(repo, merge_commit, pr_commits) == []
+
+    def test_find_commit_on_stable_branch_empty_title_does_not_match(self, bp_module, make_repo, make_commit):
+        repo = make_repo()
+        repo.get_commit.return_value = make_commit(sha="orig", message="")
+        repo.compare.return_value = MagicMock(behind_by=2)
+        repo.get_commits.return_value = [make_commit(sha="unrelated", message="")]
+
+        assert bp_module._find_commit_on_stable_branch(repo, "orig", "master") is None
+
+    def test_merged_pr_squash_with_start_commit_searches_promoted_range(self, bp_module, make_pr, make_repo,
+                                                                         make_commit):
+        """start_commit still bounds the search: the squash (or its rewritten copy) must be in the promoted range."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash_on_next")
+        repo.get_commit.return_value = make_commit(sha="squash_on_next", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+        repo.compare.return_value = MagicMock(commits=[
+            make_commit(sha="other", message="Other change"),
+            make_commit(sha="squash_on_master", message="Fix bug (#10)"),
+        ])
+
+        result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+        assert result == ["squash_on_master"]
+        repo.compare.assert_called_once_with("before123", "master")
+
+    def test_merged_pr_squash_is_start_commit(self, bp_module, make_pr, make_repo, make_commit):
+        """When start_commit is the squash commit itself, compare() excludes it, so it is returned directly."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash_sha")
+        repo.get_commit.return_value = make_commit(sha="squash_sha", message="Fix bug (#10)")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+        repo.compare.return_value = MagicMock(commits=[])
+
+        result = bp_module.get_pr_commits(repo, pr, "master", start_commit="squash_sha")
+        assert result == ["squash_sha"]
+
+    def test_merged_pr_squash_not_found_uses_close_event_fallback(self, bp_module, make_pr, make_repo, make_commit):
+        """A squash not found on the branch falls through to the closed-PR fallback instead of returning nothing."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash_on_next", state="closed")
+        squash = make_commit(sha="squash_on_next", message="Fix bug (#10)", parents=[MagicMock(sha="p1")])
+        promoted = make_commit(sha="squash_on_master", message="Fix bug (#10)")
+        other = make_commit(sha="p1", message="Other PR change")
+        repo.get_commit.side_effect = lambda sha: {"squash_on_next": squash, "ref1": promoted, "p1": other}[sha]
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+        repo.compare.return_value = MagicMock(commits=[])
+        event = MagicMock(event="referenced", commit_id="ref1")
+        pr.get_issue_events.return_value = [event]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="squash_on_master"):
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+        assert result == ["squash_on_master"]
+
+    def test_merged_pr_squash_close_event_ignores_commits_titled_like_pr_commits(self, bp_module, make_pr,
+                                                                                 make_repo, make_commit):
+        """For a squash, a referenced commit of another PR titled like a PR commit is not picked."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="squash_on_next", state="closed")
+        squash = make_commit(sha="squash_on_next", message="Fix bug (#10)", parents=[MagicMock(sha="p1")])
+        foreign = make_commit(sha="ref1", message="Initial plan")
+        other = make_commit(sha="p1", message="Other PR change")
+        repo.get_commit.side_effect = lambda sha: {"squash_on_next": squash, "ref1": foreign, "p1": other}[sha]
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+        repo.compare.return_value = MagicMock(commits=[])
+        pr.get_issue_events.return_value = [MagicMock(event="referenced", commit_id="ref1")]
+
+        with patch.object(bp_module, '_find_commit_on_stable_branch', return_value="foreign_on_master") as find:
+            result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+        assert result == []
+        find.assert_not_called()
+
+    def test_merged_pr_rebase_multi_commit_matches_pr_commits(self, bp_module, make_pr, make_repo, make_commit):
+        """Rebase-merged multi-commit PR still resolves every PR commit by title."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="rebased2")
+        repo.get_commit.return_value = make_commit(sha="rebased2", message="Second change")
+        pr.get_commits.return_value = [
+            make_commit(sha="head1", message="First change"),
+            make_commit(sha="head2", message="Second change"),
+        ]
+        comparison = MagicMock()
+        comparison.commits = [
+            make_commit(sha="rebased1", message="First change"),
+            make_commit(sha="rebased2", message="Second change"),
+        ]
+        repo.compare.return_value = comparison
+
+        result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+        assert result == ["rebased1", "rebased2"]
+
+    def test_rebase_merged_commits_listed_out_of_order_keeps_all(self, bp_module, make_repo, make_commit):
+        """A real rebase merge whose PR commits the API lists out of order still returns every commit."""
+        repo = make_repo()
+        merge_commit = make_commit(sha="rebased2", message="Second change",
+                                   parents=[MagicMock(sha="rebased1")])
+        repo.get_commit.return_value = make_commit(sha="rebased1", message="First change")
+        pr_commits = [
+            make_commit(sha="head2", message="Second change"),
+            make_commit(sha="head1", message="First change"),
+        ]
+
+        assert bp_module.get_rebase_merged_commits(repo, merge_commit, pr_commits) == ["rebased1", "rebased2"]
+
+    def test_rebase_merged_commits_title_mismatch_returns_nothing(self, bp_module, make_repo, make_commit):
+        """A first-parent chain that doesn't match the PR titles is not backported at all.
+
+        Backporting the chain would pick another PR's commit, and backporting only
+        merge_commit_sha would silently drop the rest of the PR.
+        """
+        repo = make_repo()
+        merge_commit = make_commit(sha="squash_sha", message="Fix bug",
+                                   parents=[MagicMock(sha="other_pr_sha")])
+        repo.get_commit.return_value = make_commit(sha="other_pr_sha", message="Unrelated change")
+        pr_commits = [
+            make_commit(sha="head1", message="Initial plan"),
+            make_commit(sha="head2", message="Fix bug"),
+        ]
+
+        assert bp_module.get_rebase_merged_commits(repo, merge_commit, pr_commits) == []
+
+    def test_merged_pr_rebase_head_commit_not_listed_last(self, bp_module, make_pr, make_repo, make_commit):
+        """Rebase merge is not taken for a squash when the API lists the head commit out of order."""
+        repo = make_repo()
+        pr = make_pr(number=10, merged=True, merge_commit_sha="rebased2")
+        repo.get_commit.return_value = make_commit(sha="rebased2", message="Second change")
+        pr.get_commits.return_value = [
+            make_commit(sha="head2", message="Second change"),
+            make_commit(sha="head1", message="First change"),
+        ]
+        comparison = MagicMock()
+        comparison.commits = [
+            make_commit(sha="rebased1", message="First change"),
+            make_commit(sha="rebased2", message="Second change"),
+        ]
+        repo.compare.return_value = comparison
+
+        result = bp_module.get_pr_commits(repo, pr, "master", start_commit="before123")
+        assert sorted(result) == ["rebased1", "rebased2"]
 
     def test_merged_pr_squash_no_promoted_commits(self, bp_module, make_pr, make_repo, make_commit):
         """When compare returns no commits, fall back to merge_commit_sha."""
@@ -266,8 +555,8 @@ class TestGetPrCommits:
         repo = make_repo()
         pr = make_pr(number=10, merged=True, merge_commit_sha="squash123")
 
-        # Single parent -> not a merge commit (rebase merge path)
-        squash_commit = make_commit(sha="squash123", parents=[MagicMock()])
+        # Single parent -> not a merge commit (rebase merge path: keeps the last PR commit message)
+        squash_commit = make_commit(sha="squash123", message="Add comment\n\nMore details", parents=[MagicMock()])
         repo.get_commit.return_value = squash_commit
 
         # PR has 2 commits
