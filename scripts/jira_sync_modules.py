@@ -1640,7 +1640,62 @@ def _jira_issue_exists(issue_key: str, jira_auth: str) -> bool | None:
         return None
 
 
-def _pr_body_links_existing_issue(pr_title: str, pr_body: str, jira_auth: str) -> bool:
+def _github_fixes_issue_numbers(pr_body: str, owner_repo: str) -> list[int]:
+    """Return the issue numbers of 'Fixes' references to a GitHub issue in owner_repo.
+
+    Uses the same pattern as scylladb's backport-pr-fixes-validation.yaml and
+    pr-require-backport-label.yaml, so a reference those checks accept is
+    accepted here too: "Fixes #123", "Fixes: <owner_repo>#123" and
+    "Fixes: https://github.com/<owner_repo>/issues/123".
+    """
+    owner_repo = (owner_repo or "").strip()
+    if not pr_body or not owner_repo:
+        return []
+    repo = re.escape(owner_repo)
+    pattern = rf"Fixes:? (?:#|{repo}#|https://github\.com/{repo}/issues/)(\d+)"
+    return [int(n) for n in dict.fromkeys(re.findall(pattern, pr_body))]
+
+
+def _github_issue_exists(owner_repo: str, number: int, gh_token: str) -> bool | None:
+    """Return whether issue #number exists in owner_repo.
+
+    True  - the issue exists (HTTP 200).
+    False - it does not exist, was deleted (HTTP 404 / 410), or is a pull
+            request: the issues endpoint also answers 200 for PR numbers, so
+            "Fixes #<PR number>" must not count as linking an issue.
+    None  - existence could not be determined; callers should fail open.
+    """
+    if not gh_token:
+        return None
+    try:
+        code, body = _gh_api(
+            "GET", f"https://api.github.com/repos/{owner_repo}/issues/{number}", gh_token
+        )
+    except (URLError, OSError) as exc:
+        print(f"Warning: GitHub issue lookup for {owner_repo}#{number} failed: {exc}")
+        return None
+    if code == 200:
+        try:
+            issue = json.loads(body)
+        except ValueError:
+            return True
+        if isinstance(issue, dict) and "pull_request" in issue:
+            print(f"{owner_repo}#{number} is a pull request, not an issue.")
+            return False
+        return True
+    if code in (404, 410):
+        return False
+    print(f"Warning: GitHub issue lookup for {owner_repo}#{number} failed (HTTP {code}): {body[:200]}")
+    return None
+
+
+def _pr_body_links_existing_issue(
+    pr_title: str,
+    pr_body: str,
+    jira_auth: str,
+    owner_repo: str = "",
+    gh_token: str = "",
+) -> bool:
     """True if the PR body links a closing-keyword reference to an existing issue.
 
     Builds on extract_jira_keys (closing-keyword detection + project-prefix
@@ -1649,19 +1704,35 @@ def _pr_body_links_existing_issue(pr_title: str, pr_body: str, jira_auth: str) -
     rejected, not just an unknown project (e.g. AAA-123). If existence can not be
     confirmed for any candidate key (Jira unreachable), fail open and treat the
     reference as valid so a real PR is not penalised for a transient outage.
+
+    A 'Fixes' reference to an existing GitHub issue in owner_repo is valid too:
+    the backport accepts it (auto-backport-jira.py has_fixes_reference), so
+    only accepting Jira keys here stripped the backport labels of PRs the
+    backport would have handled fine.
     """
-    keys = extract_jira_keys(pr_title, pr_body, jira_auth)
-    if keys == ["__NO_KEYS_FOUND__"]:
-        return False
-    statuses = [_jira_issue_exists(key, jira_auth) for key in keys]
-    if any(status is True for status in statuses):
-        return True
-    if any(status is None for status in statuses):
-        # Existence could not be determined (e.g. Jira unreachable or a non-404
-        # error from the API). Fail open so a transient outage never blocks a PR
-        # whose reference may well be valid.
-        return True
-    return False  # every candidate key was definitively absent (404)
+    owner_repo = (owner_repo or "").strip()
+
+    def statuses():
+        for number in _github_fixes_issue_numbers(pr_body, owner_repo):
+            yield _github_issue_exists(owner_repo, number, gh_token)
+        keys = extract_jira_keys(pr_title, pr_body, jira_auth)
+        if keys != ["__NO_KEYS_FOUND__"]:
+            for key in keys:
+                yield _jira_issue_exists(key, jira_auth)
+
+    # One existing reference is enough, so stop at the first confirmed one
+    # instead of looking up every candidate.
+    unknown = False
+    for status in statuses():
+        if status is True:
+            return True
+        if status is None:
+            unknown = True
+    # Existence could not be determined for some candidate (e.g. Jira/GitHub
+    # unreachable or a non-404 error from the API): fail open so a transient
+    # outage never blocks a PR whose reference may well be valid. Otherwise
+    # there was no candidate, or every one was definitively absent.
+    return unknown
 
 
 def _build_pr_mentions(pr: dict) -> str:
@@ -1739,8 +1810,9 @@ def enforce_backport_fixes_reference(
     whose project prefix is a real ScyllaDB project) and additionally confirms
     the referenced issue actually exists, so both an unknown project (AAA-123)
     and a bogus issue number in a real project (SCYLLADB-9898758758) are
-    rejected. backport/none does not match BACKPORT_LABEL_RE and is therefore
-    never enforced.
+    rejected. A 'Fixes' reference to an existing GitHub issue in the same
+    repository is valid as well. backport/none does not match BACKPORT_LABEL_RE
+    and is therefore never enforced.
 
     The requirement only applies to the repositories in FIXES_ENFORCEMENT_REPOS
     (scylladb/scylladb); in every other repo a PR is backported as before, even
@@ -1759,7 +1831,7 @@ def enforce_backport_fixes_reference(
 
     # Body-only scan: the requirement is about the PR body linking an issue, so
     # commit messages are intentionally not scanned here.
-    if _pr_body_links_existing_issue(pr_title, pr_body, jira_auth):
+    if _pr_body_links_existing_issue(pr_title, pr_body, jira_auth, owner_repo, gh_token):
         print(f"PR #{pr_number} links a valid, existing issue; backport label '{triggering_label}' is allowed.")
         return False
 
