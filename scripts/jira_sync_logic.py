@@ -30,6 +30,7 @@ from jira_sync_modules import (
     enforce_backport_fixes_reference,
     enforce_backport_fixes_on_body_change,
     get_sync_failures,
+    get_pr_is_draft,
     BACKPORT_LABEL_RE,
 )
 
@@ -280,6 +281,8 @@ def manage_review_gh_event(
           review, so requesting a reviewer on it must not move the issue.
           Marking the PR ready for review fires 'ready_for_review' with
           draft=false, and that event performs the transition.
+          The CLI wrapper reads *pr_is_draft* from the GitHub API, so it is
+          the PR's state when the job runs, not when the event fired.
     """
     print("=" * 60)
     print(" manage_review_gh_event  input parameters")
@@ -353,8 +356,11 @@ def _run_manage_review_gh_event() -> None:
 
     Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO, REQUESTED_REVIEWER,
     PR_DRAFT, GITHUB_TOKEN, and JIRA_AUTH from environment variables.
-    PR_DRAFT is github.event.pull_request.draft ("true"/"false"); when it is
-    unset (older callers) the PR is treated as not a draft.
+
+    The draft state is read from the GitHub API (get_pr_is_draft), i.e. the
+    PR's current state. PR_DRAFT (github.event.pull_request.draft,
+    "true"/"false") is only the fallback if that call fails; when it is unset
+    (older callers) the fallback is "not a draft".
     """
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
@@ -363,7 +369,7 @@ def _run_manage_review_gh_event() -> None:
     gh_token = os.environ.get("GITHUB_TOKEN", "")
     requested_reviewer = os.environ.get("REQUESTED_REVIEWER", "")
     jira_auth = os.environ.get("JIRA_AUTH", "")
-    pr_is_draft = os.environ.get("PR_DRAFT", "").strip().lower() == "true"
+    payload_draft = os.environ.get("PR_DRAFT", "").strip().lower() == "true"
 
     if not pr_number_str:
         print("Error: PR_NUMBER env var is not set or empty.")
@@ -386,6 +392,8 @@ def _run_manage_review_gh_event() -> None:
     if not jira_auth:
         print("Error: JIRA_AUTH env var is not set or empty.")
         sys.exit(1)
+
+    pr_is_draft = get_pr_is_draft(owner_repo, pr_number, gh_token, fallback=payload_draft)
 
     manage_review_gh_event(
         pr_title, pr_body, pr_number,
