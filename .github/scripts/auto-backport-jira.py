@@ -1517,7 +1517,7 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
     """
     try:
         commit_obj = repo.get_commit(commit_sha)
-        commit_title = commit_obj.commit.message.splitlines()[0]
+        commit_title = _commit_title(commit_obj)
 
         # Check if the commit is directly on the stable branch
         try:
@@ -1528,6 +1528,11 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
                 return commit_sha
         except Exception:
             pass
+
+        if not commit_title:
+            # An empty title would match any other empty-message commit.
+            logging.warning(f"Commit {commit_sha} has an empty title; not searching {stable_branch} by title")
+            return None
 
         # Commit is not on the stable branch; search by title using a date-based window
         # around the original commit's date to handle old PRs efficiently.
@@ -1540,7 +1545,7 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
         until_date = commit_date + timedelta(days=7)
         branch_commits = repo.get_commits(sha=stable_branch, since=since_date, until=until_date)
         for branch_commit in branch_commits:
-            branch_title = branch_commit.commit.message.splitlines()[0]
+            branch_title = _commit_title(branch_commit)
             if branch_title == commit_title:
                 logging.info(f"Found matching commit on {stable_branch}: {branch_commit.sha} "
                              f"(original referenced: {commit_sha})")
@@ -1552,6 +1557,50 @@ def _find_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str) -> 
     return None
 
 
+def _commit_title(commit) -> str:
+    return next(iter(commit.commit.message.splitlines()), '')
+
+
+def _rebase_chain(repo, merge_commit, count):
+    """The last `count` commits on the first-parent chain ending at merge_commit, oldest first."""
+    chain = [merge_commit]
+    while len(chain) < count and chain[-1].parents:
+        chain.append(repo.get_commit(chain[-1].parents[0].sha))
+    chain.reverse()
+    return chain
+
+
+def _titles_match(pr_titles, branch_titles) -> bool:
+    """Same titles in any order (pr.get_commits() order is not guaranteed); an empty title never matches."""
+    if any(not t for t in pr_titles) or any(not t for t in branch_titles):
+        return False
+    return sorted(pr_titles) == sorted(branch_titles)
+
+
+def is_squash_merge(repo, merge_commit, pr_commits) -> bool:
+    """
+    True when a merged PR's merge_commit_sha is a squash commit.
+
+    Squash and rebase merges both leave a single-parent merge_commit_sha. A rebase merge
+    replays the PR commits, so the last len(pr_commits) commits on the base branch carry
+    the PR commit titles (the last message may still be edited at merge time, e.g. a
+    "Closes #N" line). A squash merge writes one new commit ("Title (#N)" plus a body
+    listing the PR commits or the PR description by default), and the PR commits
+    themselves never reach the base branch.
+    So it is a squash only when the message differs from every PR commit AND the titles
+    of the commits it would have replayed are not the PR commit titles. A PR commit with
+    an empty title can't be told apart this way, so it is never reported as a squash.
+    """
+    if len(merge_commit.parents) != 1 or not pr_commits:
+        return False
+    if merge_commit.commit.message.strip() in {c.commit.message.strip() for c in pr_commits}:
+        return False
+    pr_titles = [_commit_title(c) for c in pr_commits]
+    if any(not t for t in pr_titles):
+        return False
+    return not _titles_match(pr_titles, [_commit_title(c) for c in _rebase_chain(repo, merge_commit, len(pr_commits))])
+
+
 def get_rebase_merged_commits(repo, merge_commit, pr_commits):
     """
     Return the SHAs a rebase merge put on the base branch, oldest first.
@@ -1561,61 +1610,101 @@ def get_rebase_merged_commits(repo, merge_commit, pr_commits):
     of the base repo. The rewritten commits are the last len(pr_commits) commits on the
     first-parent chain ending at merge_commit_sha.
     """
-    branch_commits = [merge_commit]
-    while len(branch_commits) < len(pr_commits):
-        branch_commits.append(repo.get_commit(branch_commits[-1].parents[0].sha))
-    branch_commits.reverse()
-    pr_titles = [c.commit.message.splitlines()[0] for c in pr_commits]
-    branch_titles = [c.commit.message.splitlines()[0] for c in branch_commits]
-    if pr_titles != branch_titles:
-        logging.warning(f"Rebase-merged commits {[c.sha for c in branch_commits]} don't match PR commit titles: "
-                        f"expected {pr_titles}, got {branch_titles}")
+    branch_commits = _rebase_chain(repo, merge_commit, len(pr_commits))
+    pr_titles = [_commit_title(c) for c in pr_commits]
+    branch_titles = [_commit_title(c) for c in branch_commits]
+    if not _titles_match(pr_titles, branch_titles):
+        # A rebase merge keeps every PR commit title, and squash merges are caught before
+        # this by is_squash_merge(), so a mismatch means the chain could not be resolved
+        # (e.g. GitHub dropped an empty commit, so the walk reached another PR's commit).
+        # Backporting the chain would pick up other PRs' commits, and backporting only
+        # merge_commit_sha would silently drop the rest of the PR, so return nothing.
+        logging.error(f"Rebase-merged commits {[c.sha for c in branch_commits]} don't match PR commit titles: "
+                      f"expected {pr_titles}, got {branch_titles}; not backporting, do it manually")
+        return []
     return [c.sha for c in branch_commits]
+
+
+def _find_squash_commit_on_stable_branch(repo, commit_sha: str, stable_branch: str, start_commit=None):
+    """
+    The squash commit on stable_branch: commit_sha itself, or its same-titled copy there
+    if a promoter rewrote it. With start_commit, only the promoted range
+    start_commit..stable_branch is searched.
+
+    The ancestry check is made here, not in _find_commit_on_stable_branch(), so an API
+    error on it fails the run instead of reading as "not on the branch".
+    """
+    if start_commit:
+        if commit_sha == start_commit:
+            return commit_sha  # compare() excludes start_commit itself
+        title = _commit_title(repo.get_commit(commit_sha))
+        for promoted_commit in repo.compare(start_commit, stable_branch).commits:
+            if promoted_commit.sha == commit_sha or (title and _commit_title(promoted_commit) == title):
+                return promoted_commit.sha
+        return None
+    if repo.compare(commit_sha, stable_branch).behind_by == 0:
+        return commit_sha
+    return _find_commit_on_stable_branch(repo, commit_sha, stable_branch)
 
 
 def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     commits = []
+    squash_title = None
     logging.info(f"get_pr_commits: PR #{pr.number} state={pr.state}, merged={pr.merged}, "
                  f"merge_commit_sha={pr.merge_commit_sha}, stable_branch={stable_branch}, "
                  f"start_commit={start_commit}")
     if pr.merged:
         merge_commit = repo.get_commit(pr.merge_commit_sha)
+        pr_commits_list = list(pr.get_commits())
         if len(merge_commit.parents) > 1:  # True merge commit (multi-parent)
             # Instead of cherry-picking the merge commit (which loses individual commit history),
             # collect the individual PR commits. With a true merge commit, the original
             # commit SHAs are preserved on the branch as-is.
-            pr_commits_list = list(pr.get_commits())
             commits = [c.sha for c in pr_commits_list]
             logging.info(f"get_pr_commits: merge-commit PR #{pr.number} has {len(commits)} individual commits: {commits}")
         else:
-            if start_commit:
-                promoted_commits = list(repo.compare(start_commit, stable_branch).commits)
+            if is_squash_merge(repo, merge_commit, pr_commits_list):
+                # Only the squash commit reaches the branch, not the PR commits. Backport it
+                # once it is on stable_branch (or its same-titled copy there, if a promoter
+                # rewrote it); otherwise fall through to the closed-PR fallback below, which
+                # finds it from the PR's 'referenced' events.
+                squash_title = _commit_title(merge_commit)
+                on_branch = _find_squash_commit_on_stable_branch(repo, pr.merge_commit_sha, stable_branch, start_commit)
+                if on_branch:
+                    logging.info(f"get_pr_commits: PR #{pr.number} was squash-merged into "
+                                 f"{pr.merge_commit_sha}; backporting {on_branch}")
+                    return [on_branch]
+                logging.warning(f"get_pr_commits: squash commit {pr.merge_commit_sha} of PR #{pr.number} "
+                                f"not found on {stable_branch}; trying the close events")
             else:
-                promoted_commits = list(repo.get_commits(sha=stable_branch))
-            
-            if not promoted_commits:
-                # If compare returns no commits (e.g., start_commit IS the branch tip),
-                # fall back to using the merge_commit_sha directly.
-                # This handles squash merges where head_commit == merge_commit_sha.
-                logging.info(f"No promoted commits found between {start_commit} and {stable_branch}, "
-                             f"using merge_commit_sha {pr.merge_commit_sha} directly")
-                commits.append(pr.merge_commit_sha)
-            else:
-                pr_commits_list = list(pr.get_commits())
-                for commit in pr_commits_list:
-                    for promoted_commit in promoted_commits:
-                        commit_title = commit.commit.message.splitlines()[0]
-                        # In Scylla-pkg and scylla-dtest, for example,
-                        # we don't create a merge commit for a PR with multiple commits,
-                        # according to the GitHub API, the last commit will be the merge commit,
-                        # which is not what we need when backporting (we need all the commits).
-                        # So here, we are validating the correct SHA for each commit so we can cherry-pick
-                        if promoted_commit.commit.message.startswith(commit_title):
-                            commits.append(promoted_commit.sha)
-                if len(commits) != len(pr_commits_list):
-                    logging.warning(f"get_pr_commits: PR #{pr.number} has {len(pr_commits_list)} commits "
-                                    f"but only {len(commits)} were matched by title against promoted commits. "
-                                    f"PR commit titles: {[c.commit.message.splitlines()[0] for c in pr_commits_list]}")
+                if start_commit:
+                    promoted_commits = list(repo.compare(start_commit, stable_branch).commits)
+                else:
+                    promoted_commits = list(repo.get_commits(sha=stable_branch))
+
+                if not promoted_commits:
+                    # If compare returns no commits (e.g., start_commit IS the branch tip),
+                    # fall back to using the merge_commit_sha directly.
+                    logging.info(f"No promoted commits found between {start_commit} and {stable_branch}, "
+                                 f"using merge_commit_sha {pr.merge_commit_sha} directly")
+                    commits.append(pr.merge_commit_sha)
+                else:
+                    for commit in pr_commits_list:
+                        for promoted_commit in promoted_commits:
+                            commit_title = _commit_title(commit)
+                            if not commit_title:
+                                continue  # startswith('') would match every promoted commit
+                            # In Scylla-pkg and scylla-dtest, for example,
+                            # we don't create a merge commit for a PR with multiple commits,
+                            # according to the GitHub API, the last commit will be the merge commit,
+                            # which is not what we need when backporting (we need all the commits).
+                            # So here, we are validating the correct SHA for each commit so we can cherry-pick
+                            if promoted_commit.commit.message.startswith(commit_title):
+                                commits.append(promoted_commit.sha)
+                    if len(commits) != len(pr_commits_list):
+                        logging.warning(f"get_pr_commits: PR #{pr.number} has {len(pr_commits_list)} commits "
+                                        f"but only {len(commits)} were matched by title against promoted commits. "
+                                        f"PR commit titles: {[_commit_title(c) for c in pr_commits_list]}")
 
     # For non-merged closed PRs, or as a fallback when the merged path found no commits,
     # look for the commit SHA from the close event. This handles PRs closed by direct push
@@ -1634,7 +1723,11 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
     if not commits and pr.state == 'closed':
         events = pr.get_issue_events()
         pr_commits_list = list(pr.get_commits())
-        pr_commit_titles = {c.commit.message.splitlines()[0] for c in pr_commits_list}
+        if squash_title:
+            # A squash's PR commits never reach the branch; only the squash title identifies it.
+            pr_commit_titles = {squash_title}
+        else:
+            pr_commit_titles = {_commit_title(c) for c in pr_commits_list} - {''}
         logging.info(f"get_pr_commits: PR #{pr.number} commit titles for validation: {pr_commit_titles}")
 
         # Collect all referenced commits (last one first) and pick the last one
@@ -1663,7 +1756,7 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
                     base = start_commit or ref_commit.parents[0].sha
                     promoted_commits = list(repo.compare(base, stable_branch).commits)
                     for promoted_commit in promoted_commits:
-                        if promoted_commit.commit.message.splitlines()[0] in pr_commit_titles:
+                        if _commit_title(promoted_commit) in pr_commit_titles:
                             commits.append(promoted_commit.sha)
                     if commits:
                         logging.info(f"Resolved {len(commits)} commit(s) for PR #{pr.number} "
@@ -1673,7 +1766,7 @@ def get_pr_commits(repo, pr, stable_branch, start_commit=None):
                                   f"matching PR commit titles in range {base}..{stable_branch}")
                     continue
 
-                ref_title = ref_commit.commit.message.splitlines()[0]
+                ref_title = _commit_title(ref_commit)
                 if ref_title in pr_commit_titles:
                     # Validate that the referenced commit actually exists on the stable branch.
                     # In repos with gating branches (e.g., scylladb/scylladb where PRs target 'next'),
@@ -2552,10 +2645,15 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
                 else:
                     commits = [merged_pr.merge_commit_sha]
             else:
+                # Squash merge: merge_commit_sha holds the whole PR; resolve it the same
+                # way as get_pr_commits() does for the original PR.
                 # Rebase merge (single-parent merge_commit_sha): this SHA is just the
                 # LAST commit in the PR. For multi-commit PRs we must collect ALL commits.
                 pr_commits = list(merged_pr.get_commits())
-                if len(pr_commits) > 1:
+                if is_squash_merge(repo, merge_commit, pr_commits):
+                    commits = get_pr_commits(repo, merged_pr, merged_pr.base.ref)
+                    logging.info(f"Squash-merged PR #{merged_pr.number}: backporting {commits}")
+                elif len(pr_commits) > 1:
                     commits = get_rebase_merged_commits(repo, merge_commit, pr_commits)
                     logging.info(f"Rebase-merged PR #{merged_pr.number} has {len(commits)} commits: {commits}")
                 else:
@@ -2569,6 +2667,13 @@ def process_chain_backport(repo, merged_pr, repo_name: str, promoted_commit_sha:
     
     if not commits:
         logging.warning(f"No commits found for PR #{merged_pr.number}, skipping chain backport")
+        try:
+            merged_pr.create_issue_comment(
+                f":warning: Could not work out which commits of this PR to backport to {next_version}, "
+                f"so no backport PR was created and the backport labels were left as they are. "
+                f"Please backport it manually.")
+        except Exception as e:
+            logging.warning(f"Failed to comment on PR #{merged_pr.number}: {e}")
         return
     
     # Build remaining backport labels for the NEW backport PR (exclude the one we're processing)
