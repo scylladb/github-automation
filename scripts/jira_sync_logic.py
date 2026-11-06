@@ -21,6 +21,7 @@ from jira_sync_modules import (
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
+    get_pr_requested_reviewers,
     apply_jira_labels_to_pr,
     jira_status_transition,
     add_comment_to_jira,
@@ -585,6 +586,7 @@ def manage_opened_gh_event(
     owner_repo: str,
     gh_token: str,
     jira_auth: str,
+    pr_is_draft: bool = False,
 ) -> None:
     """Orchestrate the "PR Opened" sync in a single invocation.
 
@@ -594,17 +596,21 @@ def manage_opened_gh_event(
       1.  extract_jira_keys
       2.  extract_jira_issue_details
       3.  apply_jira_labels_to_pr
-      4.  jira_status_transition -> "In Progress" (id 111)
+      4.  jira_status_transition -> "In Progress" (id 111), or "In Review"
+          (id 121) when a non-draft PR is opened with reviewers already
+          requested (RELENG-808, see step 4)
       5.  add_comment_to_jira ("A new linked PR was created: <PR link>")
     """
+    caller_action = os.environ.get("CALLER_ACTION", "")
     print("=" * 60)
     print(" manage_opened_gh_event  input parameters")
     print("=" * 60)
     print(f"  pr_title   = {pr_title!r}")
     print(f"  pr_body    = {pr_body!r}")
-    print(f"  pr_event   = {os.environ.get('CALLER_ACTION', 'N/A')!r}")
+    print(f"  pr_event   = {caller_action or 'N/A'!r}")
     print(f"  pr_number  = {pr_number!r}")
     print(f"  owner_repo = {owner_repo!r}")
+    print(f"  pr_is_draft = {pr_is_draft!r}")
 
     # --- Step 0: re-check the Fixes: reference while backport labels are set ---
     # The 'labeled' handler enforces this when a backport label is added, but the
@@ -661,14 +667,38 @@ def manage_opened_gh_event(
         pr_number, labels_csv, csv_content, "", owner_repo, gh_token,
     )
 
-    # --- Step 4: transition to In Progress ---
+    # --- Step 4: transition to In Progress (or In Review, RELENG-808) ---
+    # Opening a PR with reviewers set fires 'opened' and one 'review_requested'
+    # per reviewer at the same time, and the runs race: when 'opened' writes
+    # last, its "In Progress" overwrites the "In Review" the other runs set.
+    # The guard in jira_status_transition cannot catch this, since it compares
+    # against the status read in step 2, before the other runs wrote. So a
+    # non-draft PR that already has reviewers requested *now* is treated as
+    # review-requested here too: both runs then target "In Review", whichever
+    # finishes last. A draft is never moved to "In Review" (PM-335), and
+    # 'edited' keeps the plain "In Progress" target, which the guard already
+    # refuses to apply to an issue that is "In Review".
+    target_name, target_id = "In Progress", "111"
+    if caller_action == "opened" and not pr_is_draft:
+        reviewers = get_pr_requested_reviewers(owner_repo, pr_number, gh_token)
+        if reviewers is None:
+            print("::warning::Could not read the requested reviewers of "
+                  f"PR #{pr_number}; keeping the 'In Progress' target. If a "
+                  "'review_requested' run finishes before this one, the issue "
+                  "may end up 'In Progress' instead of 'In Review'.")
+        elif reviewers:
+            print(f"Reviewers already requested on PR #{pr_number}: "
+                  f"{', '.join(reviewers)}. Targeting 'In Review' instead of "
+                  "'In Progress'.")
+            target_name, target_id = "In Review", "121"
+        else:
+            print(f"No reviewers requested on PR #{pr_number} yet.")
     print("\n" + "=" * 60)
-    print(" Step 4 / jira_status_transition -> In Progress")
+    print(f" Step 4 / jira_status_transition -> {target_name}")
     print("=" * 60)
-    jira_status_transition(csv_content, "In Progress", "111", jira_auth)
+    jira_status_transition(csv_content, target_name, target_id, jira_auth)
 
     # --- Step 5: add comment to Jira (only on PR creation, not edits) ---
-    caller_action = os.environ.get("CALLER_ACTION", "")
     if caller_action == "opened":
         print("\n" + "=" * 60)
         print(" Step 5 / add_comment_to_jira (new PR created)")
@@ -692,8 +722,10 @@ def manage_opened_gh_event(
 def _run_manage_opened_gh_event() -> None:
     """CLI entry-point wrapper for manage_opened_gh_event.
 
-    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO,
+    Reads PR_TITLE, PR_BODY, PR_NUMBER, OWNER_REPO, PR_DRAFT,
     GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+    PR_DRAFT is github.event.pull_request.draft ("true"/"false"); when it is
+    unset (older callers) the PR is treated as not a draft.
     """
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
@@ -701,6 +733,7 @@ def _run_manage_opened_gh_event() -> None:
     owner_repo = os.environ.get("OWNER_REPO", "")
     gh_token = os.environ.get("GITHUB_TOKEN", "")
     jira_auth = os.environ.get("JIRA_AUTH", "")
+    pr_is_draft = os.environ.get("PR_DRAFT", "").strip().lower() == "true"
 
     if not pr_number_str:
         print("Error: PR_NUMBER env var is not set or empty.")
@@ -727,6 +760,7 @@ def _run_manage_opened_gh_event() -> None:
     manage_opened_gh_event(
         pr_title, pr_body, pr_number,
         owner_repo, gh_token, jira_auth,
+        pr_is_draft=pr_is_draft,
     )
 
 def manage_unlabeled_gh_event(
