@@ -11,6 +11,7 @@ Contains:
       add_label_to_jira_issue
       remove_label_from_jira_issue
       extract_jira_issue_details
+      get_pr_requested_reviewers
       apply_jira_labels_to_pr
       jira_status_transition
       add_comment_to_jira
@@ -1009,6 +1010,21 @@ def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bo
         print(f"PR #{pr_number} draft state differs from the event payload: "
               f"payload={fallback}, current={draft}. Using the current state.")
     return draft
+
+
+def get_pr_requested_reviewers(owner_repo: str, pr_number: int, gh_token: str) -> list[str] | None:
+    """Return the reviewers (user logins and team slugs) currently requested on a PR.
+
+    Reads the PR from the API rather than the event payload, so the result is
+    the state at the time the sync runs, not at the time the event fired.
+    Returns None when the PR cannot be read; the caller decides what to do.
+    """
+    pr = _fetch_pr(owner_repo, pr_number, gh_token)
+    if pr is None:
+        return None
+    users = [u.get("login", "") for u in pr.get("requested_reviewers") or []]
+    teams = [t.get("slug", "") for t in pr.get("requested_teams") or []]
+    return [r for r in users + teams if r]
 
 
 def _compute_labels(labels_csv: str, details_csv: str, new_priority_label: str) -> list[str]:
