@@ -25,6 +25,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
           OWNER_REPO: ${{ github.repository }}
           REQUESTED_REVIEWER: ${{ github.event.requested_reviewer.login }}
           GITHUB_TOKEN: ${{ github.token }}
