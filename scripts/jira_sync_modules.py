@@ -927,9 +927,16 @@ _PRIORITY_RANK_MAP = {
 _GH_API_VERSION = "2022-11-28"
 
 
-def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -> tuple[int, str]:
-    """Make a GitHub REST API request. Returns (http_code, response_body)."""
+def _gh_api(
+    method: str, url: str, gh_token: str, payload: dict | None = None, timeout: float | None = None,
+) -> tuple[int, str]:
+    """Make a GitHub REST API request. Returns (http_code, response_body).
+
+    *timeout* (seconds) bounds the request; a timeout raises TimeoutError /
+    URLError (both OSError). None keeps urlopen's default (no explicit limit).
+    """
     body = json.dumps(payload).encode() if payload else None
+    urlopen_kwargs = {} if timeout is None else {"timeout": timeout}
 
     req = Request(url, data=body, method=method)
     req.add_header("Accept", "application/vnd.github+json")
@@ -939,37 +946,66 @@ def _gh_api(method: str, url: str, gh_token: str, payload: dict | None = None) -
         req.add_header("Content-Type", "application/json; charset=utf-8")
 
     try:
-        with urlopen(req) as resp:
+        with urlopen(req, **urlopen_kwargs) as resp:
             return resp.getcode(), resp.read().decode()
     except HTTPError as exc:
         return exc.code, exc.read().decode() if exc.fp else str(exc)
 
 
-def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bool) -> bool:
+# Upper bound (seconds) for the draft-state lookup, so a stalled GitHub request
+# falls back instead of hanging the review sync (PM-335).
+_PR_DRAFT_LOOKUP_TIMEOUT = 15
+
+
+def _fetch_pr(owner_repo: str, pr_number: int, gh_token: str, timeout: float | None = None) -> dict | None:
+    """Return the PR object from ``GET /repos/{owner_repo}/pulls/{pr_number}``.
+
+    Returns None, after printing the reason, when the request fails: an HTTP
+    error, a network error or timeout, or a body that is not a JSON object.
+    """
+    url = f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}"
+    kwargs = {} if timeout is None else {"timeout": timeout}
+    try:
+        code, body = _gh_api("GET", url, gh_token, **kwargs)
+        data = json.loads(body) if code == 200 else None
+        reason = f"HTTP {code}" if code != 200 else "the response is not a JSON object"
+    except (OSError, ValueError) as exc:  # URLError/TimeoutError are OSError; JSONDecodeError a ValueError
+        data, reason = None, str(exc)
+    if isinstance(data, dict):
+        return data
+    print(f"Warning: could not fetch PR #{pr_number} ({reason}).")
+    return None
+
+
+def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bool | None) -> bool:
     """Return the PR's current draft state from the GitHub API (PM-335).
 
     The event payload's ``draft`` value is the state at the moment the event
     fired, so a delayed or re-run job can see a stale value. Reading the PR when
-    the job runs avoids that. It also covers callers that don't pass PR_DRAFT
-    (e.g. main_jira_sync_in_review.yml).
+    the job runs avoids that.
 
-    If the API call fails for any reason, *fallback* (the event payload's
-    value) is returned, so a GitHub hiccup never blocks the sync.
+    If the lookup fails for any reason (see _fetch_pr, or a missing / non-bool
+    ``draft`` field), *fallback* is returned: the event payload's value
+    (PR_DRAFT), or None when the caller did not provide PR_DRAFT, in which case
+    the PR is treated as not a draft. A GitHub hiccup never blocks the sync.
     """
-    url = f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}"
-    try:
-        code, body = _gh_api("GET", url, gh_token)
-        if code != 200:
-            raise ValueError(f"HTTP {code}")
-        draft = json.loads(body).get("draft")
-        if not isinstance(draft, bool):
-            raise ValueError(f"unexpected 'draft' value {draft!r}")
-    except (OSError, ValueError) as exc:  # URLError is an OSError; JSONDecodeError a ValueError
-        print(f"Warning: could not read the draft state of PR #{pr_number} ({exc}); "
+    pr = _fetch_pr(owner_repo, pr_number, gh_token, timeout=_PR_DRAFT_LOOKUP_TIMEOUT)
+    draft = pr.get("draft") if pr is not None else None
+
+    if not isinstance(draft, bool):
+        if pr is not None:
+            print(f"Warning: unexpected 'draft' value {draft!r} for PR #{pr_number}.")
+        if fallback is None:
+            print(f"Could not read the draft state of PR #{pr_number} and PR_DRAFT was not "
+                  "provided: treating the PR as not a draft.")
+            return False
+        print(f"Could not read the draft state of PR #{pr_number}: "
               f"using the event payload's draft={fallback}.")
         return fallback
 
-    if draft != fallback:
+    if fallback is None:
+        print(f"PR #{pr_number} current draft state: {draft} (PR_DRAFT not provided).")
+    elif draft != fallback:
         print(f"PR #{pr_number} draft state differs from the event payload: "
               f"payload={fallback}, current={draft}. Using the current state.")
     return draft
@@ -1867,12 +1903,10 @@ def enforce_backport_fixes_reference(
 
     print(f"PR #{pr_number} body has no valid Fixes: reference; commenting and removing the backport label.")
 
-    code, body = _gh_api(
-        "GET", f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}", gh_token
-    )
-    pr = json.loads(body) if code == 200 else {}
-    if code != 200:
-        print(f"Warning: could not fetch PR #{pr_number} (HTTP {code}); commenting without mentions.")
+    pr = _fetch_pr(owner_repo, pr_number, gh_token)
+    if pr is None:
+        print("Commenting without mentions.")
+        pr = {}
 
     mentions = _build_pr_mentions(pr)
     comment = f"{mentions}\n\n{REQUIRED_FIXES_COMMENT}" if mentions else REQUIRED_FIXES_COMMENT
