@@ -71,6 +71,28 @@ _TRANSITION_FALLBACKS: dict[str, tuple[str, str]] = {
     MERGED_TRANSITION_ID: (DONE_STATUS_NAME, DONE_TRANSITION_ID),
 }
 
+# Repositories whose changes landing on master close the linked issues as
+# "Done" instead of "Merged" (PM-365). In scylladb.git a change on master is
+# final, so there is no intermediate "Merged" state. Only master is affected:
+# backports (branch-*, promoted-to-branch-*) still go to "Merged".
+DONE_ON_MASTER_REPOS = {"scylladb/scylladb"}
+_MASTER_BRANCH = "master"
+
+
+def merged_transition_target(owner_repo: str, target_branch: str | None) -> tuple[str, str]:
+    """Return the (status name, transition id) a merged/promoted PR moves its issues to.
+
+    *target_branch* is the branch the change landed on: the PR's base branch
+    for a merge, or the suffix of a ``promoted-to-<branch>`` label. Changes on
+    master in DONE_ON_MASTER_REPOS go to "Done" (PM-365); everything else goes
+    to "Merged" (with the PM-359 fallback to "Done" in jira_status_transition).
+    """
+    repo = (owner_repo or "").strip().lower()
+    branch = (target_branch or "").strip()
+    if repo in DONE_ON_MASTER_REPOS and branch == _MASTER_BRANCH:
+        return DONE_STATUS_NAME, DONE_TRANSITION_ID
+    return MERGED_STATUS_NAME, MERGED_TRANSITION_ID
+
 # Jira answers a transition id that is absent from the issue's workflow with a
 # 400 ("Transition id 'N' is not valid on issue X"). This is the only response
 # the fallback above retries on.
@@ -975,6 +997,14 @@ def _fetch_pr(owner_repo: str, pr_number: int, gh_token: str, timeout: float | N
         return data
     print(f"Warning: could not fetch PR #{pr_number} ({reason}).")
     return None
+
+
+def get_pr_base_ref(owner_repo: str, pr_number: int, gh_token: str) -> str:
+    """Return the PR's base branch from the GitHub API, or "" if it can't be read (PM-365)."""
+    pr = _fetch_pr(owner_repo, pr_number, gh_token, timeout=_PR_DRAFT_LOOKUP_TIMEOUT)
+    base = (pr or {}).get("base")
+    ref = base.get("ref") if isinstance(base, dict) else None
+    return ref if isinstance(ref, str) else ""
 
 
 def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bool | None) -> bool:
