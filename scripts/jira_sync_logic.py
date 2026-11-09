@@ -17,8 +17,9 @@ import argparse
 from collections.abc import Callable
 
 from jira_sync_modules import (
-    MERGED_STATUS_NAME,
-    MERGED_TRANSITION_ID,
+    DONE_ON_MASTER_REPOS,
+    merged_transition_target,
+    get_pr_base_ref,
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
@@ -74,7 +75,8 @@ def manage_labeled_gh_event(
       5.  apply_jira_labels_to_pr
       6.  if label starts with promoted-to-:
             a. add comment  b. transition to Merged (falls back to Done
-               for issues whose workflow has no "Merged" -- PM-359)
+               for issues whose workflow has no "Merged" -- PM-359);
+               promoted-to-master in scylladb/scylladb goes to Done (PM-365)
     """
     print("=" * 60)
     print(" manage_labeled_gh_event  input parameters")
@@ -199,11 +201,13 @@ def manage_labeled_gh_event(
         print(f"SKIPPED: triggering_label is '{triggering_label}'"
               f" (requires label starting with 'promoted-to-')")
 
+    promoted_branch = triggering_label[len("promoted-to-"):] if triggering_label.startswith("promoted-to-") else ""
+    target_name, target_id = merged_transition_target(owner_repo, promoted_branch)
     print("\n" + "=" * 60)
-    print(f" Step 6b / jira_status_transition -> {MERGED_STATUS_NAME}")
+    print(f" Step 6b / jira_status_transition -> {target_name}")
     print("=" * 60)
     if triggering_label.startswith("promoted-to-"):
-        jira_status_transition(csv_content, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
+        jira_status_transition(csv_content, target_name, target_id, jira_auth)
     else:
         print(f"SKIPPED: triggering_label is '{triggering_label}'"
               f" (requires label starting with 'promoted-to-')")
@@ -444,6 +448,7 @@ def manage_closed_gh_event(
     owner_repo: str,
     gh_token: str,
     jira_auth: str,
+    base_ref: str = "",
 ) -> None:
     """Orchestrate the "PR Closed" sync in a single invocation.
 
@@ -454,7 +459,9 @@ def manage_closed_gh_event(
       3.  apply_jira_labels_to_pr
       4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
       5.  if merged: jira_status_transition -> "Merged" (transition id 7),
-          falling back to "Done" for issues whose workflow has no "Merged" (PM-359)
+          falling back to "Done" for issues whose workflow has no "Merged" (PM-359).
+          A PR merged into master in scylladb/scylladb goes to "Done" (PM-365);
+          *base_ref* is the PR's base branch ("" keeps "Merged").
     """
     print("=" * 60)
     print(" manage_closed_gh_event  input parameters")
@@ -465,6 +472,7 @@ def manage_closed_gh_event(
     print(f"  pr_number  = {pr_number!r}")
     print(f"  pr_merged  = {pr_merged!r}")
     print(f"  owner_repo = {owner_repo!r}")
+    print(f"  base_ref   = {base_ref!r}")
 
     # --- Step 1: extract jira keys ---
     print("\n" + "=" * 60)
@@ -538,12 +546,13 @@ def manage_closed_gh_event(
                 link_url=pr_url,
             )
 
-    # --- Step 5: transition to Merged (merged PRs only) ---
+    # --- Step 5: transition to Merged, or Done for scylladb master (merged PRs only) ---
+    target_name, target_id = merged_transition_target(owner_repo, base_ref)
     print("\n" + "=" * 60)
-    print(f" Step 5 / jira_status_transition -> {MERGED_STATUS_NAME}")
+    print(f" Step 5 / jira_status_transition -> {target_name}")
     print("=" * 60)
     if pr_merged:
-        jira_status_transition(csv_content, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
+        jira_status_transition(csv_content, target_name, target_id, jira_auth)
     else:
         print("SKIPPED: PR was closed without merge")
 
@@ -557,6 +566,12 @@ def _run_manage_closed_gh_event() -> None:
 
     Reads PR_TITLE, PR_BODY, PR_NUMBER, PR_MERGED, OWNER_REPO,
     GITHUB_TOKEN, and JIRA_AUTH from environment variables.
+
+    The base branch (PM-365) comes from GITHUB_BASE_REF, which the runner sets
+    for pull_request / pull_request_target events, so no caller workflow needs
+    a new input. It only matters for a merged PR in DONE_ON_MASTER_REPOS; there,
+    if GITHUB_BASE_REF is empty, it is read from the GitHub API, and if that
+    fails too the issue goes to "Merged" as before.
     """
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
@@ -590,9 +605,17 @@ def _run_manage_closed_gh_event() -> None:
         print("Error: JIRA_AUTH env var is not set or empty.")
         sys.exit(1)
 
+    base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
+    if not base_ref and pr_merged and owner_repo.strip().lower() in DONE_ON_MASTER_REPOS:
+        base_ref = get_pr_base_ref(owner_repo, pr_number, gh_token)
+        if not base_ref:
+            print(f"Warning: could not determine the base branch of PR #{pr_number}; "
+                  "linked issues will move to 'Merged'.")
+
     manage_closed_gh_event(
         pr_title, pr_body, pr_number, pr_merged,
         owner_repo, gh_token, jira_auth,
+        base_ref=base_ref,
     )
 
 
