@@ -14,6 +14,9 @@ closed state and whose status has not changed since the merge. An issue whose
 status changed after the merge (e.g. reopened by hand) is left alone, and so
 are the issues of a PR whose title or body was edited after the merge.
 
+The target status is the one the "closed" handler uses: "Done" for a PR merged
+into master in scylladb/scylladb (PM-365), "Merged" everywhere else.
+
 Only the Jira side is reconciled (comment + transition); PR labels are not.
 """
 
@@ -28,6 +31,7 @@ from urllib.error import URLError
 
 from jira_sync_logic import extract_closed_pr_jira_keys
 from jira_sync_modules import (
+    DONE_ON_MASTER_REPOS,
     MERGED_STATUS_NAME,
     MERGED_TRANSITION_ID,
     _gh_api,
@@ -36,8 +40,10 @@ from jira_sync_modules import (
     extract_jira_issue_details,
     get_issue_status_category,
     get_jira_account_id,
+    get_pr_base_ref,
     get_sync_failures,
     jira_status_transition,
+    merged_transition_target,
     record_sync_failure,
     status_changed_since,
 )
@@ -155,7 +161,8 @@ def reconcile_pr(
     """Close the Jira issues of one merged PR that the sync missed.
 
     Status changes made by *sync_account_id* (the account the sync runs as) do
-    not count as a decision to keep the issue open.
+    not count as a decision to keep the issue open. The issues move to "Done"
+    for a PR merged into master in scylladb/scylladb, else to "Merged" (PM-365).
     Returns the keys it closed (with dry_run: the keys it would close).
     """
     pr_number = pr["number"]
@@ -193,13 +200,24 @@ def reconcile_pr(
     if not missed:
         return []
 
+    # Same target as the "closed" handler (PM-365). The search results carry no
+    # base branch, so read it only where the branch decides the target.
+    target_name, target_id = MERGED_STATUS_NAME, MERGED_TRANSITION_ID
+    if owner_repo.strip().lower() in DONE_ON_MASTER_REPOS:
+        base_ref = get_pr_base_ref(owner_repo, pr_number, gh_token)
+        if not base_ref:
+            # Guessing "Merged" would be wrong for a master merge: retry next run.
+            record_sync_failure(f"{owner_repo}#{pr_number}: could not read the base branch")
+            return []
+        target_name, target_id = merged_transition_target(owner_repo, base_ref)
+
     details_csv, _, details_failed = extract_jira_issue_details(json.dumps(missed), jira_auth)
     if details_failed:
         record_sync_failure(f"{owner_repo}#{pr_number}: could not read the details of {details_failed}")
     # Keep only the issues jira_status_transition would actually move: a status
     # named like a closed state (e.g. "Merged") whose category is not "done" is
     # left alone by the transition, so it must not be reported as missed either.
-    to_transition = {row[0] for row in _plan_transitions(details_csv, MERGED_STATUS_NAME)[0]}
+    to_transition = {row[0] for row in _plan_transitions(details_csv, target_name)[0]}
     missed = [key for key in missed if key in to_transition]
     if not missed:
         return []
@@ -223,7 +241,7 @@ def reconcile_pr(
     # Transition first and comment only on the issues that actually closed: an
     # issue whose transition failed is retried by the next run, and commenting
     # before the transition would add a new comment on every retry.
-    closed = jira_status_transition(details_csv, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
+    closed = jira_status_transition(details_csv, target_name, target_id, jira_auth)
     if closed:
         add_comment_to_jira(
             json.dumps(closed),
