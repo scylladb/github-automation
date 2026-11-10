@@ -9,7 +9,9 @@ change that lands on master moves the linked Jira issues to "Done" instead of
   - _run_manage_closed_gh_event: the base branch comes from GITHUB_BASE_REF,
     with a GitHub API fallback only where it matters,
   - get_pr_base_ref: reads base.ref and returns "" on any failure,
-  - the real jira_status_transition POSTs transition 141 (Done), not 7.
+  - the real jira_status_transition POSTs transition 141 (Done), not 7,
+  - reconcile_merged_prs.reconcile_pr: the nightly safety net uses the same
+    target as the closed handler.
 
 The scylladb.git master branch can't be exercised end to end from the staging
 repo, so these tests drive the real handlers with the network mocked.
@@ -30,6 +32,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 jsm = importlib.import_module("jira_sync_modules")
 jsl = importlib.import_module("jira_sync_logic")
+rmp = importlib.import_module("reconcile_merged_prs")
 
 SCYLLADB = "scylladb/scylladb"
 DONE = ("Done", "141")
@@ -38,6 +41,7 @@ MERGED = ("Merged", "7")
 
 @pytest.fixture(autouse=True)
 def _no_sleep_and_clean_failures(monkeypatch):
+    """Skip the Jira rate-limit sleeps and start every test with no recorded failures."""
     monkeypatch.setattr(jsm.time, "sleep", lambda _s: None)
     jsm._SYNC_FAILURES.clear()
     yield
@@ -45,6 +49,7 @@ def _no_sleep_and_clean_failures(monkeypatch):
 
 
 def _details_csv(*rows):
+    """Build the issue-details CSV the sync reads, one (key, status) pair per row."""
     lines = [jsm._CSV_HEADER]
     for key, status in rows:
         lines.append(f'"{key}","{status}","","","","","","","",""')
@@ -109,10 +114,12 @@ def sync_steps(monkeypatch):
 
 
 def _closed(repo, merged=True, **kwargs):
+    """Run the closed handler for PR #7 of *repo* that fixes SCYLLADB-1."""
     jsl.manage_closed_gh_event("PR title", "Fixes: SCYLLADB-1", 7, merged, repo, "gh", "u:t", **kwargs)
 
 
 def _labeled(repo, label):
+    """Run the labeled handler for PR #7 of *repo* with *label* as the triggering label."""
     jsl.manage_labeled_gh_event("PR title", "Fixes: SCYLLADB-1", 7, label, repo, "gh", "u:t")
 
 
@@ -184,6 +191,7 @@ def closed_env(monkeypatch):
     seen = {"lookups": []}
 
     def fake_get_pr_base_ref(owner_repo, pr_number, gh_token):
+        """Record the lookup and return the base branch the test configured."""
         seen["lookups"].append((owner_repo, pr_number, gh_token))
         return seen.get("api_base_ref", "")
 
@@ -228,9 +236,11 @@ class TestRunManageClosedBaseRef:
 # ---------------------------------------------------------------------------
 
 def _api(monkeypatch, result):
+    """Mock _gh_api to return *result* (or raise it); return the list of calls."""
     calls = []
 
     def fake_gh_api(method, url, token, payload=None, **kwargs):
+        """Record the call, then raise *result* if it is an exception, else return it."""
         calls.append((method, url, kwargs))
         if isinstance(result, Exception):
             raise result
@@ -281,6 +291,7 @@ def jira_posts(monkeypatch):
                         lambda key, tid, auth: posts.append((key, tid)) or (204, ""))
 
     def run(repo, base_ref, status="In Review"):
+        """Merge PR #7 of *repo* into *base_ref*, SCYLLADB-1 in *status*; return the POSTs."""
         csv = _details_csv(("SCYLLADB-1", status))
         monkeypatch.setattr(jsl, "extract_jira_issue_details", lambda *a, **k: (csv, "", []))
         jsl.manage_closed_gh_event("PR title", "Fixes: SCYLLADB-1", 7, True, repo, "gh", "u:t",
@@ -300,3 +311,97 @@ class TestRealTransition:
 
     def test_already_closed_issue_is_left_alone(self, jira_posts):
         assert jira_posts(SCYLLADB, "master", status="Merged") == []
+
+
+# ---------------------------------------------------------------------------
+# reconcile_merged_prs.reconcile_pr: the nightly safety net for missed merges
+# ---------------------------------------------------------------------------
+
+RECONCILE_PR = {
+    "number": 7,
+    "title": "PR title",
+    "body": "Fixes: SCYLLADB-1",
+    "html_url": "https://github.com/scylladb/scylladb/pull/7",
+    "pull_request": {"merged_at": "2026-11-01T10:00:00Z"},
+}
+
+
+@pytest.fixture
+def reconcile(monkeypatch):
+    """Mock the lookups of reconcile_pr: SCYLLADB-1 was missed by the sync.
+
+    Returns a runner taking (repo, base_ref, status, dry_run, real_transition);
+    it records the base-branch lookups, the transitions and the POSTed ids.
+    """
+    seen = {"lookups": [], "transitions": [], "posts": []}
+    monkeypatch.setattr(rmp, "extract_closed_pr_jira_keys", lambda *a: ["SCYLLADB-1"])
+    monkeypatch.setattr(rmp, "get_issue_status_category", lambda key, auth: (200, "indeterminate"))
+    monkeypatch.setattr(rmp, "status_changed_since", lambda *a, **kw: False)
+    monkeypatch.setattr(rmp, "_edited_after", lambda *a: False)
+    monkeypatch.setattr(rmp, "add_comment_to_jira", lambda *a, **kw: None)
+    monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
+    monkeypatch.setattr(jsm, "_post_transition",
+                        lambda key, tid, auth: seen["posts"].append((key, tid)) or (204, ""))
+
+    def run(repo, base_ref, status="In Review", dry_run=False, real_transition=False):
+        """Reconcile PR #7 of *repo*, merged into *base_ref*; return its result."""
+        csv = _details_csv(("SCYLLADB-1", status))
+        monkeypatch.setattr(rmp, "extract_jira_issue_details", lambda *a: (csv, "", []))
+
+        def fake_base_ref(owner_repo, pr_number, gh_token):
+            """Record the lookup and return *base_ref*."""
+            seen["lookups"].append((owner_repo, pr_number, gh_token))
+            return base_ref
+
+        monkeypatch.setattr(rmp, "get_pr_base_ref", fake_base_ref)
+        if not real_transition:
+            def fake_transition(csv_text, name, tid, auth):
+                """Record the transition and report every planned issue as moved."""
+                seen["transitions"].append((name, tid))
+                return [row[0] for row in jsm._plan_transitions(csv_text, name)[0]]
+
+            monkeypatch.setattr(rmp, "jira_status_transition", fake_transition)
+        return rmp.reconcile_pr(repo, RECONCILE_PR, "gh", "u:t", dry_run)
+
+    run.seen = seen
+    return run
+
+
+class TestReconcile:
+    def test_scylladb_master_merge_goes_to_done(self, reconcile):
+        assert reconcile(SCYLLADB, "master") == ["SCYLLADB-1"]
+        assert reconcile.seen["transitions"] == [DONE]
+        assert reconcile.seen["lookups"] == [(SCYLLADB, 7, "gh")]
+        assert jsm.get_sync_failures() == []
+
+    def test_scylladb_backport_goes_to_merged(self, reconcile):
+        assert reconcile(SCYLLADB, "branch-2026.4") == ["SCYLLADB-1"]
+        assert reconcile.seen["transitions"] == [MERGED]
+
+    @pytest.mark.parametrize("repo", ["scylladb/staging", "scylladb/scylla-cluster-tests"])
+    def test_other_repos_go_to_merged_without_an_api_call(self, reconcile, repo):
+        assert reconcile(repo, "master") == ["SCYLLADB-1"]
+        assert reconcile.seen["transitions"] == [MERGED]
+        assert reconcile.seen["lookups"] == []
+
+    def test_unknown_base_branch_is_retried_next_run(self, reconcile):
+        assert reconcile(SCYLLADB, "") == []
+        assert reconcile.seen["transitions"] == []
+        assert jsm.get_sync_failures() == [f"{SCYLLADB}#7: could not read the base branch"]
+
+    def test_dry_run_reports_without_transition(self, reconcile):
+        assert reconcile(SCYLLADB, "master", dry_run=True) == ["SCYLLADB-1"]
+        assert reconcile.seen["transitions"] == []
+
+    def test_issue_already_merged_is_left_alone(self, reconcile):
+        assert reconcile(SCYLLADB, "master", status="Merged") == []
+        assert reconcile.seen["transitions"] == []
+
+    def test_real_transition_posts_done_for_master(self, reconcile):
+        assert reconcile(SCYLLADB, "master", real_transition=True) == ["SCYLLADB-1"]
+        assert reconcile.seen["posts"] == [("SCYLLADB-1", "141")]
+        assert jsm.get_sync_failures() == []
+
+    def test_real_transition_posts_merged_for_backport(self, reconcile):
+        assert reconcile(SCYLLADB, "branch-2026.4", real_transition=True) == ["SCYLLADB-1"]
+        assert reconcile.seen["posts"] == [("SCYLLADB-1", "7")]
