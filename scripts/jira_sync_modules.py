@@ -1303,6 +1303,15 @@ def _set_date_field(key: str, field_id: str, field_label: str, jira_auth: str) -
     time.sleep(0.2)
 
 
+def _get_issue_status_name(key: str, jira_auth: str) -> str:
+    """Return the live status name of *key*, or "" if it cannot be read."""
+    data = _jira_get(f"{JIRA_BASE_URL}/rest/api/3/issue/{key}?fields=status", jira_auth)
+    if not isinstance(data, dict):
+        return ""
+    status = (data.get("fields") or {}).get("status") or {}
+    return (status.get("name") or "").strip()
+
+
 def _post_transition(key: str, transition_id: str, jira_auth: str) -> tuple[int, str]:
     """POST a single status transition for *key*. Returns (http_code, body)."""
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{key}/transitions"
@@ -1439,6 +1448,22 @@ def jira_status_transition(
             time.sleep(0.2)
 
         target_used = fallback[0] if used_fallback else transition_name
+
+        # Another sync run for the same PR (e.g. review_requested and
+        # ready_for_review fired together) may have moved the issue after our
+        # details_csv snapshot was taken; Jira then rejects the transition
+        # with a 400. Re-read the live status and accept it if it is already
+        # the target (or its fallback).
+        if code == _TRANSITION_REJECTED_CODE:
+            live = _get_issue_status_name(key, jira_auth)
+            accepted = {transition_name.lower()}
+            if fallback:
+                accepted.add(fallback[0].lower())
+            if live and live.lower() in accepted:
+                print(f"SKIP {key}: already in '{live}' (moved by a concurrent run)")
+                skipped += 1
+                time.sleep(0.2)
+                continue
 
         if code in (200, 204):
             print(f"OK {key} ({code}) -> {target_used}")
