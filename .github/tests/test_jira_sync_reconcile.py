@@ -63,6 +63,31 @@ class TestWriteFailuresFailTheRun:
         assert closed == ["SCT-1"]
         assert jsm.get_sync_failures() == []
 
+    def test_rejected_but_already_at_target_is_not_a_failure(self, monkeypatch):
+        # A concurrent run moved the issue to In Review after our snapshot.
+        monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
+        monkeypatch.setattr(jsm, "_post_transition", lambda *a: (400, "Can't move"))
+        monkeypatch.setattr(jsm, "_jira_get",
+                            lambda url, auth: {"fields": {"status": {"name": "In Review"}}})
+        moved = jsm.jira_status_transition(_details_csv(("SCT-1", "In Progress")), "In Review", "121", "u:t")
+        assert moved == []
+        assert jsm.get_sync_failures() == []
+
+    def test_rejected_and_not_at_target_is_still_a_failure(self, monkeypatch):
+        monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
+        monkeypatch.setattr(jsm, "_post_transition", lambda *a: (400, "Can't move"))
+        monkeypatch.setattr(jsm, "_jira_get",
+                            lambda url, auth: {"fields": {"status": {"name": "In Progress"}}})
+        jsm.jira_status_transition(_details_csv(("SCT-1", "In Progress")), "In Review", "121", "u:t")
+        assert jsm.get_sync_failures() == ["1 transition(s) to 'In Review' failed"]
+
+    def test_rejected_and_status_unreadable_is_still_a_failure(self, monkeypatch):
+        monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
+        monkeypatch.setattr(jsm, "_post_transition", lambda *a: (400, "Can't move"))
+        monkeypatch.setattr(jsm, "_jira_get", lambda url, auth: None)
+        jsm.jira_status_transition(_details_csv(("SCT-1", "In Progress")), "In Review", "121", "u:t")
+        assert jsm.get_sync_failures() == ["1 transition(s) to 'In Review' failed"]
+
     def test_missing_issue_is_not_a_failure(self, monkeypatch):
         monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
         monkeypatch.setattr(jsm, "_post_transition", lambda *a: (404, ""))
