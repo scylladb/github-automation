@@ -230,6 +230,40 @@ class TestJiraApiRequest:
             bp_module.JIRA_USER = original_user
             bp_module.JIRA_API_TOKEN = original_token
 
+    @staticmethod
+    def _http_error(bp_module, body=None, json_error=False):
+        response = MagicMock()
+        if json_error:
+            response.json.side_effect = ValueError("not json")
+        else:
+            response.json.return_value = body
+        return bp_module.requests.exceptions.HTTPError("400 Bad Request", response=response)
+
+    @pytest.mark.parametrize("body, json_error, expected", [
+        ({"errorMessages": [], "errors": {"customfield_11120": "not on screen"}}, False,
+         {"customfield_11120": "not on screen"}),
+        ({"errorMessages": ["Issue does not exist"], "errors": {}}, False, {}),
+        ({"errorMessages": ["boom"]}, False, {}),
+        (["not", "a", "dict"], False, {}),
+        ({"errors": "not a dict"}, False, {}),
+        (None, True, {}),
+    ])
+    def test_field_errors_from_error_response(self, bp_module, body, json_error, expected):
+        err = self._http_error(bp_module, body, json_error)
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = err
+        field_errors = {}
+        with patch.object(bp_module.requests, "post", return_value=mock_response):
+            assert bp_module.jira_api_request("POST", "issue", {"fields": {}}, field_errors=field_errors) is None
+        assert field_errors == expected
+
+    def test_field_errors_empty_on_network_error(self, bp_module):
+        field_errors = {}
+        with patch.object(bp_module.requests, "post",
+                          side_effect=bp_module.requests.exceptions.ConnectionError("reset")):
+            assert bp_module.jira_api_request("POST", "issue", {"fields": {}}, field_errors=field_errors) is None
+        assert field_errors == {}
+
 
 class TestGetJiraIssue:
     def test_success(self, bp_module):
@@ -678,16 +712,23 @@ class TestTeamInheritance:
         }
         root = {"fields": {bp_module.JIRA_TEAM_FIELD: {"id": self.TEAM}}}
         with patch.object(bp_module, "get_jira_issue", side_effect=[subtask, root]):
-            assert bp_module.resolve_parent_team_id("SCYLLADB-2") == self.TEAM
+            fields = bp_module.get_inherited_backport_fields("SCYLLADB-2")
+        assert fields == {bp_module.JIRA_TEAM_FIELD: self.TEAM}
 
-    def test_resolve_returns_none_when_nothing_has_a_team(self, bp_module):
+    def test_resolve_returns_nothing_when_nothing_has_a_team(self, bp_module):
         issue = {"fields": {"issuetype": {"subtask": False}, bp_module.JIRA_TEAM_FIELD: None}}
-        with patch.object(bp_module, "get_jira_issue", return_value=issue):
-            assert bp_module.resolve_parent_team_id("SCYLLADB-100") is None
+        with patch.object(bp_module, "get_jira_issue", return_value=issue) as mock_get:
+            assert bp_module.get_inherited_backport_fields("SCYLLADB-100") == {}
+        mock_get.assert_called_once_with("SCYLLADB-100")
+
+    def test_resolve_returns_nothing_when_issue_unreadable(self, bp_module):
+        with patch.object(bp_module, "get_jira_issue", return_value=None):
+            assert bp_module.get_inherited_backport_fields("SCYLLADB-100") == {}
 
     def test_created_issue_inherits_team(self, bp_module):
         with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
-             patch.object(bp_module, "resolve_parent_team_id", return_value=self.TEAM), \
+             patch.object(bp_module, "get_inherited_backport_fields",
+                          return_value={bp_module.JIRA_TEAM_FIELD: self.TEAM}), \
              patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
              patch.object(bp_module, "create_jira_issue_link", return_value=True):
             bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
@@ -696,25 +737,184 @@ class TestTeamInheritance:
 
     def test_no_team_field_when_parent_has_none(self, bp_module):
         with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
-             patch.object(bp_module, "resolve_parent_team_id", return_value=None), \
+             patch.object(bp_module, "get_inherited_backport_fields", return_value={}), \
              patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}) as mock_api, \
              patch.object(bp_module, "create_jira_issue_link", return_value=True):
             bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
             call_data = mock_api.call_args[0][2]
             assert bp_module.JIRA_TEAM_FIELD not in call_data["fields"]
+            assert bp_module.JIRA_PROBLEM_SYMPTOM_FIELD not in call_data["fields"]
 
     def test_retries_without_team_when_creation_rejected(self, bp_module):
         """Projects that don't have Team on their create screen must still get a backport issue."""
+        sent = []
+
+        def api(method, endpoint, data=None, field_errors=None, **kw):
+            sent.append(set(data["fields"]))
+            if len(sent) == 1:
+                field_errors[bp_module.JIRA_TEAM_FIELD] = "not on the appropriate screen"
+                return None
+            return {"key": "SCYLLADB-999"}
+
         with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
-             patch.object(bp_module, "resolve_parent_team_id", return_value=self.TEAM), \
-             patch.object(bp_module, "jira_api_request",
-                          side_effect=[None, {"key": "SCYLLADB-999"}]) as mock_api, \
+             patch.object(bp_module, "get_inherited_backport_fields",
+                          return_value={bp_module.JIRA_TEAM_FIELD: self.TEAM}), \
+             patch.object(bp_module, "jira_api_request", side_effect=api) as mock_api, \
              patch.object(bp_module, "create_jira_issue_link", return_value=True):
             result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
             assert result == "SCYLLADB-999"
             assert mock_api.call_count == 2
-            retry_data = mock_api.call_args[0][2]
-            assert bp_module.JIRA_TEAM_FIELD not in retry_data["fields"]
+            assert bp_module.JIRA_TEAM_FIELD in sent[0]
+            assert bp_module.JIRA_TEAM_FIELD not in sent[1]
+
+
+class TestCiStabilityInheritance:
+    """A backport of a CI stability issue must keep the "ci stability" Problem Symptom,
+    or it drops out of CI stability filters (RELENG-1057)."""
+
+    TEAM = "f9cc1fd6-beaf-40ee-b7a1-0b51f09038d9"
+
+    def _issue(self, bp_module, symptom=None, subtask=False, parent=None, team=None):
+        fields = {"issuetype": {"subtask": subtask}, bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: symptom,
+                  bp_module.JIRA_TEAM_FIELD: team}
+        if parent:
+            fields["parent"] = {"key": parent}
+        return {"fields": fields}
+
+    @pytest.mark.parametrize("symptom, expected", [
+        (None, None),
+        ([], None),
+        ("garbage", None),
+        ([{"id": "12527", "value": "ci stability"}], True),
+        ([{"id": 12527}], True),
+        ([{"id": "10000", "value": "crash"}, {"id": "12527", "value": "ci stability"}], True),
+        ([{"id": "10000", "value": "crash"}], False),
+    ])
+    def test_has_ci_stability_symptom(self, bp_module, symptom, expected):
+        issue = {"fields": {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: symptom}}
+        assert bp_module.has_ci_stability_symptom(issue) is expected
+
+    def test_has_ci_stability_symptom_malformed_issue(self, bp_module):
+        assert bp_module.has_ci_stability_symptom({}) is None
+        assert bp_module.has_ci_stability_symptom("not-a-dict") is None
+
+    def test_inherits_ci_stability_only(self, bp_module):
+        """Other Problem Symptom options are not copied, only "ci stability"."""
+        issue = self._issue(bp_module, symptom=[{"id": "10000"}, {"id": bp_module.CI_STABILITY_OPTION_ID}],
+                            team={"id": self.TEAM})
+        with patch.object(bp_module, "get_jira_issue", return_value=issue):
+            fields = bp_module.get_inherited_backport_fields("SCYLLADB-100")
+        assert fields == {
+            bp_module.JIRA_TEAM_FIELD: self.TEAM,
+            bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}],
+        }
+
+    def test_other_symptom_is_not_inherited(self, bp_module):
+        issue = self._issue(bp_module, symptom=[{"id": "10000"}])
+        with patch.object(bp_module, "get_jira_issue", return_value=issue):
+            assert bp_module.get_inherited_backport_fields("SCYLLADB-100") == {}
+
+    def test_subtask_falls_back_to_parent_symptom(self, bp_module):
+        """SCYLLADB-1399: a legacy backport sub-task without a Problem Symptom whose parent is ci stability."""
+        subtask = self._issue(bp_module, subtask=True, parent="SCYLLADB-921")
+        root = self._issue(bp_module, symptom=[{"id": bp_module.CI_STABILITY_OPTION_ID}])
+        with patch.object(bp_module, "get_jira_issue", side_effect=[subtask, root]):
+            fields = bp_module.get_inherited_backport_fields("SCYLLADB-1399")
+        assert fields == {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}]}
+
+    def test_subtask_own_symptom_wins_over_parent(self, bp_module):
+        subtask = self._issue(bp_module, symptom=[{"id": "10000"}], subtask=True, parent="SCYLLADB-921")
+        root = self._issue(bp_module, symptom=[{"id": bp_module.CI_STABILITY_OPTION_ID}])
+        with patch.object(bp_module, "get_jira_issue", side_effect=[subtask, root]):
+            assert bp_module.get_inherited_backport_fields("SCYLLADB-1399") == {}
+
+    def test_subtask_with_own_values_skips_parent_fetch(self, bp_module):
+        subtask = self._issue(bp_module, symptom=[{"id": bp_module.CI_STABILITY_OPTION_ID}],
+                              subtask=True, parent="SCYLLADB-921", team={"id": self.TEAM})
+        with patch.object(bp_module, "get_jira_issue", return_value=subtask) as mock_get:
+            fields = bp_module.get_inherited_backport_fields("SCYLLADB-1399")
+        mock_get.assert_called_once_with("SCYLLADB-1399")
+        assert fields == {
+            bp_module.JIRA_TEAM_FIELD: self.TEAM,
+            bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}],
+        }
+
+    def test_unreadable_subtask_parent_uses_subtask_only(self, bp_module):
+        subtask = self._issue(bp_module, symptom=[{"id": bp_module.CI_STABILITY_OPTION_ID}],
+                              subtask=True, parent="SCYLLADB-921")
+        with patch.object(bp_module, "get_jira_issue", side_effect=[subtask, None]):
+            fields = bp_module.get_inherited_backport_fields("SCYLLADB-1399")
+        assert fields == {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}]}
+
+    def _create(self, bp_module, inherited, api_results):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "get_inherited_backport_fields", return_value=dict(inherited)), \
+             patch.object(bp_module, "jira_api_request", side_effect=api_results) as mock_api, \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            result = bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+        return result, mock_api
+
+    def test_created_issue_carries_ci_stability(self, bp_module):
+        sent = []
+        inherited = {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}]}
+
+        def api(method, endpoint, data=None, **kw):
+            sent.append(dict(data["fields"]))
+            return {"key": "SCYLLADB-999"}
+
+        result, mock_api = self._create(bp_module, inherited, api)
+        assert result == "SCYLLADB-999"
+        assert len(sent) == 1
+        assert sent[0][bp_module.JIRA_PROBLEM_SYMPTOM_FIELD] == [{"id": bp_module.CI_STABILITY_OPTION_ID}]
+
+    @pytest.mark.parametrize("rejected, second_ok, expected_calls, kept, ok", [
+        # created at once: both fields kept
+        (None, None, 1, {"symptom", "team"}, True),
+        # Problem Symptom rejected: retry keeps the Team
+        (["symptom"], True, 2, {"team"}, True),
+        # Team rejected: retry keeps the Problem Symptom
+        (["team"], True, 2, {"symptom"}, True),
+        # both rejected: retry without either
+        (["symptom", "team"], True, 2, set(), True),
+        # retry fails too: give up, no third attempt
+        (["symptom"], False, 2, {"team"}, False),
+        # rejected for a field we did not inherit (e.g. assignee): no retry
+        (["assignee"], None, 1, {"symptom", "team"}, False),
+        # an inherited field and another field rejected: the retry would fail too, so none
+        (["team", "assignee"], None, 1, {"symptom", "team"}, False),
+        # failure without field errors (5xx, network): no retry, it could duplicate the issue
+        ([], None, 1, {"symptom", "team"}, False),
+    ])
+    def test_retry_drops_only_rejected_fields(self, bp_module, rejected, second_ok, expected_calls, kept, ok):
+        sent = []
+        names = {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: "symptom", bp_module.JIRA_TEAM_FIELD: "team"}
+        ids = {v: k for k, v in names.items()}
+        inherited = {bp_module.JIRA_PROBLEM_SYMPTOM_FIELD: [{"id": bp_module.CI_STABILITY_OPTION_ID}],
+                     bp_module.JIRA_TEAM_FIELD: self.TEAM}
+
+        def api(method, endpoint, data=None, field_errors=None, **kw):
+            sent.append({names[f] for f in data["fields"] if f in names})
+            if len(sent) == 1:
+                if rejected is None:
+                    return {"key": "SCYLLADB-999"}
+                for r in rejected:
+                    field_errors[ids.get(r, r)] = "rejected"
+                return None
+            return {"key": "SCYLLADB-999"} if second_ok else None
+
+        result, mock_api = self._create(bp_module, inherited, api)
+        assert mock_api.call_count == expected_calls
+        assert sent[-1] == kept
+        assert result == ("SCYLLADB-999" if ok else None)
+
+    def test_no_retry_without_inherited_fields(self, bp_module):
+        def api(method, endpoint, data=None, field_errors=None, **kw):
+            field_errors[bp_module.JIRA_TEAM_FIELD] = "rejected"
+            return None
+
+        result, mock_api = self._create(bp_module, {}, api)
+        assert result is None
+        assert mock_api.call_count == 1
 
 
 class TestFindActiveSprintId:

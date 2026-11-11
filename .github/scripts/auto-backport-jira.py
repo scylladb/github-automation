@@ -64,6 +64,10 @@ BACKPORT_LINK_TYPE = "Relates"
 JIRA_TEAM_FIELD = "customfield_10001"
 JIRA_SPRINT_FIELD = "customfield_10020"
 JIRA_STORY_POINTS_FIELD = "customfield_10036"
+# Problem Symptom (multi-select) and its "ci stability" option. Backport issues
+# inherit only this option, so CI stability work keeps showing in CI stability filters.
+JIRA_PROBLEM_SYMPTOM_FIELD = "customfield_11120"
+CI_STABILITY_OPTION_ID = "12527"
 # Backport issues carry no estimate of their own -- the work was estimated on the
 # original issue -- so they land in the sprint with a zero estimate.
 BACKPORT_STORY_POINTS = 0
@@ -380,12 +384,16 @@ def set_pr_milestone(pr, milestone_title: Optional[str]) -> bool:
 # ============================================================================
 
 def jira_api_request(method: str, endpoint: str, data: dict = None,
-                     api_base: str = "api/3") -> Optional[dict]:
+                     api_base: str = "api/3", field_errors: Optional[dict] = None) -> Optional[dict]:
     """
     Make a request to Jira API.
 
     api_base selects the API family: 'api/3' for the platform REST API (the default)
     or 'agile/1.0' for the Jira Software (Agile) API, which owns boards and sprints.
+
+    field_errors, when given, receives the per-field errors ({field id: message}) of
+    a failed request, as Jira reports them for a rejected create or edit; it stays
+    empty when the failure names no field (network error, a body without an 'errors' map).
     """
     if not JIRA_USER or not JIRA_API_TOKEN:
         logging.warning("Jira credentials not configured")
@@ -414,7 +422,27 @@ def jira_api_request(method: str, endpoint: str, data: dict = None,
         return response.json() if response.text else {}
     except requests.exceptions.RequestException as e:
         logging.error(f"Jira API request failed: {e}")
+        # Parsed (and logged) for every failure, so a failed retry still shows which field Jira rejected
+        errors = _jira_field_errors(getattr(e, "response", None))
+        if field_errors is not None:
+            field_errors.update(errors)
         return None
+
+
+def _jira_field_errors(response) -> dict:
+    """Return the 'errors' map ({field id: message}) of a Jira error response, or {}."""
+    if response is None:
+        return {}
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    errors = body.get("errors") if isinstance(body, dict) else None
+    if not isinstance(errors, dict):
+        return {}
+    if errors:
+        logging.error(f"Jira field errors: {errors}")
+    return errors
 
 
 def get_jira_issue(issue_key: str) -> Optional[dict]:
@@ -706,27 +734,50 @@ def get_issue_team_id(issue: dict) -> Optional[str]:
     return team if isinstance(team, str) else None
 
 
-def resolve_parent_team_id(parent_key: str) -> Optional[str]:
+def has_ci_stability_symptom(issue: dict) -> Optional[bool]:
     """
-    Find the Team a backport issue should inherit, starting from parent_key and
-    falling back to its parent when parent_key is a legacy sub-task that carries
-    no Team of its own.
+    Read the Problem Symptom field of a Jira issue.
+
+    Returns True if "ci stability" is one of its options, False if it is set to
+    other options only, and None if it is not set at all.
     """
-    parent_issue = get_jira_issue(parent_key)
-    if not parent_issue:
+    try:
+        options = issue.get("fields", {}).get(JIRA_PROBLEM_SYMPTOM_FIELD)
+    except Exception:
         return None
+    if not isinstance(options, list) or not options:
+        return None
+    return any(isinstance(o, dict) and str(o.get("id")) == CI_STABILITY_OPTION_ID for o in options)
 
-    team_id = get_issue_team_id(parent_issue)
+
+def get_inherited_backport_fields(parent_key: str) -> dict:
+    """
+    Return the fields a backport issue copies from the issue it backports
+    (falling back to that issue's parent when it is a legacy sub-task that
+    carries none of its own): the Team, and the "ci stability" Problem Symptom.
+    """
+    fields = {}
+    issue = get_jira_issue(parent_key)
+    if not issue:
+        return fields
+
+    team_id = get_issue_team_id(issue)
+    ci_stability = has_ci_stability_symptom(issue)
+
+    grandparent_key = get_parent_key_if_subtask(issue)
+    if grandparent_key and (not team_id or ci_stability is None):
+        grandparent = get_jira_issue(grandparent_key)
+        if grandparent:
+            team_id = team_id or get_issue_team_id(grandparent)
+            if ci_stability is None:
+                ci_stability = has_ci_stability_symptom(grandparent)
+
     if team_id:
-        return team_id
+        fields[JIRA_TEAM_FIELD] = team_id
+    if ci_stability:
+        fields[JIRA_PROBLEM_SYMPTOM_FIELD] = [{"id": CI_STABILITY_OPTION_ID}]
 
-    grandparent_key = get_parent_key_if_subtask(parent_issue)
-    if grandparent_key:
-        grandparent_issue = get_jira_issue(grandparent_key)
-        if grandparent_issue:
-            return get_issue_team_id(grandparent_issue)
-
-    return None
+    return fields
 
 
 def create_jira_linked_issue(parent_key: str, version: str, original_title: str, assignee_account_id: str = None) -> Optional[str]:
@@ -803,22 +854,36 @@ def create_jira_linked_issue(parent_key: str, version: str, original_title: str,
     if assignee_account_id:
         issue_data["fields"]["assignee"] = {"accountId": assignee_account_id}
 
-    # Inherit the Team from the issue being backported. Backport issues used to be
-    # Jira sub-tasks, which inherited Team implicitly; as standalone linked issues
-    # they no longer do, and drop out of team-based filters unless we copy it over.
-    team_id = resolve_parent_team_id(parent_key)
-    if team_id:
-        issue_data["fields"][JIRA_TEAM_FIELD] = team_id
-        logging.info(f"Backport issue for {parent_key} will inherit team {team_id}")
+    # Inherit the Team and the "ci stability" Problem Symptom from the issue being
+    # backported. Backport issues used to be Jira sub-tasks, which inherited Team
+    # implicitly; as standalone linked issues they no longer do, and drop out of
+    # team-based and CI stability filters unless we copy these over.
+    inherited = get_inherited_backport_fields(parent_key)
+    issue_data["fields"].update(inherited)
+    if inherited:
+        described = []
+        if JIRA_TEAM_FIELD in inherited:
+            described.append(f"team {inherited[JIRA_TEAM_FIELD]}")
+        if JIRA_PROBLEM_SYMPTOM_FIELD in inherited:
+            described.append("ci stability Problem Symptom")
+        logging.info(f"Backport issue for {parent_key} will inherit {' and '.join(described)}")
     else:
-        logging.info(f"No Team field on {parent_key}, backport issue will be created without one")
+        logging.info(f"Nothing to inherit from {parent_key} (no Team or ci stability Problem Symptom, "
+                     f"or the issue could not be read), backport issue will be created without them")
 
-    result = jira_api_request("POST", "issue", issue_data)
-    if (not result or "key" not in result) and team_id:
-        # The Team field may not be on this project's create screen; a backport issue
-        # without a Team still beats no backport issue at all.
-        logging.warning(f"Creating backport issue for {parent_key} with a Team failed, retrying without it")
-        del issue_data["fields"][JIRA_TEAM_FIELD]
+    field_errors = {}
+    result = jira_api_request("POST", "issue", issue_data, field_errors=field_errors)
+    # An inherited field may not be on this project's create screen; a backport issue
+    # without it still beats no backport issue at all. Retry once without the inherited
+    # fields Jira rejected, but only when they are all it rejected (Jira validates every
+    # field at once, so a retry with any other rejected field would fail the same way).
+    # Any other failure is not retried: creating an issue is not idempotent, and a retry
+    # after e.g. a 5xx could create a duplicate.
+    rejected = [f for f in inherited if f in field_errors]
+    if (not result or "key" not in result) and rejected and len(rejected) == len(field_errors):
+        logging.warning(f"Jira rejected {rejected} on the backport issue for {parent_key}, retrying without them")
+        for field in rejected:
+            del issue_data["fields"][field]
         result = jira_api_request("POST", "issue", issue_data)
     if not result or "key" not in result:
         logging.error(f"Failed to create Jira backport issue for {parent_key} version {version}")
