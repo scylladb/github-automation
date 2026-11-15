@@ -444,6 +444,33 @@ class TestSearchMergedPrs:
         assert [pr["number"] for pr in prs] == [1]
         assert len(jsm.get_sync_failures()) == 1
 
+    def _run_responses(self, monkeypatch, responses):
+        responses = iter(responses)
+        sleeps = []
+        monkeypatch.setattr(rmp, "_throttle_search", lambda: None)
+        monkeypatch.setattr(rmp.time, "sleep", sleeps.append)
+        monkeypatch.setattr(rmp, "_gh_api", lambda *a: next(responses))
+        return rmp._search_merged_prs("a/b", self.SINCE, "gh"), sleeps
+
+    RATE_LIMITED = (403, json.dumps({"message": "API rate limit exceeded for user ID 1."}))
+
+    def test_rate_limited_page_is_retried_after_the_window(self, monkeypatch):
+        ok = (200, json.dumps({"incomplete_results": False, "items": [{"number": 1}]}))
+        prs, sleeps = self._run_responses(monkeypatch, [self.RATE_LIMITED, ok])
+        assert [pr["number"] for pr in prs] == [1]
+        assert sleeps == [rmp._SEARCH_RATE_LIMIT_WAIT]
+
+    def test_still_rate_limited_page_is_an_error(self, monkeypatch):
+        prs, sleeps = self._run_responses(
+            monkeypatch, [self.RATE_LIMITED] * (rmp._SEARCH_RATE_LIMIT_RETRIES + 1))
+        assert prs is None
+        assert len(sleeps) == rmp._SEARCH_RATE_LIMIT_RETRIES
+
+    def test_other_errors_are_not_retried(self, monkeypatch):
+        prs, sleeps = self._run_responses(monkeypatch, [(403, json.dumps({"message": "Forbidden"}))])
+        assert prs is None
+        assert sleeps == []
+
 
 class TestBackportTitle:
     @pytest.mark.parametrize("title", [
