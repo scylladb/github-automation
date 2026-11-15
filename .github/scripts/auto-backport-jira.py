@@ -895,6 +895,10 @@ def create_jira_linked_issue(parent_key: str, version: str, original_title: str,
     if not create_jira_issue_link(new_key, parent_key):
         logging.warning(f"Created {new_key} but failed to link it to {parent_key}")
 
+    # Put the new issue in the parent's sprint now, not when its PR opens later:
+    # an issue pulled into a sprint mid-way shows up there as unplanned work.
+    schedule_backport_issue(new_key, parent_key)
+
     return new_key
 
 
@@ -1017,8 +1021,8 @@ def move_issue_to_backlog(issue_key: str) -> bool:
 
 def schedule_backport_issue(issue_key: str, parent_key: str = None) -> bool:
     """
-    Put a backport issue into the current sprint with a zero estimate, so it shows up
-    on the board as soon as its backport PR is open instead of sitting in the backlog.
+    Put a backport issue into the current sprint with a zero estimate as soon as it is
+    created, so it is planned work in that sprint rather than added to it later.
 
     Inherits the sprint the parent issue is currently in, which is guaranteed to be
     the right team's sprint. If the parent isn't in an active sprint, the backport
@@ -1063,19 +1067,6 @@ def schedule_backport_issue(issue_key: str, parent_key: str = None) -> bool:
 
     logging.info(f"Set {issue_key} to sprint {sprint_id} with {BACKPORT_STORY_POINTS} story points")
     return True
-
-
-def schedule_backport_issues(jira_mapping: Dict[str, str]):
-    """
-    Schedule every backport issue in jira_mapping. Entries where the backport issue
-    could not be resolved map a parent key to itself -- skip those, the parent issue
-    keeps its own sprint and estimate.
-    """
-    if not JIRA_USER or not JIRA_API_TOKEN:
-        return
-    for parent_key, backport_key in (jira_mapping or {}).items():
-        if backport_key and backport_key != parent_key:
-            schedule_backport_issue(backport_key, parent_key)
 
 
 def add_jira_comment(issue_key: str, comment: str) -> bool:
@@ -2289,10 +2280,6 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
                                 remaining_backport_labels=remaining_backport_labels,
                                 original_pr=original_pr, warn_missing_fixes=warn_missing_fixes,
                                 backport_version=version)
-            # The backport issues are created up front for every version, but only
-            # become actual work once their PR exists -- schedule them at that point.
-            if backport_pr:
-                schedule_backport_issues(jira_mapping)
             return backport_pr
         except GitCommandError as e:
             logging.warning(f"GitCommandError: {e}")

@@ -507,7 +507,35 @@ class TestCreateJiraIssueLink:
             assert result is False
 
 
+@pytest.fixture
+def mock_schedule(bp_module):
+    """create_jira_linked_issue() schedules every new issue; keep that out of the Jira calls under test."""
+    with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
+        yield mock_sched
+
+
+@pytest.mark.usefixtures("mock_schedule")
 class TestCreateJiraLinkedIssue:
+    def test_new_issue_is_scheduled_at_creation(self, bp_module, mock_schedule):
+        """A new backport issue joins the parent's sprint right away, not when its PR opens."""
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}), \
+             patch.object(bp_module, "create_jira_issue_link", return_value=True):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            mock_schedule.assert_called_once_with("SCYLLADB-999", "SCYLLADB-100")
+
+    def test_existing_issue_is_not_rescheduled(self, bp_module, mock_schedule):
+        """An existing backport issue keeps whatever sprint it is in."""
+        with patch.object(bp_module, "find_existing_linked_issue", return_value="SCYLLADB-888"):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            mock_schedule.assert_not_called()
+
+    def test_failed_creation_is_not_scheduled(self, bp_module, mock_schedule):
+        with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
+             patch.object(bp_module, "jira_api_request", return_value=None):
+            bp_module.create_jira_linked_issue("SCYLLADB-100", "2025.4", "Fix bug")
+            mock_schedule.assert_not_called()
+
     def test_create_new_issue(self, bp_module):
         with patch.object(bp_module, "find_existing_linked_issue", return_value=None), \
              patch.object(bp_module, "jira_api_request", return_value={"key": "SCYLLADB-999"}), \
@@ -681,6 +709,7 @@ class TestGetParentKeyIfSubtaskErrors:
         assert result is None
 
 
+@pytest.mark.usefixtures("mock_schedule")
 class TestTeamInheritance:
     """Backport issues are standalone linked issues, not sub-tasks, so they only end up
     in team-based filters if the Team field is copied from the issue being backported.
@@ -768,6 +797,7 @@ class TestTeamInheritance:
             assert bp_module.JIRA_TEAM_FIELD not in sent[1]
 
 
+@pytest.mark.usefixtures("mock_schedule")
 class TestCiStabilityInheritance:
     """A backport of a CI stability issue must keep the "ci stability" Problem Symptom,
     or it drops out of CI stability filters (RELENG-1057)."""
@@ -1120,26 +1150,3 @@ class TestScheduleBackportIssue:
         with patch.object(bp_module, "find_active_sprint_id", return_value=None), \
              patch.object(bp_module, "jira_api_request", return_value=None):
             assert bp_module.schedule_backport_issue("RELENG-800") is False
-
-
-class TestScheduleBackportIssues:
-    def test_schedules_each_backport_issue_with_its_parent(self, bp_module):
-        mapping = {"RELENG-785": "RELENG-800", "SCYLLADB-1": "SCYLLADB-2"}
-        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
-            bp_module.schedule_backport_issues(mapping)
-            assert {c[0] for c in mock_sched.call_args_list} == {
-                ("RELENG-800", "RELENG-785"), ("SCYLLADB-2", "SCYLLADB-1"),
-            }
-
-    def test_skips_parent_key_fallback(self, bp_module):
-        """When no backport issue was resolved the mapping points at the parent -- the
-        parent's own sprint and estimate must be left alone."""
-        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
-            bp_module.schedule_backport_issues({"RELENG-785": "RELENG-785"})
-            mock_sched.assert_not_called()
-
-    def test_handles_empty_mapping(self, bp_module):
-        with patch.object(bp_module, "schedule_backport_issue") as mock_sched:
-            bp_module.schedule_backport_issues(None)
-            bp_module.schedule_backport_issues({})
-            mock_sched.assert_not_called()
