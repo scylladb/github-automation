@@ -197,7 +197,7 @@ class TestGetPrIsDraft:
         calls = _api(monkeypatch, (200, json.dumps({"draft": True})))
         assert jsm.get_pr_is_draft("scylladb/staging", 7, "gh-token", fallback=False) is True
         assert calls == [("GET", "https://api.github.com/repos/scylladb/staging/pulls/7", "gh-token",
-                          {"timeout": jsm._PR_DRAFT_LOOKUP_TIMEOUT})]
+                          {"timeout": jsm._PR_LOOKUP_TIMEOUT})]
 
     def test_current_state_overrides_the_fallback(self, monkeypatch):
         _api(monkeypatch, (200, json.dumps({"draft": False})))
@@ -223,12 +223,52 @@ class TestGetPrIsDraft:
         assert jsm.get_pr_is_draft("o/r", 7, "t", fallback=None) is False
         assert "PR_DRAFT was not provided" in capsys.readouterr().out
 
+    def test_uses_a_pr_already_read_without_a_request(self, monkeypatch):
+        calls = _api(monkeypatch, (500, "boom"))
+        assert jsm.get_pr_is_draft("o/r", 7, "t", fallback=False, pr={"draft": True}) is True
+        assert calls == []
+
+    @pytest.mark.parametrize("fallback", [True, False])
+    def test_a_failed_read_passed_in_uses_the_fallback(self, monkeypatch, fallback):
+        # pr=None is what fetch_pr returns on failure: no second request, just the fallback.
+        calls = _api(monkeypatch, (200, json.dumps({"draft": not fallback})))
+        assert jsm.get_pr_is_draft("o/r", 7, "t", fallback=fallback, pr=None) is fallback
+        assert calls == []
+
 
 class TestFetchPr:
     def test_returns_the_pr_object(self, monkeypatch):
         calls = _api(monkeypatch, (200, json.dumps({"number": 7, "draft": False})))
         assert jsm._fetch_pr("o/r", 7, "t") == {"number": 7, "draft": False}
-        assert calls == [("GET", "https://api.github.com/repos/o/r/pulls/7", "t", {})]  # no timeout kwarg
+        # Every PR read is bounded by default, not only the draft lookup.
+        assert calls == [("GET", "https://api.github.com/repos/o/r/pulls/7", "t",
+                          {"timeout": jsm._PR_LOOKUP_TIMEOUT})]
+
+    def test_timeout_can_be_overridden(self, monkeypatch):
+        calls = _api(monkeypatch, (200, json.dumps({"number": 7})))
+        jsm._fetch_pr("o/r", 7, "t", timeout=3)
+        assert calls[0][3] == {"timeout": 3}
+
+    def test_backport_enforcement_read_has_a_timeout(self, monkeypatch):
+        """enforce_backport_fixes_reference reads the PR through _fetch_pr, so it is bounded too."""
+        timeouts = []
+
+        def fake_gh_api(method, url, token, payload=None, **kwargs):
+            if method == "GET" and "/pulls/" in url:
+                timeouts.append(kwargs.get("timeout"))
+                return 200, "{}"
+            if method == "GET" and "/comments" in url:
+                return 200, "[]"
+            if method == "GET" and url.endswith("/labels"):
+                return 200, '[{"name": "backport/2025.4"}]'
+            return 201 if method == "POST" else 200, "{}"
+
+        monkeypatch.setattr(jsm, "_gh_api", fake_gh_api)
+        monkeypatch.setattr(jsm, "extract_jira_keys", lambda *a, **k: ["__NO_KEYS_FOUND__"])
+        jsm.enforce_backport_fixes_reference(
+            "title", "no reference", 7, "backport/2025.4", "scylladb/scylladb", "tok", "u:p",
+        )
+        assert timeouts == [jsm._PR_LOOKUP_TIMEOUT]
 
     @pytest.mark.parametrize("result", _FAILURES)
     def test_returns_none_on_failure(self, monkeypatch, result):

@@ -72,6 +72,51 @@ _TRANSITION_FALLBACKS: dict[str, tuple[str, str]] = {
     MERGED_TRANSITION_ID: (DONE_STATUS_NAME, DONE_TRANSITION_ID),
 }
 
+# Repositories whose changes landing on master close the linked issues as
+# "Done" instead of "Merged" (PM-365). In scylladb.git a change on master is
+# final, so there is no intermediate "Merged" state. Only master is affected:
+# backports (branch-*, promoted-to-branch-*) still go to "Merged".
+DONE_ON_MASTER_REPOS = {"scylladb/scylladb"}
+_MASTER_BRANCH = "master"
+
+
+def merged_transition_target(owner_repo: str, target_branch: str | None) -> tuple[str, str]:
+    """Return the (status name, transition id) a merged/promoted PR moves its issues to.
+
+    *target_branch* is the branch the change landed on: the PR's base branch
+    for a merge, or the suffix of a ``promoted-to-<branch>`` label. Changes on
+    master in DONE_ON_MASTER_REPOS go to "Done" (PM-365); everything else goes
+    to "Merged" (with the PM-359 fallback to "Done" in jira_status_transition).
+    """
+    repo = (owner_repo or "").strip().lower()
+    branch = (target_branch or "").strip()
+    if repo in DONE_ON_MASTER_REPOS and branch == _MASTER_BRANCH:
+        return DONE_STATUS_NAME, DONE_TRANSITION_ID
+    return MERGED_STATUS_NAME, MERGED_TRANSITION_ID
+
+
+def resolve_merged_target(
+    owner_repo: str, pr_number: int, gh_token: str, base_ref_hint: str = "",
+) -> tuple[str, str]:
+    """Return the (status name, transition id) the issues of a merged PR move to.
+
+    The one place that decides when the PR's base branch is needed and what
+    happens when it can't be read; used by the "closed" handler and by the
+    reconcile job. Only repos in DONE_ON_MASTER_REPOS depend on the branch:
+    every other repo gets "Merged" with no API call. For those repos
+    *base_ref_hint* (e.g. GITHUB_BASE_REF) is used when it is set, otherwise
+    the branch is read from the GitHub API. If that read fails the issues go
+    to "Merged", with a warning: moving them on from "Merged" to "Done" is
+    handled outside the sync.
+    """
+    if (owner_repo or "").strip().lower() not in DONE_ON_MASTER_REPOS:
+        return MERGED_STATUS_NAME, MERGED_TRANSITION_ID
+    base_ref = (base_ref_hint or "").strip() or get_pr_base_ref(owner_repo, pr_number, gh_token)
+    if not base_ref:
+        print(f"Warning: could not determine the base branch of PR #{pr_number}; "
+              f"linked issues will move to '{MERGED_STATUS_NAME}'.")
+    return merged_transition_target(owner_repo, base_ref)
+
 # Jira answers a transition id that is absent from the issue's workflow with a
 # 400 ("Transition id 'N' is not valid on issue X"). This is the only response
 # the fallback above retries on.
@@ -953,21 +998,25 @@ def _gh_api(
         return exc.code, exc.read().decode() if exc.fp else str(exc)
 
 
-# Upper bound (seconds) for the draft-state lookup, so a stalled GitHub request
-# falls back instead of hanging the review sync (PM-335).
-_PR_DRAFT_LOOKUP_TIMEOUT = 15
+# Upper bound (seconds) for every read of a PR (_fetch_pr), so a stalled GitHub
+# request makes the caller fall back instead of hanging the sync job.
+_PR_LOOKUP_TIMEOUT = 15
+
+# Default of the get_pr_* getters' *pr* argument: the PR has not been read yet,
+# so the getter reads it. It can't be None, since None is what a failed
+# fetch_pr returns, and that must reach the getter's fallback as is.
+_PR_NOT_READ = object()
 
 
-def _fetch_pr(owner_repo: str, pr_number: int, gh_token: str, timeout: float | None = None) -> dict | None:
+def _fetch_pr(owner_repo: str, pr_number: int, gh_token: str, timeout: float = _PR_LOOKUP_TIMEOUT) -> dict | None:
     """Return the PR object from ``GET /repos/{owner_repo}/pulls/{pr_number}``.
 
     Returns None, after printing the reason, when the request fails: an HTTP
     error, a network error or timeout, or a body that is not a JSON object.
     """
     url = f"https://api.github.com/repos/{owner_repo}/pulls/{pr_number}"
-    kwargs = {} if timeout is None else {"timeout": timeout}
     try:
-        code, body = _gh_api("GET", url, gh_token, **kwargs)
+        code, body = _gh_api("GET", url, gh_token, timeout=timeout)
         data = json.loads(body) if code == 200 else None
         reason = f"HTTP {code}" if code != 200 else "the response is not a JSON object"
     except (OSError, ValueError) as exc:  # URLError/TimeoutError are OSError; JSONDecodeError a ValueError
@@ -978,7 +1027,31 @@ def _fetch_pr(owner_repo: str, pr_number: int, gh_token: str, timeout: float | N
     return None
 
 
-def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bool | None) -> bool:
+def fetch_pr(owner_repo: str, pr_number: int, gh_token: str) -> dict | None:
+    """Read a PR once, to hand to several get_pr_* getters as their *pr* argument.
+
+    A caller that needs more than one field of the same PR reads it here and
+    passes the result to each getter, so the PR is fetched only once. A failed
+    read (None) is passed on as is, and each getter applies its own fallback.
+    """
+    return _fetch_pr(owner_repo, pr_number, gh_token)
+
+
+def get_pr_base_ref(owner_repo: str, pr_number: int, gh_token: str, pr: object = _PR_NOT_READ) -> str:
+    """Return the PR's base branch from the GitHub API, or "" if it can't be read (PM-365).
+
+    *pr* is the PR as read by fetch_pr; by default it is read here.
+    """
+    if pr is _PR_NOT_READ:
+        pr = _fetch_pr(owner_repo, pr_number, gh_token)
+    base = (pr or {}).get("base")
+    ref = base.get("ref") if isinstance(base, dict) else None
+    return ref if isinstance(ref, str) else ""
+
+
+def get_pr_is_draft(
+    owner_repo: str, pr_number: int, gh_token: str, fallback: bool | None, pr: object = _PR_NOT_READ,
+) -> bool:
     """Return the PR's current draft state from the GitHub API (PM-335).
 
     The event payload's ``draft`` value is the state at the moment the event
@@ -989,8 +1062,11 @@ def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bo
     ``draft`` field), *fallback* is returned: the event payload's value
     (PR_DRAFT), or None when the caller did not provide PR_DRAFT, in which case
     the PR is treated as not a draft. A GitHub hiccup never blocks the sync.
+
+    *pr* is the PR as read by fetch_pr; by default it is read here.
     """
-    pr = _fetch_pr(owner_repo, pr_number, gh_token, timeout=_PR_DRAFT_LOOKUP_TIMEOUT)
+    if pr is _PR_NOT_READ:
+        pr = _fetch_pr(owner_repo, pr_number, gh_token)
     draft = pr.get("draft") if pr is not None else None
 
     if not isinstance(draft, bool):
@@ -1012,14 +1088,18 @@ def get_pr_is_draft(owner_repo: str, pr_number: int, gh_token: str, fallback: bo
     return draft
 
 
-def get_pr_requested_reviewers(owner_repo: str, pr_number: int, gh_token: str) -> list[str] | None:
+def get_pr_requested_reviewers(
+    owner_repo: str, pr_number: int, gh_token: str, pr: object = _PR_NOT_READ,
+) -> list[str] | None:
     """Return the reviewers (user logins and team slugs) currently requested on a PR.
 
     Reads the PR from the API rather than the event payload, so the result is
     the state at the time the sync runs, not at the time the event fired.
     Returns None when the PR cannot be read; the caller decides what to do.
+    *pr* is the PR as read by fetch_pr; by default it is read here.
     """
-    pr = _fetch_pr(owner_repo, pr_number, gh_token)
+    if pr is _PR_NOT_READ:
+        pr = _fetch_pr(owner_repo, pr_number, gh_token)
     if pr is None:
         return None
     users = [u.get("login", "") for u in pr.get("requested_reviewers") or []]

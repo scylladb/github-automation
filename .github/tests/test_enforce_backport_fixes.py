@@ -63,7 +63,8 @@ class _GhRecorder:
         self._comments_json = comments_json
         self._labels_json = labels_json
 
-    def __call__(self, method, url, gh_token, payload=None):
+    def __call__(self, method, url, gh_token, payload=None, **kwargs):
+        # kwargs: the PR read passes a timeout (_fetch_pr).
         self.calls.append((method, url, payload))
         if method == "GET" and "/pulls/" in url:
             return 200, self._pr_json
@@ -382,7 +383,7 @@ def _github_issue_recorder(issue_code):
     )
     inner = rec.__call__
 
-    def call(method, url, gh_token, payload=None):
+    def call(method, url, gh_token, payload=None, **kwargs):
         if method == "GET" and "/issues/" in url and url.rsplit("/", 1)[-1].isdigit():
             rec.calls.append((method, url, payload))
             return issue_code, "{}"
