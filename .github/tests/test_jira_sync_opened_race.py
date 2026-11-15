@@ -35,7 +35,7 @@ class TestGetPrRequestedReviewers:
     def _api(self, monkeypatch, code, body):
         calls = []
 
-        def fake(method, url, token, payload=None):
+        def fake(method, url, token, payload=None, **kwargs):
             calls.append((method, url))
             return code, body
 
@@ -73,7 +73,7 @@ class TestGetPrRequestedReviewers:
         # it as unreadable and the caller falls back to "In Progress".
         from urllib.error import URLError
 
-        def boom(req):
+        def boom(req, **kwargs):
             raise URLError("name resolution failed")
 
         monkeypatch.setattr(jsm, "urlopen", boom)
@@ -82,11 +82,22 @@ class TestGetPrRequestedReviewers:
     def test_socket_error_is_none(self, monkeypatch):
         # A reset or timeout during the read is an OSError, not a URLError;
         # it must take the same fallback path.
-        def boom(req):
+        def boom(req, **kwargs):
             raise ConnectionResetError("connection reset by peer")
 
         monkeypatch.setattr(jsm, "urlopen", boom)
         assert jsm.get_pr_requested_reviewers("o/r", 7, "t") is None
+
+    def test_uses_a_pr_already_read_without_a_request(self, monkeypatch):
+        calls = self._api(monkeypatch, 500, "boom")
+        pr = {"requested_reviewers": [{"login": "alice"}], "requested_teams": []}
+        assert jsm.get_pr_requested_reviewers("o/r", 7, "t", pr=pr) == ["alice"]
+        assert calls == []
+
+    def test_a_failed_read_passed_in_is_none(self, monkeypatch):
+        calls = self._api(monkeypatch, 200, json.dumps({"requested_reviewers": [{"login": "alice"}]}))
+        assert jsm.get_pr_requested_reviewers("o/r", 7, "t", pr=None) is None
+        assert calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +107,8 @@ class TestGetPrRequestedReviewers:
 @pytest.fixture
 def opened_run(monkeypatch):
     """Stub every external step of manage_opened_gh_event and record the transition."""
-    state = {"transitions": [], "reviewer_reads": 0, "reviewers": [], "api_draft": False, "draft_fallbacks": []}
+    state = {"transitions": [], "reviewer_reads": 0, "reviewers": [], "api_draft": False, "draft_fallbacks": [],
+             "pr_reads": 0, "prs_passed": []}
 
     monkeypatch.setattr(jsl, "enforce_backport_fixes_on_body_change", lambda *a: False)
     monkeypatch.setattr(jsl, "extract_jira_keys", lambda *a: ["SCT-1"])
@@ -109,16 +121,25 @@ def opened_run(monkeypatch):
         lambda csv, name, tid, auth: state["transitions"].append((name, tid)) or [],
     )
 
-    def fake_reviewers(owner_repo, pr_number, gh_token):
+    def fake_fetch_pr(owner_repo, pr_number, gh_token):
+        # The one PR read the handler makes; the getters below get its result.
+        state["pr_reads"] += 1
+        return {"number": pr_number}
+
+    monkeypatch.setattr(jsl, "fetch_pr", fake_fetch_pr)
+
+    def fake_reviewers(owner_repo, pr_number, gh_token, pr):
         state["reviewer_reads"] += 1
+        state["prs_passed"].append(pr)
         return state["reviewers"]
 
     monkeypatch.setattr(jsl, "get_pr_requested_reviewers", fake_reviewers)
 
-    def fake_is_draft(owner_repo, pr_number, gh_token, fallback):
+    def fake_is_draft(owner_repo, pr_number, gh_token, fallback, pr):
         # Stands in for the API read (PM-335): returns the PR's *current* draft
         # state and records the payload value handed over as the fallback.
         state["draft_fallbacks"].append(fallback)
+        state["prs_passed"].append(pr)
         return state["api_draft"]
 
     monkeypatch.setattr(jsl, "get_pr_is_draft", fake_is_draft)
@@ -169,6 +190,15 @@ class TestOpenedTransitionTarget:
     def test_unreadable_reviewers_falls_back_to_in_progress(self, opened_run, capsys):
         assert opened_run("opened", None) == [("In Progress", "111")]
         assert "::warning::Could not read the requested reviewers" in capsys.readouterr().out
+
+    def test_draft_state_and_reviewers_come_from_one_pr_read(self, opened_run):
+        assert opened_run("opened", ["alice"]) == [("In Review", "121")]
+        assert opened_run.state["pr_reads"] == 1
+        assert opened_run.state["prs_passed"] == [{"number": 7}, {"number": 7}]
+
+    def test_edited_does_not_read_the_pr(self, opened_run):
+        opened_run("edited", ["alice"])
+        assert opened_run.state["pr_reads"] == 0
 
 
 class TestOpenedCliWrapper:
