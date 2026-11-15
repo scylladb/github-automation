@@ -55,6 +55,16 @@ _last_search_at = 0.0
 # How many times a page GitHub marks as incomplete (search timed out) is retried.
 _SEARCH_INCOMPLETE_RETRIES = 2
 
+# The 30/min search quota is per user, so other jobs using the same token can
+# use it up. When GitHub rejects a search for that, wait for the one-minute
+# window to reset and retry instead of skipping the repository.
+_SEARCH_RATE_LIMIT_RETRIES = 2
+_SEARCH_RATE_LIMIT_WAIT = 61
+
+
+def _is_rate_limited(code: int, body: str) -> bool:
+    return code in (403, 429) and "rate limit" in body.lower()
+
 
 def _throttle_search() -> None:
     global _last_search_at
@@ -75,13 +85,19 @@ def _search_merged_prs(owner_repo: str, since: datetime, gh_token: str) -> list[
         url = (f"https://api.github.com/search/issues?q={quote(query)}"
                f"&sort=created&order=asc&per_page=100&page={page}")
         for _attempt in range(_SEARCH_INCOMPLETE_RETRIES + 1):
-            _throttle_search()
-            try:
-                code, body = _gh_api("GET", url, gh_token)
-                data = json.loads(body) if code == 200 else None
-            except (URLError, ValueError) as exc:
-                code, data = 0, None
-                body = str(exc)
+            for rate_limit_attempt in range(_SEARCH_RATE_LIMIT_RETRIES + 1):
+                _throttle_search()
+                try:
+                    code, body = _gh_api("GET", url, gh_token)
+                    data = json.loads(body) if code == 200 else None
+                except (URLError, ValueError) as exc:
+                    code, data = 0, None
+                    body = str(exc)
+                if rate_limit_attempt == _SEARCH_RATE_LIMIT_RETRIES or not _is_rate_limited(code, body):
+                    break
+                print(f"Warning: search rate limit hit for {owner_repo} (page {page}), "
+                      f"retrying in {_SEARCH_RATE_LIMIT_WAIT}s.")
+                time.sleep(_SEARCH_RATE_LIMIT_WAIT)
             if not isinstance(data, dict):
                 print(f"Error: PR search for {owner_repo} failed (page {page}, HTTP {code}): {body[:300]}")
                 return None
