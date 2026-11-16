@@ -17,9 +17,9 @@ import argparse
 from collections.abc import Callable
 
 from jira_sync_modules import (
-    DONE_ON_MASTER_REPOS,
     merged_transition_target,
-    get_pr_base_ref,
+    resolve_merged_target,
+    fetch_pr,
     extract_jira_keys,
     add_label_to_jira_issue,
     extract_jira_issue_details,
@@ -55,6 +55,9 @@ _EXCLUDED_LABELS: tuple[str, ...] = (
 def _is_excluded_label(label: str) -> bool:
     """Return True if *label* should be excluded from Jira sync."""
     return label.startswith(_EXCLUDED_LABELS)
+
+# A promoted-to-<branch> label closes the linked issues: the change landed on <branch>.
+_PROMOTED_LABEL_PREFIX = "promoted-to-"
 
 def manage_labeled_gh_event(
     pr_title: str,
@@ -117,7 +120,7 @@ def manage_labeled_gh_event(
     # the parent issue (e.g., "Fixes: SCYLLADB-1114"). Scanning commits would cause
     # the parent issue to be incorrectly transitioned to Done. (RELENG-464)
     _is_backport_pr = bool(_BACKPORT_TITLE_RE.match(pr_title))
-    if _is_backport_pr and triggering_label.startswith("promoted-to-"):
+    if _is_backport_pr and triggering_label.startswith(_PROMOTED_LABEL_PREFIX):
         print("Backport PR with promoted-to-* label: scanning PR body only (skipping commit messages)")
         keys = extract_jira_keys(pr_title, pr_body, jira_auth)
     else:
@@ -189,7 +192,7 @@ def manage_labeled_gh_event(
     print("\n" + "=" * 60)
     print(" Step 6a / add_comment_to_jira (promoted-to-*)")
     print("=" * 60)
-    if triggering_label.startswith("promoted-to-"):
+    if triggering_label.startswith(_PROMOTED_LABEL_PREFIX):
         pr_url = f"https://github.com/{owner_repo}/pull/{pr_number}"
         add_comment_to_jira(
             jira_keys_json,
@@ -198,20 +201,16 @@ def manage_labeled_gh_event(
             link_text=pr_title,
             link_url=pr_url,
         )
-    else:
-        print(f"SKIPPED: triggering_label is '{triggering_label}'"
-              f" (requires label starting with 'promoted-to-')")
 
-    promoted_branch = triggering_label[len("promoted-to-"):] if triggering_label.startswith("promoted-to-") else ""
-    target_name, target_id = merged_transition_target(owner_repo, promoted_branch)
-    print("\n" + "=" * 60)
-    print(f" Step 6b / jira_status_transition -> {target_name}")
-    print("=" * 60)
-    if triggering_label.startswith("promoted-to-"):
+        target_name, target_id = merged_transition_target(
+            owner_repo, triggering_label.removeprefix(_PROMOTED_LABEL_PREFIX))
+        print("\n" + "=" * 60)
+        print(f" Step 6b / jira_status_transition -> {target_name}")
+        print("=" * 60)
         jira_status_transition(csv_content, target_name, target_id, jira_auth)
     else:
-        print(f"SKIPPED: triggering_label is '{triggering_label}'"
-              f" (requires label starting with 'promoted-to-')")
+        print(f"SKIPPED steps 6a and 6b: triggering_label is '{triggering_label}'"
+              f" (requires label starting with '{_PROMOTED_LABEL_PREFIX}')")
 
     print("\n" + "=" * 60)
     print(" manage_labeled_gh_event completed successfully")
@@ -461,8 +460,10 @@ def manage_closed_gh_event(
       4.  add_comment_to_jira (merged: "Closed via PR merge"; not merged: "PR closed without merge")
       5.  if merged: jira_status_transition -> "Merged" (transition id 7),
           falling back to "Done" for issues whose workflow has no "Merged" (PM-359).
-          A PR merged into master in scylladb/scylladb goes to "Done" (PM-365);
-          *base_ref* is the PR's base branch ("" keeps "Merged").
+          A PR merged into master in scylladb/scylladb goes to "Done" (PM-365).
+          *base_ref* is the PR's base branch when the caller knows it; for
+          scylladb/scylladb an empty one is read from the GitHub API, and only
+          when some linked issue is still open (see resolve_merged_target).
     """
     print("=" * 60)
     print(" manage_closed_gh_event  input parameters")
@@ -548,14 +549,19 @@ def manage_closed_gh_event(
             )
 
     # --- Step 5: transition to Merged, or Done for scylladb master (merged PRs only) ---
-    target_name, target_id = merged_transition_target(owner_repo, base_ref)
+    # The target is resolved only when something can move: resolving it may
+    # read the base branch from the GitHub API.
     print("\n" + "=" * 60)
-    print(f" Step 5 / jira_status_transition -> {target_name}")
+    print(" Step 5 / jira_status_transition")
     print("=" * 60)
-    if pr_merged:
-        jira_status_transition(csv_content, target_name, target_id, jira_auth)
-    else:
+    if not pr_merged:
         print("SKIPPED: PR was closed without merge")
+    elif not commentable_keys:
+        print("SKIPPED: all linked issues are already in a closed state")
+    else:
+        target_name, target_id = resolve_merged_target(owner_repo, pr_number, gh_token, base_ref)
+        print(f"Target: {target_name}")
+        jira_status_transition(csv_content, target_name, target_id, jira_auth)
 
     print("\n" + "=" * 60)
     print(" manage_closed_gh_event completed successfully")
@@ -570,9 +576,8 @@ def _run_manage_closed_gh_event() -> None:
 
     The base branch (PM-365) comes from GITHUB_BASE_REF, which the runner sets
     for pull_request / pull_request_target events, so no caller workflow needs
-    a new input. It only matters for a merged PR in DONE_ON_MASTER_REPOS; there,
-    if GITHUB_BASE_REF is empty, it is read from the GitHub API, and if that
-    fails too the issue goes to "Merged" as before.
+    a new input. If it is empty, manage_closed_gh_event reads it from the
+    GitHub API only where it is needed (see resolve_merged_target).
     """
     pr_title = os.environ.get("PR_TITLE", "")
     pr_body = os.environ.get("PR_BODY", "")
@@ -607,11 +612,6 @@ def _run_manage_closed_gh_event() -> None:
         sys.exit(1)
 
     base_ref = os.environ.get("GITHUB_BASE_REF", "").strip()
-    if not base_ref and pr_merged and owner_repo.strip().lower() in DONE_ON_MASTER_REPOS:
-        base_ref = get_pr_base_ref(owner_repo, pr_number, gh_token)
-        if not base_ref:
-            print(f"Warning: could not determine the base branch of PR #{pr_number}; "
-                  "linked issues will move to 'Merged'.")
 
     manage_closed_gh_event(
         pr_title, pr_body, pr_number, pr_merged,
@@ -725,12 +725,15 @@ def manage_opened_gh_event(
     # state is read from the API, as in manage_review_gh_event, since the
     # payload's value can be stale by the time a delayed run gets here. And
     # 'edited' keeps the plain "In Progress" target, which the guard already
-    # refuses to apply to an issue that is "In Review".
+    # refuses to apply to an issue that is "In Review". The PR is read once and
+    # both the draft state and the reviewers come from that one read.
     target_name, target_id = "In Progress", "111"
-    if caller_action == "opened" and get_pr_is_draft(owner_repo, pr_number, gh_token, fallback=pr_is_draft):
+    pr = fetch_pr(owner_repo, pr_number, gh_token) if caller_action == "opened" else None
+    if caller_action == "opened" and get_pr_is_draft(owner_repo, pr_number, gh_token,
+                                                     fallback=pr_is_draft, pr=pr):
         print(f"PR #{pr_number} is a draft; keeping the 'In Progress' target (PM-335).")
     elif caller_action == "opened":
-        reviewers = get_pr_requested_reviewers(owner_repo, pr_number, gh_token)
+        reviewers = get_pr_requested_reviewers(owner_repo, pr_number, gh_token, pr=pr)
         if reviewers is None:
             print("::warning::Could not read the requested reviewers of "
                   f"PR #{pr_number}; keeping the 'In Progress' target. If a "
@@ -976,7 +979,7 @@ def debug_sync_context():
     print(f"triggering-label='{label}'")
     print(f"repository='{repository}'")
 
-    if label.startswith('promoted-to-'):
+    if label.startswith(_PROMOTED_LABEL_PREFIX):
         print(f"Try to close Jira issue ({label} label added)")
 
     print("~~~~~~~~~~~ GitHub Context ~~~~~~~~~~~")
