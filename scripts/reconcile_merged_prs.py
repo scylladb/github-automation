@@ -14,6 +14,9 @@ closed state and whose status has not changed since the merge. An issue whose
 status changed after the merge (e.g. reopened by hand) is left alone, and so
 are the issues of a PR whose title or body was edited after the merge.
 
+The target status is the one the "closed" handler uses: "Done" for a PR merged
+into master in scylladb/scylladb (PM-365), "Merged" everywhere else.
+
 Only the Jira side is reconciled (comment + transition); PR labels are not.
 """
 
@@ -29,7 +32,6 @@ from urllib.error import URLError
 from jira_sync_logic import extract_closed_pr_jira_keys
 from jira_sync_modules import (
     MERGED_STATUS_NAME,
-    MERGED_TRANSITION_ID,
     _gh_api,
     _plan_transitions,
     add_comment_to_jira,
@@ -39,6 +41,7 @@ from jira_sync_modules import (
     get_sync_failures,
     jira_status_transition,
     record_sync_failure,
+    resolve_merged_target,
     status_changed_since,
 )
 
@@ -171,7 +174,8 @@ def reconcile_pr(
     """Close the Jira issues of one merged PR that the sync missed.
 
     Status changes made by *sync_account_id* (the account the sync runs as) do
-    not count as a decision to keep the issue open.
+    not count as a decision to keep the issue open. The issues move to "Done"
+    for a PR merged into master in scylladb/scylladb, else to "Merged" (PM-365).
     Returns the keys it closed (with dry_run: the keys it would close).
     """
     pr_number = pr["number"]
@@ -215,6 +219,8 @@ def reconcile_pr(
     # Keep only the issues jira_status_transition would actually move: a status
     # named like a closed state (e.g. "Merged") whose category is not "done" is
     # left alone by the transition, so it must not be reported as missed either.
+    # This filter does not depend on the target: both targets ("Merged" and
+    # "Done") are closed states, and every closed state is left alone.
     to_transition = {row[0] for row in _plan_transitions(details_csv, MERGED_STATUS_NAME)[0]}
     missed = [key for key in missed if key in to_transition]
     if not missed:
@@ -231,7 +237,13 @@ def reconcile_pr(
               "not reconciling its Jira issues - check them by hand.")
         return []
 
-    print(f"MISSED: {owner_repo}#{pr_number} (merged {merged_at.isoformat()}) left open: {missed}")
+    # Same target and the same rule as the "closed" handler (PM-365). It is
+    # resolved only now, when some issue is known to move: the search results
+    # carry no base branch, so for scylladb/scylladb it is read from the API.
+    target_name, target_id = resolve_merged_target(owner_repo, pr_number, gh_token)
+
+    print(f"MISSED: {owner_repo}#{pr_number} (merged {merged_at.isoformat()}) left open: {missed} "
+          f"-> {target_name}")
     if dry_run:
         print("Dry run: not changing Jira.")
         return missed
@@ -239,7 +251,7 @@ def reconcile_pr(
     # Transition first and comment only on the issues that actually closed: an
     # issue whose transition failed is retried by the next run, and commenting
     # before the transition would add a new comment on every retry.
-    closed = jira_status_transition(details_csv, MERGED_STATUS_NAME, MERGED_TRANSITION_ID, jira_auth)
+    closed = jira_status_transition(details_csv, target_name, target_id, jira_auth)
     if closed:
         add_comment_to_jira(
             json.dumps(closed),
