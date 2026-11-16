@@ -4,10 +4,13 @@ change that lands on master moves the linked Jira issues to "Done" instead of
 "Merged". Backports and every other repository keep going to "Merged".
 
   - merged_transition_target: the (repo, branch) -> target rule,
-  - manage_closed_gh_event: a PR merged into master vs. other base branches,
+  - resolve_merged_target: when the base branch is read from the GitHub API,
+    and the "Merged" fallback when it can't be read (shared by the closed
+    handler and the reconcile job),
+  - manage_closed_gh_event: a PR merged into master vs. other base branches;
+    the base branch is read only when some linked issue can still move,
   - manage_labeled_gh_event: promoted-to-master vs. promoted-to-branch-*,
-  - _run_manage_closed_gh_event: the base branch comes from GITHUB_BASE_REF,
-    with a GitHub API fallback only where it matters,
+  - _run_manage_closed_gh_event: passes GITHUB_BASE_REF on, with no API call,
   - get_pr_base_ref: reads base.ref and returns "" on any failure,
   - the real jira_status_transition POSTs transition 141 (Done), not 7,
   - reconcile_merged_prs.reconcile_pr: the nightly safety net uses the same
@@ -92,19 +95,71 @@ class TestMergedTransitionTarget:
 
 
 # ---------------------------------------------------------------------------
+# resolve_merged_target: one rule for the closed handler and the reconcile job
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def base_ref_api(monkeypatch):
+    """Mock jsm.get_pr_base_ref (the GitHub API read); record each lookup.
+
+    Set ``base_ref_api.answer`` to the base branch the API returns ("" = failure).
+    """
+    def fake_get_pr_base_ref(owner_repo, pr_number, gh_token):
+        """Record the lookup and return the configured base branch."""
+        fake_get_pr_base_ref.lookups.append((owner_repo, pr_number, gh_token))
+        return fake_get_pr_base_ref.answer
+
+    fake_get_pr_base_ref.lookups = []
+    fake_get_pr_base_ref.answer = "master"
+    monkeypatch.setattr(jsm, "get_pr_base_ref", fake_get_pr_base_ref)
+    return fake_get_pr_base_ref
+
+
+class TestResolveMergedTarget:
+    def test_scylladb_reads_the_base_branch(self, base_ref_api):
+        assert jsm.resolve_merged_target(SCYLLADB, 7, "gh") == DONE
+        assert base_ref_api.lookups == [(SCYLLADB, 7, "gh")]
+
+    def test_scylladb_backport_from_the_api_goes_to_merged(self, base_ref_api):
+        base_ref_api.answer = "branch-2026.4"
+        assert jsm.resolve_merged_target(SCYLLADB, 7, "gh") == MERGED
+
+    @pytest.mark.parametrize("hint, expected", [("master", DONE), ("branch-2026.4", MERGED), (" master ", DONE)])
+    def test_a_known_base_branch_needs_no_api_call(self, base_ref_api, hint, expected):
+        assert jsm.resolve_merged_target(SCYLLADB, 7, "gh", base_ref_hint=hint) == expected
+        assert base_ref_api.lookups == []
+
+    @pytest.mark.parametrize("repo", ["scylladb/staging", "scylladb/scylla-cluster-tests", ""])
+    def test_other_repos_go_to_merged_without_an_api_call(self, base_ref_api, repo):
+        assert jsm.resolve_merged_target(repo, 7, "gh") == MERGED
+        assert base_ref_api.lookups == []
+
+    def test_unreadable_base_branch_falls_back_to_merged(self, base_ref_api, capsys):
+        base_ref_api.answer = ""
+        assert jsm.resolve_merged_target(SCYLLADB, 7, "gh") == MERGED
+        assert "linked issues will move to 'Merged'" in capsys.readouterr().out
+        assert jsm.get_sync_failures() == []
+
+
+# ---------------------------------------------------------------------------
 # Handler fixtures: mock every step and record the transition that is made
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def sync_steps(monkeypatch):
-    """Mock the Jira/GitHub steps of the closed and labeled handlers."""
-    calls = {"transitions": [], "comments": []}
-    csv = _details_csv(("SCYLLADB-1", "In Review"))
+def sync_steps(monkeypatch, base_ref_api):
+    """Mock the Jira/GitHub steps of the closed and labeled handlers.
+
+    ``sync_steps["status"]`` is the status of SCYLLADB-1 in the issue details;
+    ``sync_steps["lookups"]`` lists the base-branch API reads.
+    """
+    calls = {"transitions": [], "comments": [], "status": "In Review", "lookups": base_ref_api.lookups,
+             "api": base_ref_api}
     monkeypatch.setattr(jsl, "extract_closed_pr_jira_keys", lambda *a, **k: ["SCYLLADB-1"])
     monkeypatch.setattr(jsl, "extract_jira_keys", lambda *a, **k: ["SCYLLADB-1"])
     monkeypatch.setattr(jsl, "add_pr_weblink_to_jira", lambda *a, **k: None)
     monkeypatch.setattr(jsl, "add_label_to_jira_issue", lambda *a, **k: [])
-    monkeypatch.setattr(jsl, "extract_jira_issue_details", lambda *a, **k: (csv, "", []))
+    monkeypatch.setattr(jsl, "extract_jira_issue_details",
+                        lambda *a, **k: (_details_csv(("SCYLLADB-1", calls["status"])), "", []))
     monkeypatch.setattr(jsl, "apply_jira_labels_to_pr", lambda *a, **k: None)
     monkeypatch.setattr(jsl, "add_comment_to_jira",
                         lambda keys, text, auth, **k: calls["comments"].append(text))
@@ -132,14 +187,11 @@ class TestClosedEvent:
         _closed(SCYLLADB, base_ref="master")
         assert sync_steps["comments"] == ["Closed via PR merge "]
 
-    @pytest.mark.parametrize("base_ref", ["branch-2026.4", "next", ""])
+    @pytest.mark.parametrize("base_ref", ["branch-2026.4", "next"])
     def test_other_scylladb_branches_go_to_merged(self, sync_steps, base_ref):
         _closed(SCYLLADB, base_ref=base_ref)
         assert sync_steps["transitions"] == [MERGED]
-
-    def test_default_base_ref_keeps_merged(self, sync_steps):
-        _closed(SCYLLADB)  # callers that don't pass base_ref
-        assert sync_steps["transitions"] == [MERGED]
+        assert sync_steps["lookups"] == []
 
     @pytest.mark.parametrize("repo", ["scylladb/staging", "scylladb/scylla-manager"])
     def test_other_repos_merged_into_master_go_to_merged(self, sync_steps, repo):
@@ -150,6 +202,48 @@ class TestClosedEvent:
         _closed(SCYLLADB, merged=False, base_ref="master")
         assert sync_steps["transitions"] == []
         assert sync_steps["comments"] == ["PR closed without merge "]
+
+
+class TestClosedEventLazyBaseRef:
+    """Without a base branch, the API is read only when an issue can still move."""
+
+    def test_missing_base_ref_is_read_from_the_api(self, sync_steps):
+        _closed(SCYLLADB)  # callers that don't pass base_ref, or GITHUB_BASE_REF unset
+        assert sync_steps["lookups"] == [(SCYLLADB, 7, "gh")]
+        assert sync_steps["transitions"] == [DONE]
+
+    def test_backport_read_from_the_api_goes_to_merged(self, sync_steps):
+        sync_steps["api"].answer = "branch-2026.4"
+        _closed(SCYLLADB)
+        assert sync_steps["transitions"] == [MERGED]
+
+    def test_unreadable_base_ref_falls_back_to_merged(self, sync_steps, capsys):
+        sync_steps["api"].answer = ""
+        _closed(SCYLLADB)
+        assert sync_steps["transitions"] == [MERGED]
+        assert "linked issues will move to 'Merged'" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("status", ["Merged", "Done", "Won't Fix", "Duplicate"])
+    def test_no_lookup_when_every_issue_is_already_closed(self, sync_steps, status):
+        sync_steps["status"] = status
+        _closed(SCYLLADB)
+        assert sync_steps["lookups"] == []
+        assert sync_steps["transitions"] == []
+
+    def test_no_lookup_without_jira_keys(self, monkeypatch, sync_steps):
+        monkeypatch.setattr(jsl, "extract_closed_pr_jira_keys", lambda *a, **k: ["__NO_KEYS_FOUND__"])
+        _closed(SCYLLADB)
+        assert sync_steps["lookups"] == []
+        assert sync_steps["transitions"] == []
+
+    def test_no_lookup_for_a_pr_closed_without_merge(self, sync_steps):
+        _closed(SCYLLADB, merged=False)
+        assert sync_steps["lookups"] == []
+
+    def test_no_lookup_in_other_repos(self, sync_steps):
+        _closed("scylladb/scylla-manager")
+        assert sync_steps["lookups"] == []
+        assert sync_steps["transitions"] == [MERGED]
 
 
 class TestLabeledEvent:
@@ -171,6 +265,16 @@ class TestLabeledEvent:
     def test_non_promoted_label_makes_no_transition(self, sync_steps):
         _labeled(SCYLLADB, "area/build")
         assert sync_steps["transitions"] == []
+        assert sync_steps["comments"] == []
+
+    @pytest.mark.parametrize("label", ["xpromoted-to-master", "promoted-master", "promoted_to_master"])
+    def test_label_must_start_with_the_full_prefix(self, sync_steps, label):
+        _labeled(SCYLLADB, label)
+        assert sync_steps["transitions"] == []
+
+    def test_labels_never_read_the_base_branch(self, sync_steps):
+        _labeled(SCYLLADB, "promoted-to-master")
+        assert sync_steps["lookups"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +282,7 @@ class TestLabeledEvent:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def closed_env(monkeypatch):
+def closed_env(monkeypatch, base_ref_api):
     """Set the wrapper's env vars; capture the base_ref it passes and any API lookup."""
     for name, value in {
         "PR_TITLE": "PR title", "PR_BODY": "Fixes: SCYLLADB-1", "PR_NUMBER": "7",
@@ -188,46 +292,25 @@ def closed_env(monkeypatch):
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
 
-    seen = {"lookups": []}
-
-    def fake_get_pr_base_ref(owner_repo, pr_number, gh_token):
-        """Record the lookup and return the base branch the test configured."""
-        seen["lookups"].append((owner_repo, pr_number, gh_token))
-        return seen.get("api_base_ref", "")
-
-    monkeypatch.setattr(jsl, "get_pr_base_ref", fake_get_pr_base_ref)
+    seen = {"lookups": base_ref_api.lookups}
     monkeypatch.setattr(jsl, "manage_closed_gh_event",
                         lambda *a, **kw: seen.__setitem__("base_ref", kw.get("base_ref")))
     return seen
 
 
 class TestRunManageClosedBaseRef:
-    def test_github_base_ref_is_used_without_an_api_call(self, monkeypatch, closed_env):
-        monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    @pytest.mark.parametrize("env, expected", [("master", "master"), (" branch-2026.4 \n", "branch-2026.4")])
+    def test_github_base_ref_is_passed_on(self, monkeypatch, closed_env, env, expected):
+        monkeypatch.setenv("GITHUB_BASE_REF", env)
         jsl._run_manage_closed_gh_event()
-        assert closed_env["base_ref"] == "master"
+        assert closed_env["base_ref"] == expected
         assert closed_env["lookups"] == []
 
-    def test_missing_base_ref_is_read_from_the_api(self, closed_env):
-        closed_env["api_base_ref"] = "master"
-        jsl._run_manage_closed_gh_event()
-        assert closed_env["lookups"] == [(SCYLLADB, 7, "gh")]
-        assert closed_env["base_ref"] == "master"
-
-    def test_api_failure_keeps_merged(self, closed_env, capsys):
+    def test_missing_base_ref_is_left_to_the_handler(self, closed_env):
+        # The wrapper makes no API call: the handler reads the branch only if
+        # some issue can still move (TestClosedEventLazyBaseRef).
         jsl._run_manage_closed_gh_event()
         assert closed_env["base_ref"] == ""
-        assert "linked issues will move to 'Merged'" in capsys.readouterr().out
-
-    def test_other_repos_never_call_the_api(self, monkeypatch, closed_env):
-        monkeypatch.setenv("OWNER_REPO", "scylladb/scylla-manager")
-        jsl._run_manage_closed_gh_event()
-        assert closed_env["lookups"] == []
-        assert closed_env["base_ref"] == ""
-
-    def test_unmerged_pr_never_calls_the_api(self, monkeypatch, closed_env):
-        monkeypatch.setenv("PR_MERGED", "false")
-        jsl._run_manage_closed_gh_event()
         assert closed_env["lookups"] == []
 
 
@@ -255,7 +338,13 @@ class TestGetPrBaseRef:
         calls = _api(monkeypatch, (200, json.dumps({"base": {"ref": "master"}})))
         assert jsm.get_pr_base_ref(SCYLLADB, 7, "gh") == "master"
         assert calls == [("GET", "https://api.github.com/repos/scylladb/scylladb/pulls/7",
-                          {"timeout": jsm._PR_DRAFT_LOOKUP_TIMEOUT})]
+                          {"timeout": jsm._PR_LOOKUP_TIMEOUT})]
+
+    def test_uses_a_pr_already_read_without_a_request(self, monkeypatch):
+        calls = _api(monkeypatch, (500, "boom"))
+        assert jsm.get_pr_base_ref(SCYLLADB, 7, "gh", pr={"base": {"ref": "branch-2026.4"}}) == "branch-2026.4"
+        assert jsm.get_pr_base_ref(SCYLLADB, 7, "gh", pr=None) == ""   # a failed fetch_pr
+        assert calls == []
 
     @pytest.mark.parametrize("result", [
         (404, '{"message": "Not Found"}'),
@@ -327,33 +416,28 @@ RECONCILE_PR = {
 
 
 @pytest.fixture
-def reconcile(monkeypatch):
+def reconcile(monkeypatch, base_ref_api):
     """Mock the lookups of reconcile_pr: SCYLLADB-1 was missed by the sync.
 
-    Returns a runner taking (repo, base_ref, status, dry_run, real_transition);
-    it records the base-branch lookups, the transitions and the POSTed ids.
+    Returns a runner taking (repo, base_ref, status, dry_run, real_transition,
+    edited); it records the base-branch lookups, the transitions and the
+    POSTed ids.
     """
-    seen = {"lookups": [], "transitions": [], "posts": []}
+    seen = {"lookups": base_ref_api.lookups, "transitions": [], "posts": []}
     monkeypatch.setattr(rmp, "extract_closed_pr_jira_keys", lambda *a: ["SCYLLADB-1"])
     monkeypatch.setattr(rmp, "get_issue_status_category", lambda key, auth: (200, "indeterminate"))
     monkeypatch.setattr(rmp, "status_changed_since", lambda *a, **kw: False)
-    monkeypatch.setattr(rmp, "_edited_after", lambda *a: False)
     monkeypatch.setattr(rmp, "add_comment_to_jira", lambda *a, **kw: None)
     monkeypatch.setattr(jsm, "_jira_put", lambda *a: (204, ""))
     monkeypatch.setattr(jsm, "_post_transition",
                         lambda key, tid, auth: seen["posts"].append((key, tid)) or (204, ""))
 
-    def run(repo, base_ref, status="In Review", dry_run=False, real_transition=False):
+    def run(repo, base_ref, status="In Review", dry_run=False, real_transition=False, edited=False):
         """Reconcile PR #7 of *repo*, merged into *base_ref*; return its result."""
         csv = _details_csv(("SCYLLADB-1", status))
         monkeypatch.setattr(rmp, "extract_jira_issue_details", lambda *a: (csv, "", []))
-
-        def fake_base_ref(owner_repo, pr_number, gh_token):
-            """Record the lookup and return *base_ref*."""
-            seen["lookups"].append((owner_repo, pr_number, gh_token))
-            return base_ref
-
-        monkeypatch.setattr(rmp, "get_pr_base_ref", fake_base_ref)
+        monkeypatch.setattr(rmp, "_edited_after", lambda *a: edited)
+        base_ref_api.answer = base_ref
         if not real_transition:
             def fake_transition(csv_text, name, tid, auth):
                 """Record the transition and report every planned issue as moved."""
@@ -384,17 +468,27 @@ class TestReconcile:
         assert reconcile.seen["transitions"] == [MERGED]
         assert reconcile.seen["lookups"] == []
 
-    def test_unknown_base_branch_is_retried_next_run(self, reconcile):
-        assert reconcile(SCYLLADB, "") == []
-        assert reconcile.seen["transitions"] == []
-        assert jsm.get_sync_failures() == [f"{SCYLLADB}#7: could not read the base branch"]
+    def test_unknown_base_branch_falls_back_to_merged(self, reconcile, capsys):
+        # Same policy as the closed handler (resolve_merged_target).
+        assert reconcile(SCYLLADB, "") == ["SCYLLADB-1"]
+        assert reconcile.seen["transitions"] == [MERGED]
+        assert "linked issues will move to 'Merged'" in capsys.readouterr().out
+        assert jsm.get_sync_failures() == []
 
-    def test_dry_run_reports_without_transition(self, reconcile):
+    def test_dry_run_reports_without_transition(self, reconcile, capsys):
         assert reconcile(SCYLLADB, "master", dry_run=True) == ["SCYLLADB-1"]
         assert reconcile.seen["transitions"] == []
+        assert "-> Done" in capsys.readouterr().out
 
-    def test_issue_already_merged_is_left_alone(self, reconcile):
+    def test_issue_already_merged_is_left_alone_without_a_lookup(self, reconcile):
+        # The base branch is read only after the filtering that can drop every issue.
         assert reconcile(SCYLLADB, "master", status="Merged") == []
+        assert reconcile.seen["transitions"] == []
+        assert reconcile.seen["lookups"] == []
+
+    def test_pr_edited_after_merge_makes_no_lookup(self, reconcile):
+        assert reconcile(SCYLLADB, "master", edited=True) == []
+        assert reconcile.seen["lookups"] == []
         assert reconcile.seen["transitions"] == []
 
     def test_real_transition_posts_done_for_master(self, reconcile):

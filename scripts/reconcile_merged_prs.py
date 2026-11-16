@@ -31,20 +31,17 @@ from urllib.error import URLError
 
 from jira_sync_logic import extract_closed_pr_jira_keys
 from jira_sync_modules import (
-    DONE_ON_MASTER_REPOS,
     MERGED_STATUS_NAME,
-    MERGED_TRANSITION_ID,
     _gh_api,
     _plan_transitions,
     add_comment_to_jira,
     extract_jira_issue_details,
     get_issue_status_category,
     get_jira_account_id,
-    get_pr_base_ref,
     get_sync_failures,
     jira_status_transition,
-    merged_transition_target,
     record_sync_failure,
+    resolve_merged_target,
     status_changed_since,
 )
 
@@ -60,6 +57,16 @@ _last_search_at = 0.0
 
 # How many times a page GitHub marks as incomplete (search timed out) is retried.
 _SEARCH_INCOMPLETE_RETRIES = 2
+
+# The 30/min search quota is per user, so other jobs using the same token can
+# use it up. When GitHub rejects a search for that, wait for the one-minute
+# window to reset and retry instead of skipping the repository.
+_SEARCH_RATE_LIMIT_RETRIES = 2
+_SEARCH_RATE_LIMIT_WAIT = 61
+
+
+def _is_rate_limited(code: int, body: str) -> bool:
+    return code in (403, 429) and "rate limit" in body.lower()
 
 
 def _throttle_search() -> None:
@@ -81,13 +88,19 @@ def _search_merged_prs(owner_repo: str, since: datetime, gh_token: str) -> list[
         url = (f"https://api.github.com/search/issues?q={quote(query)}"
                f"&sort=created&order=asc&per_page=100&page={page}")
         for _attempt in range(_SEARCH_INCOMPLETE_RETRIES + 1):
-            _throttle_search()
-            try:
-                code, body = _gh_api("GET", url, gh_token)
-                data = json.loads(body) if code == 200 else None
-            except (URLError, ValueError) as exc:
-                code, data = 0, None
-                body = str(exc)
+            for rate_limit_attempt in range(_SEARCH_RATE_LIMIT_RETRIES + 1):
+                _throttle_search()
+                try:
+                    code, body = _gh_api("GET", url, gh_token)
+                    data = json.loads(body) if code == 200 else None
+                except (URLError, ValueError) as exc:
+                    code, data = 0, None
+                    body = str(exc)
+                if rate_limit_attempt == _SEARCH_RATE_LIMIT_RETRIES or not _is_rate_limited(code, body):
+                    break
+                print(f"Warning: search rate limit hit for {owner_repo} (page {page}), "
+                      f"retrying in {_SEARCH_RATE_LIMIT_WAIT}s.")
+                time.sleep(_SEARCH_RATE_LIMIT_WAIT)
             if not isinstance(data, dict):
                 print(f"Error: PR search for {owner_repo} failed (page {page}, HTTP {code}): {body[:300]}")
                 return None
@@ -200,24 +213,15 @@ def reconcile_pr(
     if not missed:
         return []
 
-    # Same target as the "closed" handler (PM-365). The search results carry no
-    # base branch, so read it only where the branch decides the target.
-    target_name, target_id = MERGED_STATUS_NAME, MERGED_TRANSITION_ID
-    if owner_repo.strip().lower() in DONE_ON_MASTER_REPOS:
-        base_ref = get_pr_base_ref(owner_repo, pr_number, gh_token)
-        if not base_ref:
-            # Guessing "Merged" would be wrong for a master merge: retry next run.
-            record_sync_failure(f"{owner_repo}#{pr_number}: could not read the base branch")
-            return []
-        target_name, target_id = merged_transition_target(owner_repo, base_ref)
-
     details_csv, _, details_failed = extract_jira_issue_details(json.dumps(missed), jira_auth)
     if details_failed:
         record_sync_failure(f"{owner_repo}#{pr_number}: could not read the details of {details_failed}")
     # Keep only the issues jira_status_transition would actually move: a status
     # named like a closed state (e.g. "Merged") whose category is not "done" is
     # left alone by the transition, so it must not be reported as missed either.
-    to_transition = {row[0] for row in _plan_transitions(details_csv, target_name)[0]}
+    # This filter does not depend on the target: both targets ("Merged" and
+    # "Done") are closed states, and every closed state is left alone.
+    to_transition = {row[0] for row in _plan_transitions(details_csv, MERGED_STATUS_NAME)[0]}
     missed = [key for key in missed if key in to_transition]
     if not missed:
         return []
@@ -233,7 +237,13 @@ def reconcile_pr(
               "not reconciling its Jira issues - check them by hand.")
         return []
 
-    print(f"MISSED: {owner_repo}#{pr_number} (merged {merged_at.isoformat()}) left open: {missed}")
+    # Same target and the same rule as the "closed" handler (PM-365). It is
+    # resolved only now, when some issue is known to move: the search results
+    # carry no base branch, so for scylladb/scylladb it is read from the API.
+    target_name, target_id = resolve_merged_target(owner_repo, pr_number, gh_token)
+
+    print(f"MISSED: {owner_repo}#{pr_number} (merged {merged_at.isoformat()}) left open: {missed} "
+          f"-> {target_name}")
     if dry_run:
         print("Dry run: not changing Jira.")
         return missed
