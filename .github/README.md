@@ -64,6 +64,8 @@ When this label is present:
 - Each backport PR cherry-picks from master (not from previous branch)
 - No chaining occurs
 
+In scylla-dtest, the `parallel_backport` label is added automatically to a PR with more than one `backport/X.Y` label before backporting starts. Add the `cascade_backport` label to keep chained backports for that PR.
+
 ### 4. Label Lifecycle
 
 | Label | Meaning |

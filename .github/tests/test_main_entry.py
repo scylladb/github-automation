@@ -578,3 +578,60 @@ class TestMainNoJiraIssueWarning:
             mock_bpj.assert_called_once()
             call_args = mock_bpj.call_args[0]
             assert call_args[4] is None  # main_jira_key is None
+
+
+class TestMainAutoParallelBackportLabel:
+    """scylla-dtest PRs with more than one backport label get 'parallel_backport' added."""
+
+    def _run(self, bp_module, make_pr, make_repo, make_commit, repo_name, labels):
+        repo = make_repo(full_name=repo_name, name=repo_name.split("/")[1])
+        pr = make_pr(number=10, body="Fixes: SCYLLADB-123", labels=labels)
+        commit = make_commit(sha="abc123")
+        commit.get_pulls.return_value = [pr]
+        comparison = MagicMock()
+        comparison.commits = [commit]
+        repo.compare.return_value = comparison
+
+        test_args = [
+            "auto-backport-jira.py",
+            "--repo", repo_name,
+            "--base-branch", "refs/heads/next",
+            "--commits", "before..after"
+        ]
+        with patch.object(sys, "argv", test_args), \
+             patch.object(bp_module, "Github") as mock_gh, \
+             patch.object(bp_module, "get_pr_commits", return_value=["abc123"]), \
+             patch.object(bp_module, "find_existing_backport_pr", return_value=None), \
+             patch.object(bp_module, "backport_with_jira") as mock_bpj:
+            mock_gh.return_value.get_repo.return_value = repo
+            bp_module.main()
+        return pr, mock_bpj
+
+    def test_dtest_multiple_backport_labels_adds_parallel(self, bp_module, make_pr, make_repo, make_commit):
+        pr, mock_bpj = self._run(bp_module, make_pr, make_repo, make_commit, "scylladb/scylla-dtest",
+                                 ["promoted-to-master", "backport/2025.4", "backport/2025.3"])
+        pr.add_to_labels.assert_called_once_with("parallel_backport")
+        assert "parallel_backport" in mock_bpj.call_args[1]["pr_labels"]
+
+    def test_dtest_single_backport_label_unchanged(self, bp_module, make_pr, make_repo, make_commit):
+        pr, mock_bpj = self._run(bp_module, make_pr, make_repo, make_commit, "scylladb/scylla-dtest",
+                                 ["promoted-to-master", "backport/2025.4"])
+        pr.add_to_labels.assert_not_called()
+        assert "parallel_backport" not in mock_bpj.call_args[1]["pr_labels"]
+
+    def test_dtest_cascade_label_opts_out(self, bp_module, make_pr, make_repo, make_commit):
+        pr, mock_bpj = self._run(bp_module, make_pr, make_repo, make_commit, "scylladb/scylla-dtest",
+                                 ["promoted-to-master", "backport/2025.4", "backport/2025.3", "cascade_backport"])
+        pr.add_to_labels.assert_not_called()
+        assert "parallel_backport" not in mock_bpj.call_args[1]["pr_labels"]
+
+    def test_dtest_existing_parallel_label_not_readded(self, bp_module, make_pr, make_repo, make_commit):
+        pr, _ = self._run(bp_module, make_pr, make_repo, make_commit, "scylladb/scylla-dtest",
+                          ["promoted-to-master", "backport/2025.4", "backport/2025.3", "parallel_backport"])
+        pr.add_to_labels.assert_not_called()
+
+    def test_other_repo_unchanged(self, bp_module, make_pr, make_repo, make_commit):
+        pr, mock_bpj = self._run(bp_module, make_pr, make_repo, make_commit, "scylladb/scylla-pkg",
+                                 ["promoted-to-master", "backport/2025.4", "backport/2025.3"])
+        pr.add_to_labels.assert_not_called()
+        assert "parallel_backport" not in mock_bpj.call_args[1]["pr_labels"]

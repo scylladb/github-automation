@@ -76,6 +76,7 @@ _active_sprint_cache = {}
 SCYLLADB_REPO_NAME = "scylladb/scylladb"
 SCYLLA_PKG_REPO_NAME = "scylladb/scylla-pkg"
 SCYLLA_CLUSTER_TESTS_REPO_NAME = "scylladb/scylla-cluster-tests"
+SCYLLA_DTEST_REPO_NAME = "scylladb/scylla-dtest"
 MILESTONE_REPOS = {SCYLLADB_REPO_NAME, SCYLLA_PKG_REPO_NAME}
 _scylladb_repo_cache = None
 
@@ -93,6 +94,11 @@ PARALLEL_BACKPORT_REPOS = {SCYLLA_CLUSTER_TESTS_REPO_NAME}
 CASCADE_BACKPORT_LABEL = "cascade_backport"
 # Label that opts a chained-by-default repo into parallel backports for a PR.
 PARALLEL_BACKPORT_LABEL = "parallel_backport"
+
+# Repositories where a PR with more than one backport/<version> label gets the
+# 'parallel_backport' label added automatically before backporting starts, so it
+# backports in parallel by default. A 'cascade_backport' label opts a PR out.
+AUTO_PARALLEL_BACKPORT_REPOS = {SCYLLA_DTEST_REPO_NAME}
 
 # A backport version token. Supported forms:
 #   X.Y          -> regular release branch  (branch-X.Y / next-X.Y)
@@ -2393,7 +2399,29 @@ def is_parallel_backport(repo_name: str, label_names: List[str]) -> bool:
     return PARALLEL_BACKPORT_LABEL in label_names
 
 
-def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_jira_key: str, repo_name: str):
+def add_auto_parallel_backport_label(repo_name: str, pr, label_names: List[str],
+                                     backport_labels: List[str]) -> List[str]:
+    """
+    For repos in AUTO_PARALLEL_BACKPORT_REPOS, add the 'parallel_backport' label to a
+    PR that targets more than one version, unless it already has 'parallel_backport'
+    or opted out with 'cascade_backport'. Returns the PR's label names after the change.
+    """
+    if (repo_name not in AUTO_PARALLEL_BACKPORT_REPOS
+            or len(backport_labels) < 2
+            or PARALLEL_BACKPORT_LABEL in label_names
+            or CASCADE_BACKPORT_LABEL in label_names):
+        return label_names
+    try:
+        pr.add_to_labels(PARALLEL_BACKPORT_LABEL)
+    except Exception as e:
+        logging.warning(f"Failed to add '{PARALLEL_BACKPORT_LABEL}' label to PR #{pr.number}: {e}")
+    logging.info(f"PR #{pr.number} has {len(backport_labels)} backport labels, "
+                 f"backporting in parallel ('{PARALLEL_BACKPORT_LABEL}')")
+    return label_names + [PARALLEL_BACKPORT_LABEL]
+
+
+def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_jira_key: str, repo_name: str,
+                       pr_labels: Optional[List[str]] = None):
     """
     Perform backport with Jira sub-issue creation.
 
@@ -2406,7 +2434,8 @@ def backport_with_jira(repo, pr, versions: List[str], commits: List[str], main_j
       version only, with remaining versions tracked via backport labels on the created PR.
       Parallel-by-default repos can opt a PR into this mode with the 'cascade_backport' label.
     """
-    pr_labels = [label.name for label in pr.labels]
+    if pr_labels is None:
+        pr_labels = [label.name for label in pr.labels]
     parallel_backport = is_parallel_backport(repo_name, pr_labels)
 
     if parallel_backport:
@@ -2951,7 +2980,9 @@ def process_branch_push(repo, commits_range: str, branch_name: str, repo_name: s
                         commits = get_pr_commits(repo, pr, stable_branch)
                         if commits:
                             main_jira_key = extract_jira_key_from_pr_body(pr.body)
-                            backport_with_jira(repo, pr, versions, commits, main_jira_key, repo_name)
+                            pr_labels = add_auto_parallel_backport_label(repo_name, pr, pr_labels, backport_labels)
+                            backport_with_jira(repo, pr, versions, commits, main_jira_key, repo_name,
+                                               pr_labels=pr_labels)
                         else:
                             logging.warning(f"No commits found for PR #{pr.number} on branch {stable_branch}")
                 continue
@@ -3181,6 +3212,8 @@ def main():
             print(f'label {args.label} not found in PR labels')
             continue
         
+        labels = add_auto_parallel_backport_label(repo_name, pr, labels, backport_labels)
+
         # Extract versions from backport labels
         versions = [label.replace('backport/', '') for label in backport_labels]
         
@@ -3215,7 +3248,7 @@ def main():
             logging.warning(f"No Jira issue found in PR #{pr.number} body")
         
         # Use the new Jira-aware backport function
-        backport_with_jira(repo, pr, versions, commits, main_jira_key, repo_name)
+        backport_with_jira(repo, pr, versions, commits, main_jira_key, repo_name, pr_labels=labels)
 
 
 if __name__ == "__main__":
