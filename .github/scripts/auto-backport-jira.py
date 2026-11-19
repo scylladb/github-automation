@@ -584,7 +584,7 @@ def extract_jira_key_from_pr_body(pr_body: str) -> Optional[str]:
     #   "Fixes:PROJ-123"
     #   "Fixes: https://scylladb.atlassian.net/browse/PROJ-123"
     #   "Fixes: [PROJ-123](https://scylladb.atlassian.net/browse/PROJ-123)"
-    match = re.search(r'[Ff]ixes:\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
+    match = re.search(r'\b[Ff]ixes:\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
     if match:
         return match.group(1) or match.group(2)
     return None
@@ -600,7 +600,7 @@ def extract_all_jira_keys_from_pr_body(pr_body: str) -> List[str]:
     #   "Fixes:PROJ-123"
     #   "Fixes: https://scylladb.atlassian.net/browse/PROJ-123"
     #   "Fixes: [PROJ-123](https://scylladb.atlassian.net/browse/PROJ-123)"
-    matches = re.findall(r'[Ff]ixes:?\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
+    matches = re.findall(r'\b[Ff]ixes:?\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
     # findall with groups returns list of tuples; pick the non-empty group from each
     return [m[0] or m[1] for m in matches]
 
@@ -613,9 +613,9 @@ def has_fixes_reference(pr_body: str) -> bool:
     if not pr_body:
         return False
 
-    jira_match = re.search(r'[Ff]ixes:?\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
+    jira_match = re.search(r'\b[Ff]ixes:?\s*(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))', pr_body)
     github_match = re.search(
-        r'[Ff]ixes:?\s*(?:https?://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+|[^#\s]+/[^#\s]+#\d+|#\d+)\b',
+        r'\b[Ff]ixes:?\s*(?:https?://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+|[^#\s]+/[^#\s]+#\d+|#\d+)\b',
         pr_body
     )
     return bool(jira_match or github_match)
@@ -1358,7 +1358,7 @@ def replace_fixes_in_body(original_body: str, jira_mapping: Dict[str, str]) -> s
     #   "Fixes PROJ-123"
     #   "Fixes: https://...browse/PROJ-123"
     #   "Fixes: [PROJ-123](https://...browse/PROJ-123)"
-    jira_pattern = r'([Ff]ixes:?\s*)(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))'
+    jira_pattern = r'\b([Ff]ixes:?\s*)(?:\[([A-Z]+-\d+)\]\([^)]*\)|(?:https?://[^\s/]+/browse/)?([A-Z]+-\d+))'
     
     def replace_match(match):
         prefix = match.group(1)  # "Fixes: "

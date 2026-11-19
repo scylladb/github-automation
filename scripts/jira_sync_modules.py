@@ -132,7 +132,7 @@ _JIRA_KEY_RE = re.compile(r'[A-Za-z]+-[0-9]+')
 
 # Regex: closing keywords followed by a Jira key (optionally as a browse URL)
 _CLOSING_KEYWORD_RE = re.compile(
-    r'(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
+    r'\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
     r'\s*[: ]\s*\[?\s*(?:https?://\S*/browse/)?([A-Za-z]+-[0-9]+)',
     re.IGNORECASE,
 )
