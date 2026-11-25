@@ -41,10 +41,32 @@ on:
         required: false
         type: string
         default: ''
+      same_repo_branches:
+        description: >-
+          Push backport/<pr>/to-<version> branches to the calling repo instead of the
+          scylladbbot fork, and open the backport PRs from there. Always on when the
+          GitHub App secrets are set. Keep backport/** out of the caller's push
+          triggers, and enable "Automatically delete head branches" on the repo.
+        required: false
+        type: boolean
+        default: false
+      submodule_repositories:
+        description: >-
+          Comma-separated names of the repos (same owner) that submodule backports are
+          opened in, e.g. 'scylla-seastar'. The GitHub App token also covers them.
+        required: false
+        type: string
+        default: ''
     secrets:
       gh_token:
-        description: 'GitHub token with repo access'
-        required: true
+        description: 'GitHub token with repo access (used when the GitHub App secrets are not set)'
+        required: false
+      app_client_id:
+        description: 'Client ID of the GitHub App that runs the backports (optional, replaces gh_token)'
+        required: false
+      app_private_key:
+        description: 'Private key of the GitHub App that runs the backports'
+        required: false
       jira_auth:
         description: 'Jira authentication (user:token format)'
         required: true
@@ -90,7 +112,41 @@ jobs:
       queue: max
     outputs:
       backport_performed: ${{ steps.set_backport_performed.outputs.backport_performed }}
+    env:
+      HAS_APP: ${{ secrets.app_client_id != '' && secrets.app_private_key != '' }}
+      # The App token can't push to the scylladbbot fork, so the App implies same-repo branches
+      BACKPORT_SAME_REPO: ${{ inputs.same_repo_branches || (secrets.app_client_id != '' && secrets.app_private_key != '') }}
     steps:
+      - name: Check credentials
+        id: creds
+        env:
+          HAS_GH_TOKEN: ${{ secrets.gh_token != '' }}
+          HAS_APP_ID: ${{ secrets.app_client_id != '' }}
+          HAS_APP_KEY: ${{ secrets.app_private_key != '' }}
+        run: |
+          if [[ "$HAS_APP_ID" != "$HAS_APP_KEY" ]]; then
+            echo "::error::Set both app_client_id and app_private_key, or neither."
+            exit 1
+          fi
+          if [[ "$HAS_APP_ID" != "true" && "$HAS_GH_TOKEN" != "true" ]]; then
+            echo "::error::No GitHub credentials: pass gh_token, or both app_client_id and app_private_key."
+            exit 1
+          fi
+          echo "repo_name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App token
+        id: app_token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          # Only this repo, unless submodule backports need more
+          owner: ${{ inputs.submodule_repositories != '' && github.repository_owner || '' }}
+          repositories: >-
+            ${{ inputs.submodule_repositories != ''
+              && format('{0},{1}', steps.creds.outputs.repo_name, inputs.submodule_repositories) || '' }}
+
       - name: Dump inputs
         run: |
           echo "event_type: ${{ inputs.event_type }}"
@@ -103,7 +159,7 @@ jobs:
         with:
           repository: scylladb/github-automation
           ref: main
-          token: ${{ secrets.gh_token }}
+          token: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           path: automation
           
       - name: Checkout calling repository
@@ -111,14 +167,27 @@ jobs:
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.DEFAULT_BRANCH }}
-          token: ${{ secrets.gh_token }}
+          token: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           fetch-depth: 0
           path: repo
           
       - name: Set up Git identity
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
         run: |
-          git config --global user.name "scylladbbot"
-          git config --global user.email "scylladbbot@scylladb.com"
+          if [[ -n "$APP_SLUG" ]]; then
+            # Commit as the GitHub App bot, and let later steps know its login
+            bot_login="${APP_SLUG}[bot]"
+            bot_id=$(gh api "/users/${bot_login}" --jq .id)
+            git config --global user.name "${bot_login}"
+            git config --global user.email "${bot_id}+${bot_login}@users.noreply.github.com"
+            echo "APP_SLUG=${APP_SLUG}" >> "$GITHUB_ENV"
+            echo "BACKPORT_BOT_LOGIN=${bot_login}" >> "$GITHUB_ENV"
+          else
+            git config --global user.name "scylladbbot"
+            git config --global user.email "scylladbbot@scylladb.com"
+          fi
           git config --global merge.conflictstyle diff3
           
       - name: Set up Python
@@ -133,7 +202,7 @@ jobs:
         if: inputs.event_type == 'push'
         working-directory: automation
         env:
-          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
         run: |
           python .github/scripts/search_commits.py \
             --commits "${{ inputs.commits }}" \
@@ -144,7 +213,7 @@ jobs:
         if: inputs.event_type == 'push' && inputs.base_branch == format('refs/heads/{0}', env.DEFAULT_BRANCH)
         working-directory: automation
         env:
-          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
 
         run: |
@@ -174,7 +243,7 @@ jobs:
         if: inputs.event_type == 'push' && steps.check_version_branch.outputs.is_version_branch == 'true'
         working-directory: automation
         env:
-          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
 
         run: |
@@ -208,7 +277,7 @@ jobs:
         if: inputs.event_type == 'labeled' && steps.check_label.outputs.backport_label == 'true' && inputs.pr_state == 'closed'
         working-directory: automation
         env:
-          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
 
         run: |
@@ -238,7 +307,7 @@ jobs:
         if: inputs.event_type == 'chain' && steps.check_backport.outputs.is_backport_pr == 'true'
         working-directory: automation
         env:
-          GITHUB_TOKEN: ${{ secrets.gh_token }}
+          GITHUB_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           JIRA_AUTH: ${{ secrets.jira_auth }}
         run: |
           python .github/scripts/auto-backport-jira.py \
@@ -253,13 +322,25 @@ jobs:
           inputs.event_type == 'push'
           || (inputs.event_type == 'labeled' && inputs.label_name == 'conflicts')
         env:
-          GH_TOKEN: ${{ secrets.gh_token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
         run: |
           # Quick check: are there any draft PRs with the 'conflicts' label?
           # This is cheap (single API call) and avoids spinning up the expensive
           # Docker-based AI resolver when there's nothing to resolve.
-          CONFLICTED_COUNT=$(gh pr list --repo "${{ github.repository }}" \
-            --author scylladbbot --label conflicts --draft --json number --jq 'length' 2>/dev/null || echo "0")
+          # Backport PRs are opened by scylladbbot or, when configured, by the GitHub App
+          # With the App, the resolver skips PRs opened from a fork, so don't count them
+          if [[ -n "$APP_SLUG" ]]; then
+            COUNT_JQ='[.[] | select(.headRepositoryOwner.login == "${{ github.repository_owner }}")] | length'
+          else
+            COUNT_JQ='length'
+          fi
+          CONFLICTED_COUNT=0
+          for author in "--author=scylladbbot" ${APP_SLUG:+"--app=${APP_SLUG}"}; do
+            n=$(gh pr list --repo "${{ github.repository }}" \
+              "$author" --label conflicts --draft --json number,headRepositoryOwner \
+              --jq "$COUNT_JQ" 2>/dev/null || echo "0")
+            CONFLICTED_COUNT=$((CONFLICTED_COUNT + n))
+          done
           echo "Conflicted draft PRs: ${CONFLICTED_COUNT}"
           if [[ "$CONFLICTED_COUNT" -gt 0 ]]; then
             echo "has_conflicts=true" >> $GITHUB_OUTPUT
@@ -299,24 +380,47 @@ jobs:
     permissions:
       pull-requests: write
       issues: write
+    env:
+      HAS_APP: ${{ secrets.app_client_id != '' && secrets.app_private_key != '' }}
     steps:
+      - name: Create GitHub App token
+        id: app_token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+
       - name: Checkout calling repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.repository }}
           ref: ${{ env.DEFAULT_BRANCH }}
-          token: ${{ secrets.gh_token }}
+          token: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           fetch-depth: 0
           path: repo
 
       - name: Set up Git identity
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
         run: |
-          git config --global user.name "scylladbbot"
-          git config --global user.email "scylladbbot@scylladb.com"
+          if [[ -n "$APP_SLUG" ]]; then
+            # Commit as the GitHub App bot, and let later steps know its login
+            bot_login="${APP_SLUG}[bot]"
+            bot_id=$(gh api "/users/${bot_login}" --jq .id)
+            git config --global user.name "${bot_login}"
+            git config --global user.email "${bot_id}+${bot_login}@users.noreply.github.com"
+            echo "APP_SLUG=${APP_SLUG}" >> "$GITHUB_ENV"
+            echo "BACKPORT_BOT_LOGIN=${bot_login}" >> "$GITHUB_ENV"
+          else
+            git config --global user.name "scylladbbot"
+            git config --global user.email "scylladbbot@scylladb.com"
+          fi
 
       - name: Resolve conflicts on draft backport PRs using OpenCode AI
         env:
-          GH_TOKEN: ${{ secrets.gh_token }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token || secrets.gh_token }}
           DOCKERHUB_USERNAME: ${{ secrets.dockerhub_username }}
           DOCKERHUB_TOKEN: ${{ secrets.dockerhub_token }}
           ANTHROPIC_BASE_URL: ${{ secrets.anthropic_base_url }}
@@ -354,13 +458,17 @@ jobs:
             return $status
           }
 
-          # Find draft PRs with 'conflicts' label authored by scylladbbot
-          CONFLICTED_PRS=$(gh_retry pr list --repo "${{ github.repository }}" \
-            --author scylladbbot --label conflicts --draft --json number,headRefName,baseRefName,headRepositoryOwner \
-            --jq '.[] | "\(.number) \(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)"') || {
-            echo "::warning::Failed to list conflicted PRs due to GitHub API issues, skipping."
-            exit 0
-          }
+          # Find draft PRs with 'conflicts' label opened by scylladbbot or, when configured, by the GitHub App
+          CONFLICTED_PRS=""
+          for author in "--author=scylladbbot" ${APP_SLUG:+"--app=${APP_SLUG}"}; do
+            PRS=$(gh_retry pr list --repo "${{ github.repository }}" \
+              "$author" --label conflicts --draft --json number,headRefName,baseRefName,headRepositoryOwner \
+              --jq '.[] | "\(.number) \(.headRefName) \(.baseRefName) \(.headRepositoryOwner.login)"') || {
+              echo "::warning::Failed to list conflicted PRs due to GitHub API issues, skipping."
+              exit 0
+            }
+            CONFLICTED_PRS=$(printf '%s\n%s\n' "$CONFLICTED_PRS" "$PRS" | sed '/^$/d')
+          done
 
           if [ -z "$CONFLICTED_PRS" ]; then
             echo "No conflicted backport PRs found, skipping."
@@ -380,6 +488,14 @@ jobs:
 
           echo "$CONFLICTED_PRS" | while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
             echo "::group::Resolving conflicts on PR #${PR_NUMBER} (${FORK_OWNER}:${HEAD_BRANCH} -> ${BASE_BRANCH})"
+
+            # The GitHub App token only covers this repo, so it can't push to a fork head
+            # (e.g. scylladbbot PRs opened before the switch to the App). Skip those.
+            if [ -n "$APP_SLUG" ] && [ "$FORK_OWNER" != "${{ github.repository_owner }}" ]; then
+              echo "::warning::PR #${PR_NUMBER} is opened from ${FORK_OWNER}, which the GitHub App token can't push to, skipping."
+              echo "::endgroup::"
+              continue
+            fi
 
             # Dedup: skip if AI already commented on this PR (another workflow run got there first)
             EXISTING_COMMENT=$(gh_retry pr view "${PR_NUMBER}" --repo "${{ github.repository }}" \

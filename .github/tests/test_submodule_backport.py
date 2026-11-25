@@ -137,6 +137,8 @@ class TestBackportSubmoduleCommits:
     def _setup(self, make_commit):
         target = MagicMock()
         target.full_name = "scylladb/scylla-seastar"
+        target.name = "scylla-seastar"
+        target.owner.login = "scylladb"
         target.get_pulls.return_value = []
         fix = _sub_commit(make_commit, NEW, "resource: fix NUMA\n\nFixes: SCYLLADB-5118")
         return target, fix
@@ -146,13 +148,14 @@ class TestBackportSubmoduleCommits:
         fork.full_name = "scylladbbot/scylla-seastar"
         with patch("tempfile.TemporaryDirectory") as mock_tmp, \
              patch.object(bp_module.Repo, "clone_from", return_value=local) as mock_clone, \
-             patch.object(bp_module, "get_bot_fork", return_value=fork):
+             patch.object(bp_module, "get_bot_fork", return_value=fork) as mock_fork:
             mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
             result = bp_module.backport_submodule_commits(MagicMock(), target, "branch-2026.3", "2026.3",
                                                           [fix], "scylladb/seastar", pr)
             mock_clone.assert_called_once()
             assert mock_clone.call_args[1]["branch"] == "branch-2026.3"
+            self.forked = mock_fork.called
             return result
 
     def test_cherry_picks_from_source_and_opens_pr(self, bp_module, make_pr, make_commit):
@@ -174,6 +177,21 @@ class TestBackportSubmoduleCommits:
         assert f"(cherry picked from commit {NEW})" in kwargs["body"]
         assert "Needed for the backport of https://github.com/scylladb/scylladb/pull/32182" in kwargs["body"]
         result.add_to_assignees.assert_called_once()
+
+    def test_same_repo_mode_pushes_to_submodule_repo(self, bp_module, make_pr, make_commit):
+        target, fix = self._setup(make_commit)
+        local = MagicMock()
+
+        with patch.object(bp_module, "SAME_REPO_BRANCHES", True):
+            self._run(bp_module, target, fix, make_pr(number=32182), local)
+
+        assert not self.forked
+        push_url = local.git.push.call_args[0][0]
+        assert push_url.startswith("https://x-access-token:")
+        assert push_url.endswith("@github.com/scylladb/scylla-seastar.git")
+        assert target.create_pull.call_args[1]["head"] == "scylladb:backport/32182/to-2026.3"
+        heads = [c.kwargs["head"] for c in target.get_pulls.call_args_list]
+        assert heads == ["scylladb:backport/32182/to-2026.3", "scylladbbot:backport/32182/to-2026.3"]
 
     def test_conflict_opens_draft(self, bp_module, make_pr, make_commit):
         from git import GitCommandError
