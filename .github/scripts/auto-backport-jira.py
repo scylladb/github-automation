@@ -47,6 +47,45 @@ else:
 JIRA_BASE_URL = "https://scylladb.atlassian.net"
 
 
+# Where backport branches live. By default they are pushed to the scylladbbot fork and
+# the PR is opened from there. With BACKPORT_SAME_REPO=true they are pushed to the target
+# repo itself, so a repo-scoped token (e.g. a GitHub App) is enough and developers can
+# push conflict fixes to them.
+SAME_REPO_BRANCHES = os.environ.get("BACKPORT_SAME_REPO", "").lower() == "true"
+FORK_OWNER = "scylladbbot"
+# Logins that open backport PRs: scylladbbot, plus the GitHub App bot when one is used.
+BOT_LOGINS = {FORK_OWNER} | ({os.environ["BACKPORT_BOT_LOGIN"]} if os.environ.get("BACKPORT_BOT_LOGIN") else set())
+
+
+def backport_head_owner(repo) -> str:
+    """Owner of the backport branch, as used in a PR head ('owner:branch')."""
+    return repo.owner.login if SAME_REPO_BRANCHES else FORK_OWNER
+
+
+def backport_clone_url(repo) -> str:
+    """Authenticated URL of the target repo."""
+    user = "x-access-token" if SAME_REPO_BRANCHES else FORK_OWNER
+    return f'https://{user}:{github_token}@github.com/{repo.full_name}.git'
+
+
+def backport_push_url(repo) -> str:
+    """Authenticated URL the backport branch is pushed to."""
+    if SAME_REPO_BRANCHES:
+        return backport_clone_url(repo)
+    return f'https://{FORK_OWNER}:{github_token}@github.com/{FORK_OWNER}/{repo.name}.git'
+
+
+def backport_heads(repo, branch: str) -> List[str]:
+    """PR heads to look for when checking whether a backport PR already exists.
+
+    In same-repo mode PRs opened earlier from the fork are still matched.
+    """
+    heads = [f'{backport_head_owner(repo)}:{branch}']
+    if SAME_REPO_BRANCHES:
+        heads.append(f'{FORK_OWNER}:{branch}')
+    return heads
+
+
 # GitHub Actions run URL for error reporting
 GITHUB_RUN_URL = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/" + \
                  os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + \
@@ -1444,21 +1483,22 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
     else:
         assignee = assign_to_pr.user
     
+    head = f'{backport_head_owner(repo)}:{new_branch_name}'
     try:
         backport_pr = repo.create_pull(
             title=backport_pr_title,
             body=pr_body,
-            head=f'scylladbbot:{new_branch_name}',
+            head=head,
             base=base_branch_name,
             draft=is_draft or bool(draft_reason)
         )
         logging.info(f"Pull request created: {backport_pr.html_url}")
     except GithubException as e:
         if 'A pull request already exists' in str(e):
-            logging.warning(f'A pull request already exists for scylladbbot:{new_branch_name}')
+            logging.warning(f'A pull request already exists for {head}')
             # Try to find and return the existing PR
             try:
-                pulls = repo.get_pulls(state='open', head=f'scylladbbot:{new_branch_name}')
+                pulls = repo.get_pulls(state='open', head=head)
                 for existing_pr in pulls:
                     logging.info(f"Found existing PR: {existing_pr.html_url}")
                     # Update the body with the latest info
@@ -1466,7 +1506,7 @@ def create_pull_request(repo, new_branch_name, base_branch_name, pr, backport_pr
                     backport_pr = existing_pr
                     break
                 else:
-                    logging.warning(f"Could not find existing PR for scylladbbot:{new_branch_name}")
+                    logging.warning(f"Could not find existing PR for {head}")
                     return None
             except Exception as find_error:
                 logging.warning(f"Could not find existing PR: {find_error}")
@@ -2005,15 +2045,16 @@ def backport_submodule_commits(g, target_repo, branch: str, version: str, commit
     backport PR there (a draft if there were conflicts). Returns the PR, or None on failure.
     """
     new_branch_name = f'backport/{pr.number}/to-{version}'
-    head = f'scylladbbot:{new_branch_name}'
-    for existing in target_repo.get_pulls(state='all', head=head):
-        logging.info(f"Submodule backport PR already exists: {existing.html_url}")
-        return existing
-    fork = get_bot_fork(g, target_repo)
+    head = f'{backport_head_owner(target_repo)}:{new_branch_name}'
+    for existing_head in backport_heads(target_repo, new_branch_name):
+        for existing in target_repo.get_pulls(state='all', head=existing_head):
+            logging.info(f"Submodule backport PR already exists: {existing.html_url}")
+            return existing
+    if not SAME_REPO_BRANCHES:
+        get_bot_fork(g, target_repo)
     with tempfile.TemporaryDirectory() as local_repo_path:
         try:
-            repo_local = Repo.clone_from(f'https://scylladbbot:{github_token}@github.com/{target_repo.full_name}.git',
-                                         local_repo_path, branch=branch)
+            repo_local = Repo.clone_from(backport_clone_url(target_repo), local_repo_path, branch=branch)
             repo_local.git.checkout(b=new_branch_name)
             repo_local.git.fetch(f'https://github.com/{source_name}.git', *[c.sha for c in commits])
             is_draft = False
@@ -2028,8 +2069,7 @@ def backport_submodule_commits(g, target_repo, branch: str, version: str, commit
                         repo_local.git.cherry_pick('--continue')
                     else:
                         repo_local.git.commit('--allow-empty', '--no-edit')
-            repo_local.git.push(f'https://scylladbbot:{github_token}@github.com/{fork.full_name}.git',
-                                new_branch_name, force=True)
+            repo_local.git.push(backport_push_url(target_repo), new_branch_name, force=True)
         except GitCommandError as e:
             logging.warning(f"Failed to backport {source_name} commits to {target_repo.full_name} {branch}: {e}")
             return None
@@ -2080,8 +2120,8 @@ def create_submodule_bump_pr(repo, pr, version: str, branch: str, gitlinks: List
     message += ''.join(f'  > {c.commit.message.splitlines()[0]}\n' for c in fix_commits)
     jira_mapping = pr_kwargs.pop('jira_mapping', None) or {}
     message += ''.join(f'\nFixes: {JIRA_BASE_URL}/browse/{jira_mapping.get(key, key)}' for key in jira_keys)
-    repo_url = f'https://scylladbbot:{github_token}@github.com/{repo.full_name}.git'
-    fork_repo = f'https://scylladbbot:{github_token}@github.com/scylladbbot/{repo.name}.git'
+    repo_url = backport_clone_url(repo)
+    fork_repo = backport_push_url(repo)
     with tempfile.TemporaryDirectory() as local_repo_path:
         try:
             repo_local = Repo.clone_from(repo_url, local_repo_path, branch=branch)
@@ -2233,8 +2273,8 @@ def backport(repo, pr, version, commits, backport_base_branch, pr_body=None, jir
     # Extract original title to prevent stacking like '[Backport 2025.3] [Backport 2025.4] Title'
     original_title = extract_original_title(pr.title)
     backport_pr_title = f'[Backport {version}] {original_title}'
-    repo_url = f'https://scylladbbot:{github_token}@github.com/{repo.full_name}.git'
-    fork_repo = f'https://scylladbbot:{github_token}@github.com/scylladbbot/{repo.name}.git'
+    repo_url = backport_clone_url(repo)
+    fork_repo = backport_push_url(repo)
     with (tempfile.TemporaryDirectory() as local_repo_path):
         try:
             repo_local = Repo.clone_from(repo_url, local_repo_path, branch=backport_base_branch)
@@ -2307,19 +2347,22 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str, origi
     """
     # Search for PRs with the backport branch naming pattern for this specific source PR
     branch_pattern = f"backport/{original_pr_number}/to-{version}"
+    heads = backport_heads(repo, branch_pattern)
     try:
         # Check open PRs first
-        pulls = repo.get_pulls(state='open', head=f'scylladbbot:{branch_pattern}')
-        for pull in pulls:
-            logging.info(f"Found existing open backport PR #{pull.number} for version {version}")
-            return pull
-        
+        for head in heads:
+            pulls = repo.get_pulls(state='open', head=head)
+            for pull in pulls:
+                logging.info(f"Found existing open backport PR #{pull.number} for version {version}")
+                return pull
+
         # Also check all PRs (including merged/closed) to prevent re-creating backports
         # This handles race conditions and cases where the PR was just merged
-        pulls = repo.get_pulls(state='all', head=f'scylladbbot:{branch_pattern}', sort='created', direction='desc')
-        for pull in pulls:
-            logging.info(f"Found existing backport PR #{pull.number} (state: {pull.state}) for version {version}")
-            return pull
+        for head in heads:
+            pulls = repo.get_pulls(state='all', head=head, sort='created', direction='desc')
+            for pull in pulls:
+                logging.info(f"Found existing backport PR #{pull.number} (state: {pull.state}) for version {version}")
+                return pull
     except Exception as e:
         logging.warning(f"Error searching for existing backport PR: {e}")
 
@@ -2337,7 +2380,7 @@ def find_existing_backport_pr(repo, original_pr_number: int, version: str, origi
                 if (pull.head.ref.startswith('backport/') and
                         pull.head.ref.endswith(f'/to-{version}') and
                         pull.title == expected_title and
-                        pull.user.login == 'scylladbbot'):
+                        pull.user.login in BOT_LOGINS):
                     logging.info(f"Found existing open backport PR #{pull.number} from different source "
                                  f"(branch: {pull.head.ref}) for version {version}")
                     return pull
