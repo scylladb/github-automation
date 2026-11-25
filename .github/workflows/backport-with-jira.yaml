@@ -486,7 +486,8 @@ jobs:
           fi
           echo "$DOCKERHUB_TOKEN" | podman login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
 
-          echo "$CONFLICTED_PRS" | while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
+          FAILED=0
+          while read -r PR_NUMBER HEAD_BRANCH BASE_BRANCH FORK_OWNER; do
             echo "::group::Resolving conflicts on PR #${PR_NUMBER} (${FORK_OWNER}:${HEAD_BRANCH} -> ${BASE_BRANCH})"
 
             # The GitHub App token only covers this repo, so it can't push to a fork head
@@ -508,11 +509,30 @@ jobs:
 
             # Checkout the PR branch from the fork
             cd "${{ github.workspace }}/repo"
+            # Start from a clean checkout, whatever the previous PR left behind
+            git rebase --abort 2>/dev/null || true
+            git cherry-pick --abort 2>/dev/null || true
+            git am --abort 2>/dev/null || true
+            git reset -q --hard
+            git clean -fdq
             git remote add fork "https://github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git" 2>/dev/null || true
             git remote set-url fork "https://github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git"
             git fetch fork "${HEAD_BRANCH}"
             git fetch origin "${BASE_BRANCH}"
             git checkout -B "${HEAD_BRANCH}" "fork/${HEAD_BRANCH}"
+
+            # Commits before the AI resolution, and which of them added conflict markers,
+            # for the compare links in the PR comment
+            PRE_SHA=$(git rev-parse HEAD)
+            MERGE_BASE=$(git merge-base "origin/${BASE_BRANCH}" "${PRE_SHA}" || true)
+            PRE_COMMITS=()
+            [ -z "$MERGE_BASE" ] || mapfile -t PRE_COMMITS < <(git rev-list --reverse "${MERGE_BASE}..${PRE_SHA}")
+            CONFLICT_IDX=()
+            for i in "${!PRE_COMMITS[@]}"; do
+              if git show --format= -U0 "${PRE_COMMITS[$i]}" | grep '^+<<<<<<< ' >/dev/null; then
+                CONFLICT_IDX+=("$i")
+              fi
+            done
 
             # Ensure the container user can write to the entire workspace (files + .git)
             chmod -R a+rw "${{ github.workspace }}/repo"
@@ -523,6 +543,7 @@ jobs:
             git remote set-url fork "https://x-access-token:${GH_TOKEN}@github.com/${FORK_OWNER}/$(echo '${{ github.repository }}' | cut -d/ -f2).git"
 
             # Run opencode resolve-conflicts via Docker
+            RESOLVE_STATUS=0
             podman run --pull=always --rm \
               -v "${{ github.workspace }}/repo":/workspace \
               -w /workspace \
@@ -533,9 +554,8 @@ jobs:
               -e GIT_CONFIG_COUNT=1 \
               -e GIT_CONFIG_KEY_0=safe.directory \
               -e GIT_CONFIG_VALUE_0=/workspace \
-              docker.io/scylladb/opencode-skills:stable run-resolve-conflicts "${BASE_BRANCH}"
-
-            RESOLVE_STATUS=$?
+              docker.io/scylladb/opencode-skills:stable run-resolve-conflicts "${BASE_BRANCH}" \
+              || RESOLVE_STATUS=$?
 
             # Reclaim ownership of the workspace after podman run.
             # The container may create/modify files (especially under .git/) as a
@@ -558,14 +578,45 @@ jobs:
               # Mark PR as ready and remove conflicts label
               gh_retry pr ready "${PR_NUMBER}" --repo "${{ github.repository }}"
               gh_retry pr edit "${PR_NUMBER}" --repo "${{ github.repository }}" --remove-label conflicts
-              # Add a comment indicating AI resolution
-              gh_retry pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" \
-                --body $':robot: Conflicts in this backport were automatically resolved by AI (OpenCode resolve-conflicts skill).\n\nPlease review the changes carefully to ensure correctness.'
+              # Add a comment indicating AI resolution, with links to the AI's changes:
+              # one per conflicted commit, or one for the whole branch if the commits
+              # can't be matched up (e.g. the branch was rebased onto a newer base).
+              # The dedup check above matches on "Conflicts in this backport were automatically resolved by AI".
+              COMPARE_URL="https://github.com/${{ github.repository }}/compare"
+              POST_COMMITS=()
+              [ -z "$MERGE_BASE" ] || mapfile -t POST_COMMITS < <(git rev-list --reverse "${MERGE_BASE}..HEAD")
+              POST_MERGE_BASE=$(git merge-base "origin/${BASE_BRANCH}" HEAD || true)
+              BODY=$':robot: Conflicts in this backport were automatically resolved by AI.\n\nPlease review the changes carefully to ensure correctness:'
+              # Pair commits by position only if the base, the count and every title match
+              PAIRED=false
+              if [ ${#CONFLICT_IDX[@]} -gt 0 ] && [ "$POST_MERGE_BASE" = "$MERGE_BASE" ] && [ ${#POST_COMMITS[@]} -eq ${#PRE_COMMITS[@]} ]; then
+                PAIRED=true
+                for i in "${!PRE_COMMITS[@]}"; do
+                  if [ "$(git log -1 --format=%s "${PRE_COMMITS[$i]}")" != "$(git log -1 --format=%s "${POST_COMMITS[$i]}")" ]; then
+                    PAIRED=false
+                    break
+                  fi
+                done
+              fi
+              if [ "$PAIRED" = true ]; then
+                NOTE=""
+                for i in "${CONFLICT_IDX[@]}"; do
+                  BODY+=$'\n'"* ${COMPARE_URL}/${PRE_COMMITS[$i]}..${POST_COMMITS[$i]}"
+                  BODY+=$'\n'"  Conflicts were in: $(git log -1 --format='%h %s' "${PRE_COMMITS[$i]}")${NOTE}"
+                  NOTE=" (link also includes the fixes above)"
+                done
+              else
+                BODY+=$'\n'"* ${COMPARE_URL}/${PRE_SHA}..$(git rev-parse HEAD)"
+                for i in "${CONFLICT_IDX[@]}"; do
+                  BODY+=$'\n'"  Conflicts were in: $(git log -1 --format='%h %s' "${PRE_COMMITS[$i]}")"
+                done
+              fi
+              gh_retry pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "$BODY"
             else
               echo "::error::Failed to resolve conflicts on PR #${PR_NUMBER} (exit code: ${RESOLVE_STATUS})"
-              echo "::endgroup::"
-              exit 1
+              FAILED=1
             fi
 
             echo "::endgroup::"
-          done
+          done <<< "$CONFLICTED_PRS"
+          exit "$FAILED"
