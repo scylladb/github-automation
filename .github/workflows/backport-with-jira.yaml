@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       event_type:
-        description: 'Type of event: push, labeled, or chain'
+        description: 'Type of event: push, labeled, chain, or closed (delete the backport branch of a closed PR)'
         required: true
         type: string
       base_branch:
@@ -68,8 +68,8 @@ on:
         description: 'Private key of the GitHub App that runs the backports'
         required: false
       jira_auth:
-        description: 'Jira authentication (user:token format)'
-        required: true
+        description: 'Jira authentication (user:token format). Required for every event_type except closed'
+        required: false
       copilot_token:
         description: 'Deprecated - kept for backward compatibility with callers that still pass it'
         required: false
@@ -91,6 +91,7 @@ env:
 
 jobs:
   backport:
+    if: inputs.event_type != 'closed'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       pull-requests: write
@@ -123,7 +124,13 @@ jobs:
           HAS_GH_TOKEN: ${{ secrets.gh_token != '' }}
           HAS_APP_ID: ${{ secrets.app_client_id != '' }}
           HAS_APP_KEY: ${{ secrets.app_private_key != '' }}
+          HAS_JIRA: ${{ secrets.jira_auth != '' }}
+          EVENT_TYPE: ${{ inputs.event_type }}
         run: |
+          if [[ "$HAS_JIRA" != "true" ]]; then
+            echo "::error::No jira_auth secret: it is required for event_type $EVENT_TYPE."
+            exit 1
+          fi
           if [[ "$HAS_APP_ID" != "$HAS_APP_KEY" ]]; then
             echo "::error::Set both app_client_id and app_private_key, or neither."
             exit 1
@@ -620,3 +627,52 @@ jobs:
             echo "::endgroup::"
           done <<< "$CONFLICTED_PRS"
           exit "$FAILED"
+
+  cleanup-branch:
+    # Delete a backport branch the GitHub App created once its PR is closed,
+    # merged or not. Auto-delete on merge skips closed PRs, and the rulesets
+    # block deleting backport/* branches for anyone but the bypass actors.
+    if: >-
+      inputs.event_type == 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.head.ref, 'backport/')
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    permissions: {}
+    env:
+      HAS_APP: ${{ secrets.app_client_id != '' && secrets.app_private_key != '' }}
+    steps:
+      - name: Create GitHub App token
+        id: app_token
+        if: env.HAS_APP == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.app_client_id }}
+          private-key: ${{ secrets.app_private_key }}
+          permission-contents: write
+
+      - name: Delete the backport branch
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$HAS_APP" != "true" ]]; then
+            echo "No GitHub App configured: leaving $BRANCH alone"
+            exit 0
+          fi
+          if [[ "$AUTHOR" != "${APP_SLUG}[bot]" ]]; then
+            echo "PR was opened by $AUTHOR, not ${APP_SLUG}[bot]: leaving $BRANCH alone"
+            exit 0
+          fi
+          # The app is a ruleset bypass actor, so it may delete backport/* branches.
+          # 404, or 422 "Reference does not exist": already deleted (e.g. by
+          # auto-delete on merge). Any other 422 (e.g. a ruleset violation) fails.
+          if out=$(gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" 2>&1); then
+            echo "Deleted $BRANCH"
+          elif grep -qE 'HTTP 404|Reference does not exist' <<< "$out"; then
+            echo "$BRANCH is already gone"
+          else
+            echo "$out"
+            exit 1
+          fi
