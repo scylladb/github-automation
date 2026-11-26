@@ -151,6 +151,17 @@ on:
 - Triggered when backport PR is merged
 - Continues chain to next version if labels exist
 
+### Backport PR Closed (Cleanup Event)
+```yaml
+on:
+  pull_request_target:
+    types: [closed]
+```
+- Run with `event_type: 'closed'` for any closed `backport/*` PR, merged or not
+- Deletes the PR's head branch if it lives in the caller's repo and the GitHub App opened the PR; leaves anything else alone
+- Needs `app_client_id` and `app_private_key`; `jira_auth` is not needed. Without the app secrets it does nothing
+- Auto-delete on merge skips PRs closed without merging, so this keeps app-created branches from piling up
+
 ## Example Workflows
 
 ### Example 1: Standard Chained Backport
@@ -282,6 +293,8 @@ on:
 
 jobs:
   backport:
+    # A PR closed without merging has nothing to chain
+    if: github.event.action != 'closed' || github.event.pull_request.merged
     uses: scylladb/github-automation/.github/workflows/backport-with-jira.yaml@main
     with:
       event_type: ${{ github.event_name == 'push' && 'push' || (github.event.action == 'labeled' && 'labeled' || 'chain') }}
@@ -295,6 +308,22 @@ jobs:
     secrets:
       gh_token: ${{ secrets.AUTO_BACKPORT_TOKEN }}
       jira_auth: ${{ secrets.USER_AND_KEY_FOR_JIRA_AUTOMATION }}
+
+  # Optional, for repos that open backport PRs with the GitHub App
+  backport-cleanup:
+    if: >-
+      github.event_name == 'pull_request_target'
+      && github.event.action == 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && startsWith(github.event.pull_request.head.ref, 'backport/')
+    uses: scylladb/github-automation/.github/workflows/backport-with-jira.yaml@main
+    with:
+      event_type: 'closed'
+      base_branch: refs/heads/${{ github.event.pull_request.base.ref }}
+      pull_request_number: ${{ github.event.pull_request.number }}
+    secrets:
+      app_client_id: ${{ secrets.BACKPORT_APP_CLIENT_ID }}
+      app_private_key: ${{ secrets.BACKPORT_APP_PRIVATE_KEY }}
 ```
 
 ## Troubleshooting
