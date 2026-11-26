@@ -605,18 +605,22 @@ jobs:
                   fi
                 done
               fi
-              if [ "$PAIRED" = true ]; then
+              # Single-commit PR: one link. Otherwise name each conflicted commit.
+              if [ "$PAIRED" = true ] && [ ${#PRE_COMMITS[@]} -gt 1 ]; then
                 NOTE=""
                 for i in "${CONFLICT_IDX[@]}"; do
-                  BODY+=$'\n'"* ${COMPARE_URL}/${PRE_COMMITS[$i]}..${POST_COMMITS[$i]}"
-                  BODY+=$'\n'"  Conflicts were in: $(git log -1 --format='%h %s' "${PRE_COMMITS[$i]}")${NOTE}"
-                  NOTE=" (link also includes the fixes above)"
+                  BODY+=$'\n'"- $(git log -1 --abbrev=8 --format='%h %s' "${PRE_COMMITS[$i]}") - [review conflict resolution](${COMPARE_URL}/${PRE_COMMITS[$i]}..${POST_COMMITS[$i]})${NOTE}"
+                  NOTE=" (also includes the fixes above)"
                 done
+              elif [ "$PAIRED" = true ]; then
+                BODY+=" [review conflict resolution](${COMPARE_URL}/${PRE_COMMITS[0]}..${POST_COMMITS[0]})"
               else
-                BODY+=$'\n'"* ${COMPARE_URL}/${PRE_SHA}..$(git rev-parse HEAD)"
-                for i in "${CONFLICT_IDX[@]}"; do
-                  BODY+=$'\n'"  Conflicts were in: $(git log -1 --format='%h %s' "${PRE_COMMITS[$i]}")"
-                done
+                BODY+=" [review conflict resolution](${COMPARE_URL}/${PRE_SHA}..$(git rev-parse HEAD))"
+                if [ ${#PRE_COMMITS[@]} -gt 1 ]; then
+                  for i in "${CONFLICT_IDX[@]}"; do
+                    BODY+=$'\n'"- conflicts were in: $(git log -1 --abbrev=8 --format='%h %s' "${PRE_COMMITS[$i]}")"
+                  done
+                fi
               fi
               gh_retry pr comment "${PR_NUMBER}" --repo "${{ github.repository }}" --body "$BODY"
             else
